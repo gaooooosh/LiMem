@@ -20,6 +20,11 @@ def env_bool(name, default):
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
 DECAY_RATE = float(os.getenv("DECAY_RATE", "0.01"))
 EPISODE_TTL = int(os.getenv("EPISODE_TTL", "3600"))
+DECAY_RATE_P2 = float(os.getenv("DECAY_RATE_P2", str(DECAY_RATE)))
+DECAY_RATE_P3 = float(os.getenv("DECAY_RATE_P3", str(DECAY_RATE * 2)))
+PRUNE_C_VALID_THRESHOLD = int(os.getenv("PRUNE_C_VALID_THRESHOLD", "100"))
+PRUNE_EVIDENCE_TOP_K = int(os.getenv("PRUNE_EVIDENCE_TOP_K", "5"))
+DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "default_user")
 
 # Dashscope / Aliyun settings.
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
@@ -46,3 +51,7 @@ INCLUDE_EPISODES_IN_GRAPH = env_bool("INCLUDE_EPISODES_IN_GRAPH", False)
 GRAPH_OUTPUT_DIR = os.getenv("GRAPH_OUTPUT_DIR", "./outputs")
 GRAPH_MAX_EVENTS = int(os.getenv("GRAPH_MAX_EVENTS", "0"))
 KUZU_EXPLORER_URL = os.getenv("KUZU_EXPLORER_URL", "")
+
+# Proactive engine knobs.
+PROACTIVE_WEIGHT_THRESHOLD = float(os.getenv("PROACTIVE_WEIGHT_THRESHOLD", "0.2"))
+PROACTIVE_TIME_GAP_SEC = int(os.getenv("PROACTIVE_TIME_GAP_SEC", "1800"))

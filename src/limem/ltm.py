@@ -9,14 +9,19 @@ from dashscope import Generation, TextEmbedding
 from .config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
-    DECAY_RATE,
+    DECAY_RATE_P2,
+    DECAY_RATE_P3,
+    DEFAULT_USER_ID,
     ENABLE_THINKING,
     EMBEDDING_MODEL,
     EPISODE_TTL,
     GENERATION_MODEL,
+    PRUNE_C_VALID_THRESHOLD,
+    PRUNE_EVIDENCE_TOP_K,
     SIMILARITY_THRESHOLD,
 )
-from .utils import hash_summary
+from .models import EpisodicEventFrame, Priority
+from .utils import hash_summary, safe_json_dumps, safe_json_loads, time_bucket_from_ts
 
 
 class ResearchLTM:
@@ -39,8 +44,14 @@ class ResearchLTM:
         # Abstraction step: turn a raw episode into a single event + entities.
         system_msg = (
             "You are an information extraction module. "
-            "Return ONLY JSON with keys: summary, entities. "
-            'Each entity has: {"name": "...", "type": "..."}.'
+            "Return ONLY JSON with keys: event, entities. "
+            "event schema: {summary, priority, participants, time_range, location, "
+            "action, causality, evidence, consistency, privacy_handling}. "
+            "participants is a list of {role, seat}. "
+            "time_range is {start, end, display_time_bucket}. "
+            "location is {geo_context, digital_context}. "
+            "evidence is a list of {source, snippet, timestamp, confidence}. "
+            "Each entity has: {\"name\": \"...\", \"type\": \"...\"}."
         )
         user_msg = f"Text: {episode_text}\nOutput JSON:"
         if ENABLE_THINKING:
@@ -65,15 +76,124 @@ class ResearchLTM:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         data = json.loads(raw)
+        if "event" not in data and "summary" in data:
+            data = {"event": data, "entities": data.get("entities", [])}
         return data
 
-    def calculate_weight(self, t_last, c_valid, t_now):
-        # Paper formula: frequency reinforcement * temporal decay.
-        return math.log(1 + c_valid) * math.exp(-DECAY_RATE * (t_now - t_last))
+    def _decay_rate_for_priority(self, priority):
+        try:
+            normalized = Priority(priority)
+        except Exception:
+            normalized = Priority.P2
+        if normalized == Priority.P1:
+            return 0.0
+        if normalized == Priority.P2:
+            return DECAY_RATE_P2
+        return DECAY_RATE_P3
+
+    def calculate_weight(self, last_active, c_valid, t_now, priority, t_expired, t_invalid):
+        # Frequency reinforcement * temporal decay with invalidation masking.
+        if t_expired is not None:
+            return 0.0
+        if t_invalid is not None and t_now >= t_invalid:
+            return 0.0
+        if last_active is None:
+            last_active = 0
+        decay_rate = self._decay_rate_for_priority(priority)
+        return math.log(1 + c_valid) * math.exp(-decay_rate * (t_now - last_active))
+
+    def _build_event_frame(self, extracted, episode_content, current_time):
+        event_payload = extracted.get("event") or extracted
+        frame = EpisodicEventFrame.from_partial(event_payload, current_time)
+        if not frame.summary:
+            frame.summary = episode_content[:120]
+        if frame.time_range.start == 0:
+            frame.time_range.start = current_time
+        if frame.time_range.end == 0:
+            frame.time_range.end = current_time
+        if not frame.time_range.display_time_bucket:
+            frame.time_range.display_time_bucket = time_bucket_from_ts(current_time)
+        frame.last_active = current_time
+        return frame
+
+    def _serialize_event_fields(self, frame):
+        data = frame.to_db_fields()
+        return {
+            "summary": data["summary"],
+            "priority": data["priority"],
+            "participants": safe_json_dumps(data["participants"]),
+            "time_range": safe_json_dumps(data["time_range"]),
+            "location": safe_json_dumps(data["location"]),
+            "action": data["action"],
+            "causality": data["causality"],
+            "evidence": safe_json_dumps(data["evidence"]),
+            "consistency": data["consistency"],
+            "privacy_handling": data["privacy_handling"],
+            "last_active": data["last_active"],
+        }
+
+    def _merge_evidence(self, existing_raw, incoming):
+        existing = safe_json_loads(existing_raw, [])
+        merged = list(existing)
+        merged.extend(incoming)
+        return merged
+
+    def _ensure_user(self, user_id):
+        resp = self.conn.execute(
+            "MATCH (u:User {id: $id}) RETURN count(*)",
+            {"id": user_id},
+        )
+        exists = resp.has_next() and resp.get_next()[0] > 0
+        if not exists:
+            self.conn.execute("CREATE (:User {id: $id})", {"id": user_id})
+        return user_id
+
+    def _promote_permanent_trait(self, user_id, event_id, t_now):
+        self._ensure_user(user_id)
+        resp = self.conn.execute(
+            """
+            MATCH (u:User {id: $user_id})-[r:PERMANENT_TRAIT]->(e:Event {id: $event_id})
+            RETURN count(*)
+            """,
+            {"user_id": user_id, "event_id": event_id},
+        )
+        exists = resp.has_next() and resp.get_next()[0] > 0
+        if not exists:
+            self.conn.execute(
+                """
+                MATCH (u:User {id: $user_id}), (e:Event {id: $event_id})
+                CREATE (u)-[:PERMANENT_TRAIT {t_created: $t_created}]->(e)
+                """,
+                {"user_id": user_id, "event_id": event_id, "t_created": t_now},
+            )
+
+    def _prune_event_evidence(self, event_id):
+        resp = self.conn.execute(
+            "MATCH (e:Event {id: $id}) RETURN e.evidence",
+            {"id": event_id},
+        )
+        if not resp.has_next():
+            return
+        evidence_raw = resp.get_next()[0]
+        evidence = safe_json_loads(evidence_raw, [])
+        if not evidence:
+            return
+        sorted_items = sorted(
+            evidence,
+            key=lambda item: float(item.get("confidence", 0.0)),
+            reverse=True,
+        )
+        trimmed = sorted_items[:PRUNE_EVIDENCE_TOP_K]
+        self.conn.execute(
+            "MATCH (e:Event {id: $id}) SET e.evidence = $evidence",
+            {"id": event_id, "evidence": safe_json_dumps(trimmed)},
+        )
 
     def _ensure_entity(self, entity):
         # Entity is a symbol node; create if missing (simple existence check).
-        entity_id = entity["name"]
+        entity_id = entity.get("name") if isinstance(entity, dict) else str(entity)
+        if not entity_id:
+            return None
         resp = self.conn.execute(
             "MATCH (e:Entity {id: $id}) RETURN count(*)",
             {"id": entity_id},
@@ -82,7 +202,7 @@ class ResearchLTM:
         if not exists:
             self.conn.execute(
                 "CREATE (:Entity {id: $id, type: $type})",
-                {"id": entity_id, "type": entity["type"]},
+                {"id": entity_id, "type": entity.get("type", "UNKNOWN")},
             )
         return entity_id
 
@@ -127,7 +247,8 @@ class ResearchLTM:
 
         # === 2) Extract Event + Entities (LLM abstraction) ===
         extracted = self.extract_event_from_llm(episode_content)
-        summary = extracted["summary"]
+        frame = self._build_event_frame(extracted, episode_content, current_time)
+        summary = frame.summary
         entities = extracted.get("entities", [])
         print(f"🧠 Extracted Event: {summary}")
         print(f"🧩 Entities: {entities}")
@@ -139,22 +260,71 @@ class ResearchLTM:
             print(f"🔎 Top similarity: {sim:.4f} -> {best_summary}")
 
         # === 4) Consolidation: merge or create ===
+        event_fields = self._serialize_event_fields(frame)
+        incoming_evidence = frame.to_db_fields()["evidence"]
         if sim is not None and sim > SIMILARITY_THRESHOLD:
             print(f"🔍 Found existing memory: {best_summary}")
             event_id = best_id
 
-            # Refresh embedding for the existing event node.
+            existing_resp = self.conn.execute(
+                "MATCH (e:Event {id: $id}) RETURN e.evidence, e.priority",
+                {"id": event_id},
+            )
+            existing_evidence_raw = None
+            existing_priority = None
+            if existing_resp.has_next():
+                row = existing_resp.get_next()
+                existing_evidence_raw = row[0]
+                existing_priority = row[1]
+            merged_evidence = self._merge_evidence(existing_evidence_raw, incoming_evidence)
+            updated_priority = existing_priority or event_fields["priority"]
+            if self._decay_rate_for_priority(event_fields["priority"]) < self._decay_rate_for_priority(updated_priority):
+                updated_priority = event_fields["priority"]
+
+            # Refresh embedding and last_active for the existing event node.
             self.conn.execute(
-                "MATCH (e:Event {id: $id}) SET e.embedding = $embedding",
-                {"id": event_id, "embedding": embedding},
+                """
+                MATCH (e:Event {id: $id})
+                SET e.embedding = $embedding,
+                    e.last_active = $last_active,
+                    e.evidence = $evidence,
+                    e.priority = $priority
+                """,
+                {
+                    "id": event_id,
+                    "embedding": embedding,
+                    "last_active": event_fields["last_active"],
+                    "evidence": safe_json_dumps(merged_evidence),
+                    "priority": updated_priority,
+                },
             )
 
         else:
             print("🆕 Creating new memory...")
             event_id = hash_summary(summary)
             self.conn.execute(
-                "CREATE (:Event {id: $id, summary: $summary, embedding: $embedding})",
-                {"id": event_id, "summary": summary, "embedding": embedding},
+                """
+                CREATE (:Event {
+                    id: $id,
+                    summary: $summary,
+                    priority: $priority,
+                    participants: $participants,
+                    time_range: $time_range,
+                    location: $location,
+                    action: $action,
+                    causality: $causality,
+                    evidence: $evidence,
+                    consistency: $consistency,
+                    privacy_handling: $privacy_handling,
+                    last_active: $last_active,
+                    embedding: $embedding
+                })
+                """,
+                {
+                    "id": event_id,
+                    "embedding": embedding,
+                    **event_fields,
+                },
             )
 
         # === 5) Link Event -> Episode (provenance) ===
@@ -169,60 +339,58 @@ class ResearchLTM:
         # === 6) Update INVOLVES edges (core memory strength) ===
         for entity in entities:
             entity_id = self._ensure_entity(entity)
+            if not entity_id:
+                continue
             rel_resp = self.conn.execute(
                 """
                 MATCH (e:Event {id: $event_id})-[r:INVOLVES]->(en:Entity {id: $entity_id})
-                RETURN r.t_created, r.t_last_active, r.c_valid, r.weight
+                RETURN r.t_created, r.t_expired, r.t_valid, r.t_invalid, r.c_valid
                 """,
                 {"event_id": event_id, "entity_id": entity_id},
             )
             if rel_resp.has_next():
                 row = rel_resp.get_next()
-                c_valid_new = row[2] + 1
-                weight_new = self.calculate_weight(current_time, c_valid_new, current_time)
+                c_valid_new = (row[4] or 0) + 1
                 self.conn.execute(
                     """
                     MATCH (e:Event {id: $event_id})-[r:INVOLVES]->(en:Entity {id: $entity_id})
-                    SET r.t_last_active = $t_last,
-                        r.c_valid = $c_valid,
-                        r.weight = $weight
+                    SET r.t_valid = $t_valid,
+                        r.c_valid = $c_valid
                     """,
                     {
                         "event_id": event_id,
                         "entity_id": entity_id,
-                        "t_last": current_time,
+                        "t_valid": current_time,
                         "c_valid": c_valid_new,
-                        "weight": weight_new,
                     },
                 )
-                print(
-                    f"🔗 Updated INVOLVES {entity_id}: c_valid={c_valid_new}, "
-                    f"weight={weight_new:.4f}"
-                )
             else:
-                weight_init = self.calculate_weight(current_time, 1, current_time)
                 self.conn.execute(
                     """
                     MATCH (e:Event {id: $event_id}), (en:Entity {id: $entity_id})
                     CREATE (e)-[:INVOLVES {
                         t_created: $t_created,
-                        t_last_active: $t_last,
-                        c_valid: $c_valid,
-                        weight: $weight
+                        t_expired: $t_expired,
+                        t_valid: $t_valid,
+                        t_invalid: $t_invalid,
+                        c_valid: $c_valid
                     }]->(en)
                     """,
                     {
                         "event_id": event_id,
                         "entity_id": entity_id,
                         "t_created": current_time,
-                        "t_last": current_time,
+                        "t_expired": None,
+                        "t_valid": current_time,
+                        "t_invalid": None,
                         "c_valid": 1,
-                        "weight": weight_init,
                     },
                 )
-                print(
-                    f"🔗 New INVOLVES {entity_id}: c_valid=1, weight={weight_init:.4f}"
-                )
+                c_valid_new = 1
+
+            if c_valid_new > PRUNE_C_VALID_THRESHOLD:
+                self._prune_event_evidence(event_id)
+                self._promote_permanent_trait(DEFAULT_USER_ID, event_id, current_time)
 
         return event_id
 
@@ -231,17 +399,19 @@ class ResearchLTM:
         resp = self.conn.execute(
             """
             MATCH (e:Event {id: $event_id})-[r:INVOLVES]->(en:Entity)
-            RETURN e.summary, en.id, r.t_last_active, r.c_valid, r.weight
+            RETURN e.summary, en.id, e.priority, e.last_active, r.c_valid, r.t_expired, r.t_invalid
             """,
             {"event_id": event_id},
         )
         while resp.has_next():
             row = resp.get_next()
-            summary, entity_id, t_last, c_valid, stored_weight = row
-            decayed = self.calculate_weight(t_last, c_valid, current_time)
+            summary, entity_id, priority, last_active, c_valid, t_expired, t_invalid = row
+            decayed = self.calculate_weight(
+                last_active, c_valid or 0, current_time, priority, t_expired, t_invalid
+            )
             print(
                 f"📉 Decayed weight @t={current_time} | {summary} -> {entity_id} | "
-                f"stored={stored_weight:.4f}, decayed={decayed:.4f}"
+                f"decayed={decayed:.4f}"
             )
 
     def cleanup_ttl(self, current_time):

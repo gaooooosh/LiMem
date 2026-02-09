@@ -40,6 +40,16 @@ def init_db(conn):
         CREATE NODE TABLE IF NOT EXISTS Event(
             id STRING,
             summary STRING,
+            priority STRING,
+            participants STRING,
+            time_range STRING,
+            location STRING,
+            action STRING,
+            causality STRING,
+            evidence STRING,
+            consistency STRING,
+            privacy_handling STRING,
+            last_active INT64,
             embedding FLOAT[1536],
             PRIMARY KEY(id)
         )
@@ -56,12 +66,21 @@ def init_db(conn):
     )
     conn.execute(
         """
+        CREATE NODE TABLE IF NOT EXISTS User(
+            id STRING,
+            PRIMARY KEY(id)
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE REL TABLE IF NOT EXISTS INVOLVES(
             FROM Event TO Entity,
             t_created INT64,
-            t_last_active INT64,
-            c_valid INT64,
-            weight DOUBLE
+            t_expired INT64,
+            t_valid INT64,
+            t_invalid INT64,
+            c_valid INT64
         )
         """
     )
@@ -72,3 +91,34 @@ def init_db(conn):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE REL TABLE IF NOT EXISTS PERMANENT_TRAIT(
+            FROM User TO Event,
+            t_created INT64
+        )
+        """
+    )
+
+    # Best-effort migration for older databases.
+    for stmt in [
+        "ALTER TABLE Event ADD COLUMN priority STRING",
+        "ALTER TABLE Event ADD COLUMN participants STRING",
+        "ALTER TABLE Event ADD COLUMN time_range STRING",
+        "ALTER TABLE Event ADD COLUMN location STRING",
+        "ALTER TABLE Event ADD COLUMN action STRING",
+        "ALTER TABLE Event ADD COLUMN causality STRING",
+        "ALTER TABLE Event ADD COLUMN evidence STRING",
+        "ALTER TABLE Event ADD COLUMN consistency STRING",
+        "ALTER TABLE Event ADD COLUMN privacy_handling STRING",
+        "ALTER TABLE Event ADD COLUMN last_active INT64",
+        "ALTER TABLE INVOLVES ADD COLUMN t_expired INT64",
+        "ALTER TABLE INVOLVES ADD COLUMN t_valid INT64",
+        "ALTER TABLE INVOLVES ADD COLUMN t_invalid INT64",
+        "ALTER TABLE INVOLVES ADD COLUMN c_valid INT64",
+        "ALTER TABLE User ADD COLUMN id STRING",
+    ]:
+        try:
+            conn.execute(stmt)
+        except Exception:
+            continue
