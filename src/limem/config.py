@@ -36,7 +36,7 @@ TEST_DATASET_KEY = os.getenv("TEST_DATASET_KEY", "input_records_1_mock")
 MAX_EPISODES = int(os.getenv("MAX_EPISODES", "6"))
 
 # DB / storage.
-DB_PATH = os.getenv("DB_PATH", "./DB/database.kz")
+DB_PATH = os.getenv("DB_PATH", "./DB/demo_db.kz")
 
 # Visualization knobs.
 EXPORT_GRAPH = env_bool("EXPORT_GRAPH", True)

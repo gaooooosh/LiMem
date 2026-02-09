@@ -25,12 +25,23 @@ def run_demo():
 
     # 1) Load test episodes from example.json and process sequentially.
     episodes = load_test_episodes(TEST_DATA_PATH, TEST_DATASET_KEY, MAX_EPISODES)
-    print(
-        f"📦 Loaded {len(episodes)} episodes from {TEST_DATA_PATH} | {TEST_DATASET_KEY}"
-    )
+    dataset_counts = {}
+    for _, _, key in episodes:
+        dataset_counts[key] = dataset_counts.get(key, 0) + 1
+    if dataset_counts:
+        dataset_summary = ", ".join(
+            f"{key}={count}" for key, count in dataset_counts.items()
+        )
+        print(f"📦 Loaded {len(episodes)} episodes from {TEST_DATA_PATH} | {dataset_summary}")
+    else:
+        print(f"📦 Loaded 0 episodes from {TEST_DATA_PATH} | {TEST_DATASET_KEY}")
     last_event_id = None
     last_time = 0
-    for text, ts in episodes:
+    last_key = None
+    for text, ts, key in episodes:
+        if key != last_key:
+            print(f"📚 Dataset: {key}")
+            last_key = key
         last_event_id = ltm.process_new_episode(text, ts)
         last_time = ts
         if visualizer and EXPORT_EVERY_EPISODE and last_event_id:
