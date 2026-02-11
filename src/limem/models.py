@@ -10,33 +10,12 @@ from enum import Enum
 from typing import Any, Optional
 
 
-class Priority(str, Enum):
-    """Event priority levels determining decay rates.
-
-    P1: Permanent traits (no decay)
-    P2: Semi-permanent preferences (slow decay)
-    P3: Ephemeral events (fast decay)
-    """
-
-    P1 = "P1"
-    P2 = "P2"
-    P3 = "P3"
-
-
 class Consistency(str, Enum):
     """Internal consistency markers for event validation."""
 
     CONSISTENT = "consistent"
     INCONSISTENT = "inconsistent"
     UNCERTAIN = "uncertain"
-
-
-class PrivacyHandling(str, Enum):
-    """Privacy classification for event data."""
-
-    PUBLIC = "public"
-    SENSITIVE = "sensitive"
-    PRIVATE = "private"
 
 
 @dataclass
@@ -84,7 +63,6 @@ class EpisodicEventFrame:
 
     # Core semantic content
     summary: str = ""
-    priority: str = Priority.P3.value
 
     # Context metadata
     participants: list[dict] = field(default_factory=list)
@@ -98,7 +76,6 @@ class EpisodicEventFrame:
 
     # Validation metadata
     consistency: str = Consistency.CONSISTENT.value
-    privacy_handling: str = PrivacyHandling.PUBLIC.value
 
     # Temporal tracking
     last_active: int = 0  # Unix timestamp of last activation
@@ -161,7 +138,6 @@ class EpisodicEventFrame:
 
         return {
             "summary": self.summary,
-            "priority": self.priority,
             "participants": participants_data,
             "time_range": time_range_data,
             "location": location_data,
@@ -169,7 +145,6 @@ class EpisodicEventFrame:
             "causality": self.causality,
             "evidence": evidence_data,
             "consistency": self.consistency,
-            "privacy_handling": self.privacy_handling,
             "last_active": self.last_active,
         }
 
@@ -186,7 +161,6 @@ class EpisodicEventFrame:
         """
         return cls(
             summary=partial.get("summary", ""),
-            priority=partial.get("priority", Priority.P3.value),
             participants=partial.get("participants", []),
             time_range=partial.get("time_range", {}),
             location=partial.get("location", {}),
@@ -194,7 +168,6 @@ class EpisodicEventFrame:
             causality=partial.get("causality", ""),
             evidence=partial.get("evidence", []),
             consistency=partial.get("consistency", Consistency.CONSISTENT.value),
-            privacy_handling=partial.get("privacy_handling", PrivacyHandling.PUBLIC.value),
             last_active=partial.get("last_active", current_time),
         )
 
@@ -211,7 +184,6 @@ class RankedEvent:
     summary: str
     weight: float
     c_valid: int
-    priority: str
     t_valid: int
     t_expired: Optional[int]
     t_invalid: Optional[int]

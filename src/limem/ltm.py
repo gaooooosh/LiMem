@@ -9,8 +9,7 @@ from dashscope import Generation, TextEmbedding
 from .config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
-    DECAY_RATE_P2,
-    DECAY_RATE_P3,
+    DECAY_RATE,
     DEFAULT_USER_ID,
     ENABLE_THINKING,
     EMBEDDING_MODEL,
@@ -20,7 +19,7 @@ from .config import (
     PRUNE_EVIDENCE_TOP_K,
     SIMILARITY_THRESHOLD,
 )
-from .models import EpisodicEventFrame, Priority
+from .models import EpisodicEventFrame
 from .utils import (
     hash_summary,
     load_prompt,
@@ -78,18 +77,7 @@ class ResearchLTM:
             data = {"event": data, "entities": data.get("entities", [])}
         return data
 
-    def _decay_rate_for_priority(self, priority):
-        try:
-            normalized = Priority(priority)
-        except Exception:
-            normalized = Priority.P2
-        if normalized == Priority.P1:
-            return 0.0
-        if normalized == Priority.P2:
-            return DECAY_RATE_P2
-        return DECAY_RATE_P3
-
-    def calculate_weight(self, last_active, c_valid, t_now, priority, t_expired, t_invalid):
+    def calculate_weight(self, last_active, c_valid, t_now, t_expired, t_invalid):
         # Frequency reinforcement * temporal decay with invalidation masking.
         if t_expired is not None:
             return 0.0
@@ -97,8 +85,7 @@ class ResearchLTM:
             return 0.0
         if last_active is None:
             last_active = 0
-        decay_rate = self._decay_rate_for_priority(priority)
-        return math.log(1 + c_valid) * math.exp(-decay_rate * (t_now - last_active))
+        return math.log(1 + c_valid) * math.exp(-DECAY_RATE * (t_now - last_active))
 
     def _build_event_frame(self, extracted, episode_content, current_time):
         event_payload = extracted.get("event") or extracted
@@ -118,7 +105,6 @@ class ResearchLTM:
         data = frame.to_db_fields()
         return {
             "summary": data["summary"],
-            "priority": data["priority"],
             "participants": safe_json_dumps(data["participants"]),
             "time_range": safe_json_dumps(data["time_range"]),
             "location": safe_json_dumps(data["location"]),
@@ -126,7 +112,6 @@ class ResearchLTM:
             "causality": data["causality"],
             "evidence": safe_json_dumps(data["evidence"]),
             "consistency": data["consistency"],
-            "privacy_handling": data["privacy_handling"],
             "last_active": data["last_active"],
         }
 
@@ -267,19 +252,13 @@ class ResearchLTM:
             event_id = best_id
 
             existing_resp = self.conn.execute(
-                "MATCH (e:Event {id: $id}) RETURN e.evidence, e.priority",
+                "MATCH (e:Event {id: $id}) RETURN e.evidence",
                 {"id": event_id},
             )
             existing_evidence_raw = None
-            existing_priority = None
             if existing_resp.has_next():
-                row = existing_resp.get_next()
-                existing_evidence_raw = row[0]
-                existing_priority = row[1]
+                existing_evidence_raw = existing_resp.get_next()[0]
             merged_evidence = self._merge_evidence(existing_evidence_raw, incoming_evidence)
-            updated_priority = existing_priority or event_fields["priority"]
-            if self._decay_rate_for_priority(event_fields["priority"]) < self._decay_rate_for_priority(updated_priority):
-                updated_priority = event_fields["priority"]
 
             # Refresh embedding and last_active for the existing event node.
             self.conn.execute(
@@ -287,15 +266,13 @@ class ResearchLTM:
                 MATCH (e:Event {id: $id})
                 SET e.embedding = $embedding,
                     e.last_active = $last_active,
-                    e.evidence = $evidence,
-                    e.priority = $priority
+                    e.evidence = $evidence
                 """,
                 {
                     "id": event_id,
                     "embedding": embedding,
                     "last_active": event_fields["last_active"],
                     "evidence": safe_json_dumps(merged_evidence),
-                    "priority": updated_priority,
                 },
             )
 
@@ -307,7 +284,6 @@ class ResearchLTM:
                 CREATE (:Event {
                     id: $id,
                     summary: $summary,
-                    priority: $priority,
                     participants: $participants,
                     time_range: $time_range,
                     location: $location,
@@ -315,7 +291,6 @@ class ResearchLTM:
                     causality: $causality,
                     evidence: $evidence,
                     consistency: $consistency,
-                    privacy_handling: $privacy_handling,
                     last_active: $last_active,
                     embedding: $embedding
                 })
@@ -399,15 +374,15 @@ class ResearchLTM:
         resp = self.conn.execute(
             """
             MATCH (e:Event {id: $event_id})-[r:INVOLVES]->(en:Entity)
-            RETURN e.summary, en.id, e.priority, e.last_active, r.c_valid, r.t_expired, r.t_invalid
+            RETURN e.summary, en.id, e.last_active, r.c_valid, r.t_expired, r.t_invalid
             """,
             {"event_id": event_id},
         )
         while resp.has_next():
             row = resp.get_next()
-            summary, entity_id, priority, last_active, c_valid, t_expired, t_invalid = row
+            summary, entity_id, last_active, c_valid, t_expired, t_invalid = row
             decayed = self.calculate_weight(
-                last_active, c_valid or 0, current_time, priority, t_expired, t_invalid
+                last_active, c_valid or 0, current_time, t_expired, t_invalid
             )
             print(
                 f"📉 Decayed weight @t={current_time} | {summary} -> {entity_id} | "

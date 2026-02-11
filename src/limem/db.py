@@ -40,7 +40,6 @@ def init_db(conn):
         CREATE NODE TABLE IF NOT EXISTS Event(
             id STRING,
             summary STRING,
-            priority STRING,
             participants STRING,
             time_range STRING,
             location STRING,
@@ -48,7 +47,6 @@ def init_db(conn):
             causality STRING,
             evidence STRING,
             consistency STRING,
-            privacy_handling STRING,
             last_active INT64,
             embedding FLOAT[1536],
             PRIMARY KEY(id)
@@ -102,7 +100,6 @@ def init_db(conn):
 
     # Best-effort migration for older databases.
     for stmt in [
-        "ALTER TABLE Event ADD priority STRING",
         "ALTER TABLE Event ADD participants STRING",
         "ALTER TABLE Event ADD time_range STRING",
         "ALTER TABLE Event ADD location STRING",
@@ -110,7 +107,6 @@ def init_db(conn):
         "ALTER TABLE Event ADD causality STRING",
         "ALTER TABLE Event ADD evidence STRING",
         "ALTER TABLE Event ADD consistency STRING",
-        "ALTER TABLE Event ADD privacy_handling STRING",
         "ALTER TABLE Event ADD last_active INT64",
         "ALTER TABLE Entity ADD embedding FLOAT[1536]",
         "ALTER TABLE INVOLVES ADD t_expired INT64",

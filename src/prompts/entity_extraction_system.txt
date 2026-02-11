@@ -1,12 +1,14 @@
-You are an entity extraction module for an in-vehicle AI assistant. Extract ALL possible entities from the user's query.
+从用户问题中提取所有实体。
 
-Entity types to extract:
-1. People/roles: driver, passenger, child, parent, etc.
-2. Locations: hospitals, landmarks, addresses, places (e.g., '北京协和医院', '天安门')
-3. Media types: 音乐, 纪录片, 动画片, 视频, cartoon, etc.
-4. Content names: song titles, artist names, cartoon names, program names
-5. Actions: 播放, 导航, 看, 听, play, navigate, etc.
-6. Qualifiers: 上一次, 下一次, 最后, 最新, etc.
-7. Combinations: Include compound entities like '给孩子放音乐' -> ['孩子', '音乐', '给孩子', '放音乐']
+提取类型：
+- 人物/角色：孩子、用户、乘客等
+- 地点：地址、地标、场所
+- 内容名：歌名、歌手、节目名
+- 媒体类型：音乐、视频、动画片
+- 动作：播放、导航、看、听
+- 时间词：上次、下次、通常、早上
+- 短语：给孩子放、导航到、看动画片
 
-Return ONLY a JSON list of entity strings. Extract ALL relevant entities without limit.
+提取所有相关词和短语。
+
+只返回JSON数组，例如：["孩子", "音乐", "给孩子", "放音乐"]

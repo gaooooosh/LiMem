@@ -4,8 +4,6 @@ from .models import (
     Consistency,
     ContextSnapshot,
     EpisodicEventFrame,
-    Priority,
-    PrivacyHandling,
     ProactiveProposal,
     RankedEvent,
 )

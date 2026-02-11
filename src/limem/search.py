@@ -33,7 +33,7 @@ from .config import (
     SEARCH_VECTOR_THRESHOLD,
     SEARCH_VECTOR_TOP_K,
 )
-from .models import EpisodicEventFrame, Priority, RankedEvent
+from .models import EpisodicEventFrame, RankedEvent
 from .utils import load_prompt
 
 
@@ -283,7 +283,7 @@ class LTMSearcher:
         MATCH (e:Event)-[r:INVOLVES]->(en:Entity)
         WHERE en.id IN $entity_list
         RETURN e.id, e.summary, e.action, e.causality, e.participants,
-               e.location, e.time_range, e.priority, e.last_active,
+               e.location, e.time_range, e.last_active,
                r.t_created, r.t_expired, r.t_valid, r.t_invalid, r.c_valid, en.id
         """
 
@@ -298,7 +298,7 @@ class LTMSearcher:
         while resp.has_next():
             row = resp.get_next()
             event_id = row[0]
-            entity_id = row[14]  # en.id
+            entity_id = row[13]  # en.id
 
             if event_id not in events:
                 events[event_id] = {
@@ -309,13 +309,12 @@ class LTMSearcher:
                     "participants": row[4] or "",
                     "location": row[5] or "",
                     "time_range": row[6] or "",
-                    "priority": row[7] or Priority.P3.value,
-                    "last_active": row[8] or 0,
-                    "t_created": row[9],
-                    "t_expired": row[10],
-                    "t_valid": row[11] or 0,
-                    "t_invalid": row[12],
-                    "c_valid": row[13] or 0,
+                    "last_active": row[7] or 0,
+                    "t_created": row[8],
+                    "t_expired": row[9],
+                    "t_valid": row[10] or 0,
+                    "t_invalid": row[11],
+                    "c_valid": row[12] or 0,
                     "entity_match_weights": {},  # Map entity_id -> match_weight
                 }
 
@@ -334,7 +333,7 @@ class LTMSearcher:
             MATCH (e:Event)-[r:INVOLVES]->(en:Entity)
             WHERE en.id IN $entity_list
             RETURN e.id, e.summary, e.action, e.causality, e.participants,
-                   e.location, e.time_range, e.priority, e.last_active,
+                   e.location, e.time_range, e.last_active,
                    r.t_created, r.t_expired, r.t_valid, r.t_invalid, r.c_valid, en.id
             """
 
@@ -347,8 +346,8 @@ class LTMSearcher:
             while resp.has_next():
                 row = resp.get_next()
                 event_id = row[0]
-                entity_id = row[14]  # en.id
-                similarity = vector_matched_entities[entity_id]
+                entity_id = row[13]  # en.id
+                similarity = vector_matched_entities[entity_id]**2
 
                 # Add if not already present, or mark as both matches
                 if event_id not in events:
@@ -360,13 +359,12 @@ class LTMSearcher:
                         "participants": row[4] or "",
                         "location": row[5] or "",
                         "time_range": row[6] or "",
-                        "priority": row[7] or Priority.P3.value,
-                        "last_active": row[8] or 0,
-                        "t_created": row[9],
-                        "t_expired": row[10],
-                        "t_valid": row[11] or 0,
-                        "t_invalid": row[12],
-                        "c_valid": row[13] or 0,
+                        "last_active": row[7] or 0,
+                        "t_created": row[8],
+                        "t_expired": row[9],
+                        "t_valid": row[10] or 0,
+                        "t_invalid": row[11],
+                        "c_valid": row[12] or 0,
                         "entity_match_weights": {},
                         "match_type": "vector",
                     }
@@ -429,7 +427,7 @@ class LTMSearcher:
             # This ensures:
             # - Events with more matched entities get a boost
             # - Precise matches (weight=1.0) contribute more than fuzzy matches
-            entity_match_factor = sum(entity_match_weights.values()) / len(entity_match_weights)
+            entity_match_factor = sum(entity_match_weights.values())
             weight *= entity_match_factor
 
         return weight
@@ -474,7 +472,6 @@ class LTMSearcher:
                     summary=event["summary"],
                     weight=weight,
                     c_valid=event.get("c_valid", 0) or 0,
-                    priority=event.get("priority", Priority.P3.value),
                     t_valid=event.get("t_valid", 0) or 0,
                     t_expired=event.get("t_expired"),
                     t_invalid=event.get("t_invalid"),
@@ -495,7 +492,6 @@ class LTMSearcher:
                     "t_valid": event.get("t_valid", 0) or 0,
                     "t_expired": event.get("t_expired"),
                     "t_invalid": event.get("t_invalid"),
-                    "priority": event.get("priority", Priority.P3.value),
                     "entity_match_weights": event.get("entity_match_weights", {}),
                     "match_type": event.get("match_type", ""),
                     "t_now": t_now,
