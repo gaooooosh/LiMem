@@ -172,6 +172,7 @@ def print_detailed_search_result(query: str, result: dict, conn):
     print("\n💬 Generated Answer")
     print("-" * 80)
     print(result.get('answer', '(No answer generated)'))
+    print("-" * 80)
     print(f"【查询Query】\"{query}\"")
     print("\n" + "=" * 80)
 

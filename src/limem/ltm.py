@@ -46,9 +46,9 @@ class ResearchLTM:
         return output.embeddings[0].embedding
 
     def extract_event_from_llm(self, episode_text):
-        # Abstraction step: turn a raw episode into a single event + entities.
-        system_msg = load_prompt("extract_event_system.txt")
-        user_msg = load_prompt("extract_event_user.txt").format(
+        # Step 1: Extract event information only (no entities)
+        system_msg = load_prompt("extract_event_only_system.txt")
+        user_msg = load_prompt("extract_event_only_user.txt").format(
             episode_text=episode_text
         )
         if ENABLE_THINKING:
@@ -73,9 +73,41 @@ class ResearchLTM:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         data = json.loads(raw)
-        if "event" not in data and "summary" in data:
-            data = {"event": data, "entities": data.get("entities", [])}
+        # Return event data directly
         return data
+
+    def extract_entities_from_llm(self, episode_text):
+        # Step 2: Extract entities separately
+        system_msg = load_prompt("extract_entities_only_system.txt")
+        user_msg = load_prompt("extract_entities_only_user.txt").format(
+            episode_text=episode_text
+        )
+        if ENABLE_THINKING:
+            print("⚠️ enable_thinking requires stream call; ignoring in non-stream mode.")
+        resp = Generation.call(
+            api_key=dashscope.api_key,
+            model=GENERATION_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            result_format="message",
+            enable_thinking=ENABLE_THINKING,
+        )
+        if resp.status_code != 200:
+            print(f"⚠️ LLM call failed: status={resp.status_code}")
+            print(f"⚠️ code={resp.code} message={resp.message}")
+            raise ValueError("LLM call failed. Check model name and API key.")
+        output = resp.output
+        content = output.choices[0].message.content
+        raw = content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        entities = json.loads(raw)
+        # Ensure entities is a list
+        if not isinstance(entities, list):
+            entities = []
+        return entities
 
     def calculate_weight(self, last_active, c_valid, t_now, t_expired, t_invalid):
         # Frequency reinforcement * temporal decay with invalidation masking.
@@ -230,21 +262,23 @@ class ResearchLTM:
         )
         print(f"📝 Saved Episode: {episode_id} at t={current_time}")
 
-        # === 2) Extract Event + Entities (LLM abstraction) ===
-        extracted = self.extract_event_from_llm(episode_content)
-        frame = self._build_event_frame(extracted, episode_content, current_time)
+        # === 2) Extract Event (LLM abstraction - Step 1) ===
+        event_data = self.extract_event_from_llm(episode_content)
+        frame = self._build_event_frame(event_data, episode_content, current_time)
         summary = frame.summary
-        entities = extracted.get("entities", [])
         print(f"🧠 Extracted Event: {summary}")
+
+        # === 3) Extract Entities (LLM abstraction - Step 2) ===
+        entities = self.extract_entities_from_llm(episode_content)
         print(f"🧩 Entities: {entities}")
 
-        # === 3) Recall: embed + vector search ===
+        # === 4) Recall: embed + vector search ===
         embedding = self.get_embedding(summary)
         best_id, best_summary, sim = self._find_most_similar_event(embedding)
         if sim is not None:
             print(f"🔎 Top similarity: {sim:.4f} -> {best_summary}")
 
-        # === 4) Consolidation: merge or create ===
+        # === 5) Consolidation: merge or create ===
         event_fields = self._serialize_event_fields(frame)
         incoming_evidence = frame.to_db_fields()["evidence"]
         if sim is not None and sim > SIMILARITY_THRESHOLD:
@@ -302,7 +336,7 @@ class ResearchLTM:
                 },
             )
 
-        # === 5) Link Event -> Episode (provenance) ===
+        # === 6) Link Event -> Episode (provenance) ===
         self.conn.execute(
             """
             MATCH (e:Event {id: $event_id}), (ep:Episode {id: $episode_id})
@@ -311,7 +345,7 @@ class ResearchLTM:
             {"event_id": event_id, "episode_id": episode_id},
         )
 
-        # === 6) Update INVOLVES edges (core memory strength) ===
+        # === 7) Update INVOLVES edges (core memory strength) ===
         for entity in entities:
             entity_id = self._ensure_entity(entity)
             if not entity_id:
