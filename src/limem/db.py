@@ -102,21 +102,22 @@ def init_db(conn):
 
     # Best-effort migration for older databases.
     for stmt in [
-        "ALTER TABLE Event ADD COLUMN priority STRING",
-        "ALTER TABLE Event ADD COLUMN participants STRING",
-        "ALTER TABLE Event ADD COLUMN time_range STRING",
-        "ALTER TABLE Event ADD COLUMN location STRING",
-        "ALTER TABLE Event ADD COLUMN action STRING",
-        "ALTER TABLE Event ADD COLUMN causality STRING",
-        "ALTER TABLE Event ADD COLUMN evidence STRING",
-        "ALTER TABLE Event ADD COLUMN consistency STRING",
-        "ALTER TABLE Event ADD COLUMN privacy_handling STRING",
-        "ALTER TABLE Event ADD COLUMN last_active INT64",
-        "ALTER TABLE INVOLVES ADD COLUMN t_expired INT64",
-        "ALTER TABLE INVOLVES ADD COLUMN t_valid INT64",
-        "ALTER TABLE INVOLVES ADD COLUMN t_invalid INT64",
-        "ALTER TABLE INVOLVES ADD COLUMN c_valid INT64",
-        "ALTER TABLE User ADD COLUMN id STRING",
+        "ALTER TABLE Event ADD priority STRING",
+        "ALTER TABLE Event ADD participants STRING",
+        "ALTER TABLE Event ADD time_range STRING",
+        "ALTER TABLE Event ADD location STRING",
+        "ALTER TABLE Event ADD action STRING",
+        "ALTER TABLE Event ADD causality STRING",
+        "ALTER TABLE Event ADD evidence STRING",
+        "ALTER TABLE Event ADD consistency STRING",
+        "ALTER TABLE Event ADD privacy_handling STRING",
+        "ALTER TABLE Event ADD last_active INT64",
+        "ALTER TABLE Entity ADD embedding FLOAT[1536]",
+        "ALTER TABLE INVOLVES ADD t_expired INT64",
+        "ALTER TABLE INVOLVES ADD t_valid INT64",
+        "ALTER TABLE INVOLVES ADD t_invalid INT64",
+        "ALTER TABLE INVOLVES ADD c_valid INT64",
+        "ALTER TABLE User ADD id STRING",
     ]:
         try:
             conn.execute(stmt)

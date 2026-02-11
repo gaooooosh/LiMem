@@ -21,7 +21,13 @@ from .config import (
     SIMILARITY_THRESHOLD,
 )
 from .models import EpisodicEventFrame, Priority
-from .utils import hash_summary, safe_json_dumps, safe_json_loads, time_bucket_from_ts
+from .utils import (
+    hash_summary,
+    load_prompt,
+    safe_json_dumps,
+    safe_json_loads,
+    time_bucket_from_ts,
+)
 
 
 class ResearchLTM:
@@ -42,18 +48,10 @@ class ResearchLTM:
 
     def extract_event_from_llm(self, episode_text):
         # Abstraction step: turn a raw episode into a single event + entities.
-        system_msg = (
-            "You are an information extraction module. "
-            "Return ONLY JSON with keys: event, entities. "
-            "event schema: {summary, priority, participants, time_range, location, "
-            "action, causality, evidence, consistency, privacy_handling}. "
-            "participants is a list of {role, seat}. "
-            "time_range is {start, end, display_time_bucket}. "
-            "location is {geo_context, digital_context}. "
-            "evidence is a list of {source, snippet, timestamp, confidence}. "
-            "Each entity has: {\"name\": \"...\", \"type\": \"...\"}."
+        system_msg = load_prompt("extract_event_system.txt")
+        user_msg = load_prompt("extract_event_user.txt").format(
+            episode_text=episode_text
         )
-        user_msg = f"Text: {episode_text}\nOutput JSON:"
         if ENABLE_THINKING:
             print("⚠️ enable_thinking requires stream call; ignoring in non-stream mode.")
         resp = Generation.call(
@@ -107,12 +105,12 @@ class ResearchLTM:
         frame = EpisodicEventFrame.from_partial(event_payload, current_time)
         if not frame.summary:
             frame.summary = episode_content[:120]
-        if frame.time_range.start == 0:
-            frame.time_range.start = current_time
-        if frame.time_range.end == 0:
-            frame.time_range.end = current_time
-        if not frame.time_range.display_time_bucket:
-            frame.time_range.display_time_bucket = time_bucket_from_ts(current_time)
+        if frame.time_range.get("start", 0) == 0:
+            frame.time_range["start"] = current_time
+        if frame.time_range.get("end", 0) == 0:
+            frame.time_range["end"] = current_time
+        if not frame.time_range.get("display_time_bucket", ""):
+            frame.time_range["display_time_bucket"] = time_bucket_from_ts(current_time)
         frame.last_active = current_time
         return frame
 
@@ -200,9 +198,11 @@ class ResearchLTM:
         )
         exists = resp.has_next() and resp.get_next()[0] > 0
         if not exists:
+            # Generate embedding for the entity
+            embedding = self.get_embedding(entity_id)
             self.conn.execute(
-                "CREATE (:Entity {id: $id, type: $type})",
-                {"id": entity_id, "type": entity.get("type", "UNKNOWN")},
+                "CREATE (:Entity {id: $id, type: $type, embedding: $embedding})",
+                {"id": entity_id, "type": entity.get("type", "UNKNOWN"), "embedding": embedding},
             )
         return entity_id
 

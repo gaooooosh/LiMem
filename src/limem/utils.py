@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import hashlib
 import json
+import os
 from datetime import datetime
 
 
@@ -38,3 +39,29 @@ def time_bucket_from_ts(ts):
     if 18 <= hour < 23:
         return "evening"
     return "night"
+
+
+def load_prompt(prompt_name):
+    """Load prompt content from prompts directory.
+
+    Args:
+        prompt_name: Name of the prompt file (e.g., 'extract_event_system.txt')
+
+    Returns:
+        Prompt content as string, or empty string if file not found.
+    """
+    # Get the directory where this utils.py file is located
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # Build path to prompts directory (sibling to limem directory)
+    prompts_dir = os.path.join(os.path.dirname(current_dir), "prompts")
+    prompt_path = os.path.join(prompts_dir, prompt_name)
+
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print(f"⚠️ Prompt file not found: {prompt_path}")
+        return ""
+    except Exception as e:
+        print(f"⚠️ Error reading prompt file {prompt_path}: {e}")
+        return ""

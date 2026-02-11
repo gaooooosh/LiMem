@@ -26,6 +26,26 @@ PRUNE_C_VALID_THRESHOLD = int(os.getenv("PRUNE_C_VALID_THRESHOLD", "100"))
 PRUNE_EVIDENCE_TOP_K = int(os.getenv("PRUNE_EVIDENCE_TOP_K", "5"))
 DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "default_user")
 
+# =========================
+# Search/Retrieval Parameters
+# =========================
+# Top-K events to return from search
+SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "5"))
+# Weight decay rate for search (lambda parameter)
+SEARCH_LAMBDA = float(os.getenv("SEARCH_LAMBDA", "1e-9"))
+# Maximum entities to extract from query
+SEARCH_MAX_ENTITIES = int(os.getenv("SEARCH_MAX_ENTITIES", "10"))
+# LLM generation max tokens for answer
+SEARCH_MAX_TOKENS = int(os.getenv("SEARCH_MAX_TOKENS", "512"))
+# LLM temperature for answer generation
+SEARCH_TEMPERATURE = float(os.getenv("SEARCH_TEMPERATURE", "0.7"))
+# Enable vector similarity matching for entities
+SEARCH_ENABLE_VECTOR_MATCH = env_bool("SEARCH_ENABLE_VECTOR_MATCH", True)
+# Minimum similarity threshold for vector match
+SEARCH_VECTOR_THRESHOLD = float(os.getenv("SEARCH_VECTOR_THRESHOLD", "0.5"))
+# Top-K similar entities to retrieve via vector
+SEARCH_VECTOR_TOP_K = int(os.getenv("SEARCH_VECTOR_TOP_K", "10"))
+
 # Dashscope / Aliyun settings.
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_BASE_URL = os.getenv(
