@@ -530,13 +530,16 @@ class LTMSearcher:
 
         # Format events as context
         events_context = []
-        for i, event in enumerate(events, 1):
+        for i, event in enumerate(events):
             event_info = f"事件 {i} (权重: {event.weight:.4f}, 确认次数: {event.c_valid}):\n"
             event_info += f"- 摘要: {event.summary}\n"
             if event.action:
                 event_info += f"- 动作: {event.action}\n"
             if event.causality:
                 event_info += f"- 因果: {event.causality}\n"
+            if event.time_range:
+                event_info += f"- 时间: {event.time_range}\n"
+
             events_context.append(event_info)
 
         events_str = "\n".join(events_context)
@@ -547,7 +550,6 @@ class LTMSearcher:
             events_context=events_str,
             query=query
         )
-
         resp = Generation.call(
             api_key=dashscope.api_key,
             model=GENERATION_MODEL,
