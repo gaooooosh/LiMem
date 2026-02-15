@@ -23,6 +23,7 @@ from .models import EpisodicEventFrame
 from .utils import (
     hash_summary,
     load_prompt,
+    robust_json_loads,
     safe_json_dumps,
     safe_json_loads,
     time_bucket_from_ts,
@@ -69,10 +70,9 @@ class ResearchLTM:
             raise ValueError("LLM call failed. Check model name and API key.")
         output = resp.output
         content = output.choices[0].message.content
-        raw = content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        data = json.loads(raw)
+        data = robust_json_loads(content, {})
+        if not data or not isinstance(data, dict):
+            raise ValueError(f"Failed to parse event data from LLM output: {content[:200]}")
         # Return event data directly
         return data
 
@@ -100,10 +100,7 @@ class ResearchLTM:
             raise ValueError("LLM call failed. Check model name and API key.")
         output = resp.output
         content = output.choices[0].message.content
-        raw = content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        entities = json.loads(raw)
+        entities = robust_json_loads(content, [])
         # Ensure entities is a list
         if not isinstance(entities, list):
             entities = []

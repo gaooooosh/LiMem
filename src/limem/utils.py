@@ -28,6 +28,57 @@ def safe_json_loads(raw, default):
         return default
 
 
+def robust_json_loads(raw, default=None):
+    """Robust JSON parser that handles LLM output with extra text.
+
+    Args:
+        raw: Raw string that may contain JSON with extra text
+        default: Default value if parsing fails completely
+
+    Returns:
+        Parsed JSON object or default value
+    """
+    if raw is None or raw == "":
+        return default
+
+    # Remove markdown code blocks
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.split("\n", 1)
+        if len(lines) > 1:
+            text = lines[1]
+        if "```" in text:
+            text = text.rsplit("```", 1)[0].strip()
+
+    # Try direct parsing first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to extract JSON object/array from text
+    import re
+
+    # Try to find JSON object {...}
+    obj_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+    if obj_match:
+        try:
+            return json.loads(obj_match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # Try to find JSON array [...]
+    arr_match = re.search(r'\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]', text, re.DOTALL)
+    if arr_match:
+        try:
+            return json.loads(arr_match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # All attempts failed
+    return default
+
+
 def time_bucket_from_ts(ts):
     if ts <= 0:
         return ""
