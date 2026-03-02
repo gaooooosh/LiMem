@@ -348,6 +348,14 @@
             border-radius: 8px;
             margin-bottom: 8px;
             border-left: 3px solid var(--primary-color);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .event-item:hover {
+            background: #f1f5f9;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            transform: translateX(2px);
         }
 
         .event-item:last-child {
@@ -394,6 +402,261 @@
             display: flex;
             align-items: center;
             gap: 4px;
+        }
+
+        .event-click-hint {
+            font-size: 0.65rem;
+            color: var(--text-secondary);
+            opacity: 0;
+            transition: opacity 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-top: 8px;
+        }
+
+        .event-item:hover .event-click-hint {
+            opacity: 1;
+        }
+
+        /* 弹窗样式 */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .modal-overlay.hidden {
+            display: none;
+        }
+
+        .modal {
+            background: var(--card-bg);
+            border-radius: 16px;
+            width: 90%;
+            max-width: 700px;
+            max-height: 85vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .modal-header {
+            padding: 20px 24px;
+            background: linear-gradient(135deg, var(--primary-color), #6366f1);
+            color: white;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        .modal-header-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .modal-title {
+            font-size: 0.8rem;
+            opacity: 0.9;
+            margin-bottom: 4px;
+            font-family: monospace;
+        }
+
+        .modal-summary {
+            font-size: 1.1rem;
+            font-weight: 600;
+            line-height: 1.4;
+        }
+
+        .modal-close {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+
+        .modal-close:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .modal-body {
+            padding: 20px 24px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .modal-section {
+            margin-bottom: 20px;
+        }
+
+        .modal-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .modal-section-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .modal-section-title svg {
+            width: 14px;
+            height: 14px;
+        }
+
+        .field-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        .field-item {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+        }
+
+        .field-item.full-width {
+            grid-column: span 2;
+        }
+
+        .field-label {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .field-value {
+            font-size: 0.9rem;
+            color: var(--text-primary);
+            word-break: break-word;
+        }
+
+        .field-value.mono {
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+
+        .field-value.json {
+            background: #1e293b;
+            color: #e2e8f0;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .weight-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .weight-badge.high {
+            background: #dcfce7;
+            color: #15803d;
+        }
+
+        .weight-badge.medium {
+            background: #fef3c7;
+            color: #b45309;
+        }
+
+        .weight-badge.low {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .entity-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .entity-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: #e0e7ff;
+            color: #3730a3;
+            border-radius: 20px;
+            font-size: 0.8rem;
+        }
+
+        .entity-chip .weight {
+            background: rgba(0, 0, 0, 0.1);
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+        }
+
+        .status-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .status-badge {
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .status-badge.valid {
+            background: #dcfce7;
+            color: #15803d;
+        }
+
+        .status-badge.expired {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .status-badge.invalid {
+            background: #fef3c7;
+            color: #b45309;
         }
 
         /* 调试详情 */
@@ -659,6 +922,26 @@
         </div>
     </div>
 
+    <!-- 事件详情弹窗 -->
+    <div class="modal-overlay hidden" id="eventModal" onclick="closeModalOnOverlay(event)">
+        <div class="modal">
+            <div class="modal-header">
+                <div class="modal-header-content">
+                    <div class="modal-title" id="modalEventId">Event ID</div>
+                    <div class="modal-summary" id="modalSummary">Event Summary</div>
+                </div>
+                <button class="modal-close" onclick="closeModal()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- 动态填充 -->
+            </div>
+        </div>
+    </div>
+
     <script>
         // 状态管理
         let isLoading = false;
@@ -895,7 +1178,7 @@
                         </div>
                         <div class="card-body">
                             ${data.top_k_events.map((event, idx) => `
-                                <div class="event-item">
+                                <div class="event-item" onclick='showEventDetail(${JSON.stringify(event).replace(/'/g, "&#39;")})'>
                                     <div class="event-header">
                                         <span class="event-id">#${idx + 1} ${event.event_id}</span>
                                         <span class="event-weight">${event.weight.toFixed(4)}</span>
@@ -907,7 +1190,13 @@
                                             <strong>${event.c_valid}</strong>
                                         </div>
                                         ${event.action ? `<div class="event-meta-item"><span>动作:</span><strong>${escapeHtml(event.action)}</strong></div>` : ''}
-                                        ${event.location ? `<div class="event-meta-item"><span>位置:</span><strong>${escapeHtml(JSON.stringify(event.location))}</strong></div>` : ''}
+                                        ${event.location ? `<div class="event-meta-item"><span>位置:</span><strong>${escapeHtml(typeof event.location === 'string' ? event.location : JSON.stringify(event.location))}</strong></div>` : ''}
+                                    </div>
+                                    <div class="event-click-hint">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"/>
+                                        </svg>
+                                        点击查看详情
                                     </div>
                                 </div>
                             `).join('')}
@@ -1011,6 +1300,238 @@
             div.textContent = text;
             return div.innerHTML;
         }
+
+        // 显示事件详情弹窗
+        function showEventDetail(event) {
+            const modal = document.getElementById('eventModal');
+            const modalEventId = document.getElementById('modalEventId');
+            const modalSummary = document.getElementById('modalSummary');
+            const modalBody = document.getElementById('modalBody');
+
+            // 设置标题
+            modalEventId.textContent = event.event_id || 'Unknown';
+            modalSummary.textContent = event.summary || '无摘要';
+
+            // 获取权重级别
+            const getWeightClass = (weight) => {
+                if (weight >= 0.5) return 'high';
+                if (weight >= 0.1) return 'medium';
+                return 'low';
+            };
+
+            // 格式化时间戳
+            const formatTimestamp = (ts) => {
+                if (!ts) return '无';
+                const date = new Date(ts * 1000);
+                return date.toLocaleString('zh-CN');
+            };
+
+            // 安全解析JSON
+            const safeParseObj = (obj) => {
+                if (!obj) return null;
+                if (typeof obj === 'string') {
+                    try {
+                        return JSON.parse(obj);
+                    } catch {
+                        return obj;
+                    }
+                }
+                return obj;
+            };
+
+            // 格式化JSON显示
+            const formatJsonDisplay = (obj) => {
+                if (!obj) return '<span style="color: #94a3b8;">无</span>';
+                const parsed = safeParseObj(obj);
+                if (typeof parsed === 'string') return escapeHtml(parsed);
+                return `<div class="field-value json">${escapeHtml(JSON.stringify(parsed, null, 2))}</div>`;
+            };
+
+            // 构建弹窗内容
+            let bodyHtml = '';
+
+            // 权重与状态
+            bodyHtml += `
+                <div class="modal-section">
+                    <div class="modal-section-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        权重与状态
+                    </div>
+                    <div class="status-badges" style="margin-bottom: 12px;">
+                        <span class="weight-badge ${getWeightClass(event.weight)}">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                            </svg>
+                            权重: ${event.weight ? event.weight.toFixed(6) : '0'}
+                        </span>
+                        <span class="status-badge ${event.t_expired ? 'expired' : event.t_invalid ? 'invalid' : 'valid'}">
+                            ${event.t_expired ? '已过期' : event.t_invalid ? '已失效' : '有效'}
+                        </span>
+                        ${event.c_valid ? `<span class="status-badge valid">确认次数: ${event.c_valid}</span>` : ''}
+                    </div>
+                    <div class="field-grid">
+                        <div class="field-item">
+                            <div class="field-label">c_valid (确认次数)</div>
+                            <div class="field-value mono">${event.c_valid || 0}</div>
+                        </div>
+                        <div class="field-item">
+                            <div class="field-label">t_valid (有效时间)</div>
+                            <div class="field-value mono">${formatTimestamp(event.t_valid)}</div>
+                        </div>
+                        <div class="field-item">
+                            <div class="field-label">t_expired (过期时间)</div>
+                            <div class="field-value mono">${event.t_expired ? formatTimestamp(event.t_expired) : '无'}</div>
+                        </div>
+                        <div class="field-item">
+                            <div class="field-label">t_invalid (失效时间)</div>
+                            <div class="field-value mono">${event.t_invalid ? formatTimestamp(event.t_invalid) : '无'}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // 事件语义
+            bodyHtml += `
+                <div class="modal-section">
+                    <div class="modal-section-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                        </svg>
+                        事件语义
+                    </div>
+                    <div class="field-grid">
+                        <div class="field-item full-width">
+                            <div class="field-label">摘要 (Summary)</div>
+                            <div class="field-value">${escapeHtml(event.summary || '无')}</div>
+                        </div>
+                        <div class="field-item">
+                            <div class="field-label">动作 (Action)</div>
+                            <div class="field-value">${escapeHtml(event.action || '无')}</div>
+                        </div>
+                        <div class="field-item">
+                            <div class="field-label">因果 (Causality)</div>
+                            <div class="field-value">${escapeHtml(event.causality || '无')}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // 参与者与位置
+            const participants = safeParseObj(event.participants);
+            const location = safeParseObj(event.location);
+            const timeRange = safeParseObj(event.time_range);
+
+            bodyHtml += `
+                <div class="modal-section">
+                    <div class="modal-section-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                            <path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                        上下文信息
+                    </div>
+                    <div class="field-grid">
+                        <div class="field-item">
+                            <div class="field-label">参与者 (Participants)</div>
+                            <div class="field-value">${formatJsonDisplay(participants)}</div>
+                        </div>
+                        <div class="field-item">
+                            <div class="field-label">位置 (Location)</div>
+                            <div class="field-value">${formatJsonDisplay(location)}</div>
+                        </div>
+                        <div class="field-item full-width">
+                            <div class="field-label">时间范围 (Time Range)</div>
+                            <div class="field-value">${formatJsonDisplay(timeRange)}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // 实体匹配权重
+            if (event.entity_match_weights && Object.keys(event.entity_match_weights).length > 0) {
+                bodyHtml += `
+                    <div class="modal-section">
+                        <div class="modal-section-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/>
+                            </svg>
+                            匹配的实体权重
+                        </div>
+                        <div class="entity-list">
+                            ${Object.entries(event.entity_match_weights).map(([entity, weight]) => `
+                                <span class="entity-chip">
+                                    ${escapeHtml(entity)}
+                                    <span class="weight">${typeof weight === 'number' ? weight.toFixed(3) : weight}</span>
+                                </span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 匹配类型
+            if (event.match_type) {
+                bodyHtml += `
+                    <div class="modal-section">
+                        <div class="modal-section-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                            </svg>
+                            匹配信息
+                        </div>
+                        <div class="field-grid">
+                            <div class="field-item">
+                                <div class="field-label">匹配类型 (Match Type)</div>
+                                <div class="field-value">
+                                    <span class="status-badge ${event.match_type === 'exact' ? 'valid' : event.match_type === 'vector' ? 'invalid' : 'valid'}">
+                                        ${event.match_type === 'exact' ? '精确匹配' : event.match_type === 'vector' ? '向量匹配' : event.match_type === 'both' ? '混合匹配' : event.match_type}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 原始数据
+            bodyHtml += `
+                <div class="modal-section">
+                    <div class="modal-section-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
+                        </svg>
+                        原始数据 (JSON)
+                    </div>
+                    <div class="field-item full-width" style="padding: 0; border: none; background: transparent;">
+                        <div class="field-value json">${escapeHtml(JSON.stringify(event, null, 2))}</div>
+                    </div>
+                </div>
+            `;
+
+            modalBody.innerHTML = bodyHtml;
+            modal.classList.remove('hidden');
+        }
+
+        // 关闭弹窗
+        function closeModal() {
+            document.getElementById('eventModal').classList.add('hidden');
+        }
+
+        // 点击遮罩关闭弹窗
+        function closeModalOnOverlay(event) {
+            if (event.target.classList.contains('modal-overlay')) {
+                closeModal();
+            }
+        }
+
+        // ESC键关闭弹窗
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        });
     </script>
 </body>
 </html>
