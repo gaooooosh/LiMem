@@ -14,3 +14,7 @@ example.json
 数据分析报告.md
 outputs/*
 DB/*
+tuning_log.md
+time_modeling_analysis.md
+DB/demo_db.kz
+tuning_log/*

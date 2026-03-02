@@ -127,12 +127,35 @@ class LTMSearcher:
         try:
             entities = json.loads(content)
             if isinstance(entities, list):
-                # Filter out only meaningless single characters and common stop words
-                stop_words = {'w', 'sha', 'a', 'an', '的', '了', '吗', '呢', '啊'}
-                valid_entities = [
-                    str(e).strip() for e in entities
-                    if e and len(str(e).strip()) >= 1 and str(e).strip() not in stop_words
-                ]
+                # Filter out meaningless single characters and common stop words
+                # Keep single chars only if they are meaningful (like numbers, common nouns)
+                stop_words = {
+                    'w', 'sha', 'a', 'an', '的', '了', '吗', '呢', '啊',
+                    '是', '在', '有', '和', '与', '或', '但', '而', '如', '让', '给', '把', '被'
+                }
+
+                valid_entities = []
+                for e in entities:
+                    e_str = str(e).strip()
+                    if not e_str or e_str in stop_words:
+                        continue
+
+                    # Filter out single characters unless they are meaningful
+                    # Keep: numbers, English letters, common meaningful single chars
+                    if len(e_str) == 1:
+                        # Keep if it's a number, English letter, or specific meaningful chars
+                        if e_str.isdigit() or e_str.isalpha() and e_str.isascii():
+                            # Keep single digits/letters (like "25", "K")
+                            valid_entities.append(e_str)
+                        # Otherwise filter out single Chinese characters
+                        # (unless they are specifically meaningful like '歌', '书', etc.)
+                        elif e_str in {'歌', '书', '车', '家', '去', '听', '看', '放'}:
+                            valid_entities.append(e_str)
+                        # Skip all other single characters
+                    else:
+                        # Keep multi-character entities
+                        valid_entities.append(e_str)
+
                 # Deduplicate while preserving order
                 seen = set()
                 unique_entities = []
@@ -385,7 +408,7 @@ class LTMSearcher:
     def _calculate_weight(self, row: dict[str, Any], t_now: int) -> float:
         """Calculate weight for an event using the decay formula.
 
-        Formula: w_ij = log(1 + c_valid) * exp(-lambda * (t_now - t_valid)) * entity_match_factor
+        Formula: w_ij = log(1 + c_valid) * exp(-DECAY_RATE * (t_now - t_valid)) * entity_match_factor
 
         The entity_match_factor is the product of all entity match weights,
         which boosts events connected to more precisely matched entities.
@@ -393,6 +416,7 @@ class LTMSearcher:
         Hard filter conditions:
         - If t_expired is not None, weight = 0
         - If t_invalid is not None and t_now >= t_invalid, weight = 0
+        - If t_valid > t_now (future event), weight = 0
 
         Args:
             row: Event data dictionary with relationship attributes and
@@ -415,19 +439,35 @@ class LTMSearcher:
         c_valid = row.get("c_valid", 0) or 0
         t_valid = row.get("t_valid", 0) or 0
 
-        # Calculate weight using the formula
-        lambda_param = self.config.lambda_param
+        # Calculate time difference (FIX: use linear time, not logarithmic)
         time_diff = t_now - t_valid
-        weight = math.log(1 + c_valid) * math.exp(-lambda_param * math.log(1 + abs(time_diff)))
+
+        # Filter out future events (shouldn't happen in practice)
+        if time_diff < 0:
+            return 0.0
+
+        # Calculate weight using proper exponential decay formula
+        # FIX: Use DECAY_RATE from config, not lambda_param
+        # FIX: Use linear time_diff, not log(1 + abs(time_diff))
+        from .config import DECAY_RATE
+        decay_rate = DECAY_RATE
+
+        # Base weight: frequency reinforcement
+        base_weight = math.log(1 + c_valid)
+
+        # Temporal decay: exponential decay over time
+        temporal_factor = math.exp(-decay_rate * time_diff)
+
+        # Combined weight
+        weight = base_weight * temporal_factor
 
         # Multiply by entity match weights
         entity_match_weights = row.get("entity_match_weights", {})
         if entity_match_weights:
-            # Use the average of all entity match weights as the factor
-            # This ensures:
-            # - Events with more matched entities get a boost
-            # - Precise matches (weight=1.0) contribute more than fuzzy matches
-            entity_match_factor = sum(entity_match_weights.values())
+            # FIX: Amplify entity match factor to prioritize semantic relevance over time
+            # This ensures semantically relevant events rank higher even if they're older
+            # Strategy: Use squared sum to amplify the impact of entity matches
+            entity_match_factor = sum(entity_match_weights.values()) ** 2
             weight *= entity_match_factor
 
         return weight
@@ -448,17 +488,11 @@ class LTMSearcher:
         if not raw_events:
             return [], []
 
-        # Use the latest t_valid or last_active from events as reference time
-        # This ensures relative time differences work correctly even with historical data
-        max_t_valid = max(
-            (e.get("t_valid", 0) or 0 for e in raw_events),
-            default=0
-        )
-        max_last_active = max(
-            (e.get("last_active", 0) or 0 for e in raw_events),
-            default=0
-        )
-        t_now = max(max_t_valid, max_last_active, 1)
+        # FIX: Use actual current time instead of max(t_valid)
+        # This properly maintains temporal discrimination
+        import time
+        t_now = int(time.time())
+
         k = top_k or self.config.default_top_k
 
         # Calculate weights and create RankedEvent objects

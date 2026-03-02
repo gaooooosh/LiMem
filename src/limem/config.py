@@ -18,7 +18,13 @@ def env_bool(name, default):
 # =========================
 # These parameters correspond to the hyperparameters in the paper/algorithm.
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
-DECAY_RATE = float(os.getenv("DECAY_RATE", "0.01"))
+
+# FIX: Adjusted DECAY_RATE for time-based memory retrieval
+# For time differences in seconds, use 1e-8 for half-life of ~2.2 years
+# Formula: half_life = ln(2) / DECAY_RATE = 0.693 / 1e-8 ≈ 69,300,000 seconds ≈ 2.2 years
+# This allows memories to persist for years while still favoring recent events
+DECAY_RATE = float(os.getenv("DECAY_RATE", "1e-8"))
+
 EPISODE_TTL = int(os.getenv("EPISODE_TTL", "3600"))
 PRUNE_C_VALID_THRESHOLD = int(os.getenv("PRUNE_C_VALID_THRESHOLD", "100"))
 PRUNE_EVIDENCE_TOP_K = int(os.getenv("PRUNE_EVIDENCE_TOP_K", "5"))
