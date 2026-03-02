@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiMem - 长期记忆检索系统</title>
+    <style>
+        :root {
+            --primary-color: #4f46e5;
+            --primary-hover: #4338ca;
+            --bg-color: #f8fafc;
+            --card-bg: #ffffff;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --error-color: #ef4444;
+            --info-color: #3b82f6;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* 左侧对话区域 */
+        .chat-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid var(--border-color);
+            background: var(--card-bg);
+        }
+
+        .chat-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-color);
+            background: linear-gradient(135deg, var(--primary-color), #6366f1);
+            color: white;
+        }
+
+        .chat-header h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .chat-header p {
+            font-size: 0.875rem;
+            opacity: 0.9;
+        }
+
+        .stats-bar {
+            display: flex;
+            gap: 16px;
+            padding: 12px 24px;
+            background: #f1f5f9;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .message-role {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .message-role.user {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+
+        .message-role.assistant {
+            background: #dcfce7;
+            color: #15803d;
+        }
+
+        .message-time {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .message-content {
+            padding: 16px;
+            border-radius: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .message.user .message-content {
+            background: #f1f5f9;
+            margin-left: 0;
+            margin-right: 32px;
+        }
+
+        .message.assistant .message-content {
+            background: linear-gradient(135deg, #eff6ff, #f0fdf4);
+            border: 1px solid #dbeafe;
+            margin-left: 0;
+            margin-right: 0;
+        }
+
+        .input-area {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-color);
+            background: var(--card-bg);
+        }
+
+        .input-wrapper {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+
+        .input-wrapper textarea {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            font-size: 1rem;
+            resize: none;
+            min-height: 48px;
+            max-height: 120px;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+
+        .input-wrapper textarea:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+
+        .send-btn {
+            padding: 12px 24px;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .send-btn:hover {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+        }
+
+        .send-btn:disabled {
+            background: #94a3b8;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .send-btn svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* 右侧调试信息区域 */
+        .debug-panel {
+            width: 420px;
+            background: var(--bg-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .debug-header {
+            padding: 16px 20px;
+            background: var(--card-bg);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .debug-header h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .debug-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+
+        .debug-placeholder {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-secondary);
+            text-align: center;
+            padding: 32px;
+        }
+
+        .debug-placeholder svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        /* 卡片样式 */
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 12px;
+            overflow: hidden;
+            transition: all 0.2s;
+        }
+
+        .card:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        .card-header {
+            padding: 12px 16px;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .card-header:hover {
+            background: #f1f5f9;
+        }
+
+        .card-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-badge {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .card-toggle {
+            transition: transform 0.2s;
+        }
+
+        .card.collapsed .card-toggle {
+            transform: rotate(-90deg);
+        }
+
+        .card-body {
+            padding: 16px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .card.collapsed .card-body {
+            display: none;
+        }
+
+        /* 实体标签 */
+        .entity-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .entity-tag {
+            padding: 4px 12px;
+            background: #e0e7ff;
+            color: #3730a3;
+            border-radius: 16px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        /* 事件卡片 */
+        .event-item {
+            padding: 12px;
+            background: #f8fafc;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            border-left: 3px solid var(--primary-color);
+        }
+
+        .event-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .event-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 8px;
+        }
+
+        .event-id {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-family: monospace;
+        }
+
+        .event-weight {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: #dcfce7;
+            color: #15803d;
+        }
+
+        .event-summary {
+            font-size: 0.875rem;
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+
+        .event-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .event-meta-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* 调试详情 */
+        .debug-detail {
+            padding: 12px;
+            background: #fefce8;
+            border-radius: 8px;
+            border: 1px solid #fef08a;
+            margin-bottom: 8px;
+            font-size: 0.8rem;
+        }
+
+        .debug-detail:last-child {
+            margin-bottom: 0;
+        }
+
+        .debug-detail-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .debug-detail-title {
+            font-weight: 600;
+            color: #854d0e;
+        }
+
+        .debug-detail-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .debug-detail-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .debug-detail-label {
+            font-size: 0.7rem;
+            color: #a16207;
+            text-transform: uppercase;
+        }
+
+        .debug-detail-value {
+            font-family: monospace;
+            color: #713f12;
+        }
+
+        .entity-weights {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px dashed #fde047;
+        }
+
+        .entity-weight-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 0;
+            font-size: 0.75rem;
+        }
+
+        .entity-weight-bar {
+            flex: 1;
+            height: 4px;
+            background: #fef08a;
+            border-radius: 2px;
+            margin: 0 8px;
+            overflow: hidden;
+        }
+
+        .entity-weight-fill {
+            height: 100%;
+            background: #eab308;
+            border-radius: 2px;
+        }
+
+        /* 摘要统计 */
+        .summary-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .summary-stat {
+            padding: 12px;
+            background: #f8fafc;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .summary-stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary-color);
+        }
+
+        .summary-stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* 加载动画 */
+        .loading {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 16px;
+            color: var(--text-secondary);
+        }
+
+        .loading-spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border-color);
+            border-top-color: var(--primary-color);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* 响应式 */
+        @media (max-width: 1024px) {
+            .container {
+                flex-direction: column;
+            }
+
+            .debug-panel {
+                width: 100%;
+                max-height: 50vh;
+            }
+
+            .chat-panel {
+                min-height: 50vh;
+            }
+        }
+
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+
+        /* 空状态 */
+        .empty-state {
+            text-align: center;
+            padding: 48px 24px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state svg {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-state h3 {
+            font-size: 1rem;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .empty-state p {
+            font-size: 0.875rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 左侧对话面板 -->
+        <div class="chat-panel">
+            <div class="chat-header">
+                <h1>LiMem 长期记忆检索</h1>
+                <p>基于知识图谱的记忆检索与问答系统</p>
+            </div>
+
+            <div class="stats-bar" id="statsBar">
+                <div class="stat-item">
+                    <span>事件:</span>
+                    <span class="stat-value" id="eventCount">-</span>
+                </div>
+                <div class="stat-item">
+                    <span>实体:</span>
+                    <span class="stat-value" id="entityCount">-</span>
+                </div>
+                <div class="stat-item">
+                    <span>片段:</span>
+                    <span class="stat-value" id="episodeCount">-</span>
+                </div>
+                <div class="stat-item">
+                    <span>关系:</span>
+                    <span class="stat-value" id="relationCount">-</span>
+                </div>
+            </div>
+
+            <div class="messages-container" id="messagesContainer">
+                <div class="empty-state" id="emptyState">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z"/>
+                    </svg>
+                    <h3>开始对话</h3>
+                    <p>输入您的问题，系统将从长期记忆中检索相关信息并生成回答</p>
+                </div>
+            </div>
+
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <textarea
+                        id="queryInput"
+                        placeholder="输入您的问题，例如：我通常早上听什么音乐？"
+                        rows="1"
+                        onkeydown="handleKeyDown(event)"
+                    ></textarea>
+                    <button class="send-btn" id="sendBtn" onclick="sendQuery()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/>
+                        </svg>
+                        发送
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧调试面板 -->
+        <div class="debug-panel">
+            <div class="debug-header">
+                <h2>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/>
+                    </svg>
+                    检索调试信息
+                </h2>
+            </div>
+            <div class="debug-content" id="debugContent">
+                <div class="debug-placeholder" id="debugPlaceholder">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5m.75-9l3-3 2.148 2.148A12.061 12.061 0 0116.5 7.605"/>
+                    </svg>
+                    <p>发送查询后，这里将显示详细的检索过程信息</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 状态管理
+        let isLoading = false;
+        let currentDebugData = null;
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStats();
+            autoResizeTextarea();
+        });
+
+        // 自动调整输入框高度
+        function autoResizeTextarea() {
+            const textarea = document.getElementById('queryInput');
+            textarea.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+            });
+        }
+
+        // 加载数据库统计
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+
+                document.getElementById('eventCount').textContent = data.events;
+                document.getElementById('entityCount').textContent = data.entities;
+                document.getElementById('episodeCount').textContent = data.episodes;
+                document.getElementById('relationCount').textContent =
+                    data.involves_relations + data.extracted_from_relations + data.permanent_trait_relations;
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        // 处理键盘事件
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendQuery();
+            }
+        }
+
+        // 发送查询
+        async function sendQuery() {
+            const input = document.getElementById('queryInput');
+            const query = input.value.trim();
+
+            if (!query || isLoading) return;
+
+            // 隐藏空状态
+            document.getElementById('emptyState')?.remove();
+
+            // 添加用户消息
+            addMessage('user', query);
+            input.value = '';
+            input.style.height = 'auto';
+
+            // 显示加载状态
+            isLoading = true;
+            const loadingId = addLoadingMessage();
+
+            try {
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, top_k: 5 })
+                });
+
+                if (!response.ok) throw new Error('Search failed');
+
+                const data = await response.json();
+
+                // 移除加载消息
+                removeMessage(loadingId);
+
+                // 添加助手消息
+                addMessage('assistant', data.answer, data);
+
+                // 更新调试面板
+                updateDebugPanel(data);
+
+            } catch (error) {
+                removeMessage(loadingId);
+                addMessage('assistant', `抱歉，检索时发生错误：${error.message}`);
+                console.error('Search error:', error);
+            } finally {
+                isLoading = false;
+            }
+        }
+
+        // 添加消息
+        function addMessage(role, content, data = null) {
+            const container = document.getElementById('messagesContainer');
+            const messageId = 'msg-' + Date.now();
+
+            const messageHtml = `
+                <div class="message ${role}" id="${messageId}">
+                    <div class="message-header">
+                        <span class="message-role ${role}">${role === 'user' ? '用户' : '系统'}</span>
+                        <span class="message-time">${formatTime(new Date())}</span>
+                    </div>
+                    <div class="message-content">${escapeHtml(content)}</div>
+                </div>
+            `;
+
+            container.insertAdjacentHTML('beforeend', messageHtml);
+            container.scrollTop = container.scrollHeight;
+
+            return messageId;
+        }
+
+        // 添加加载消息
+        function addLoadingMessage() {
+            const container = document.getElementById('messagesContainer');
+            const messageId = 'loading-' + Date.now();
+
+            const loadingHtml = `
+                <div class="message assistant" id="${messageId}">
+                    <div class="message-header">
+                        <span class="message-role assistant">系统</span>
+                        <span class="message-time">${formatTime(new Date())}</span>
+                    </div>
+                    <div class="message-content">
+                        <div class="loading">
+                            <div class="loading-spinner"></div>
+                            <span>正在检索记忆...</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            container.insertAdjacentHTML('beforeend', loadingHtml);
+            container.scrollTop = container.scrollHeight;
+
+            return messageId;
+        }
+
+        // 移除消息
+        function removeMessage(messageId) {
+            document.getElementById(messageId)?.remove();
+        }
+
+        // 更新调试面板
+        function updateDebugPanel(data) {
+            currentDebugData = data;
+            const container = document.getElementById('debugContent');
+
+            // 移除占位符
+            document.getElementById('debugPlaceholder')?.remove();
+
+            const debug = data.debug || {};
+
+            let html = '';
+
+            // 摘要统计卡片
+            html += `
+                <div class="card">
+                    <div class="card-header" onclick="toggleCard(this)">
+                        <span class="card-title">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/>
+                            </svg>
+                            检索统计
+                        </span>
+                        <svg class="card-toggle" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                    <div class="card-body">
+                        <div class="summary-stats">
+                            <div class="summary-stat">
+                                <div class="summary-stat-value">${debug.entity_count || 0}</div>
+                                <div class="summary-stat-label">提取实体</div>
+                            </div>
+                            <div class="summary-stat">
+                                <div class="summary-stat-value">${debug.raw_event_count || 0}</div>
+                                <div class="summary-stat-label">原始事件</div>
+                            </div>
+                            <div class="summary-stat">
+                                <div class="summary-stat-value">${debug.ranked_event_count || 0}</div>
+                                <div class="summary-stat-label">排序事件</div>
+                            </div>
+                            <div class="summary-stat">
+                                <div class="summary-stat-value">${debug.top_k_count || 0}</div>
+                                <div class="summary-stat-label">Top-K</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // 提取实体卡片
+            if (data.entities && data.entities.length > 0) {
+                html += `
+                    <div class="card">
+                        <div class="card-header" onclick="toggleCard(this)">
+                            <span class="card-title">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M5.25 8.25h15m-16.5 7.5h15m-1.8-13.5l-3.9 19.5m-2.1-19.5l-3.9 19.5"/>
+                                </svg>
+                                提取实体
+                            </span>
+                            <span class="card-badge">${data.entities.length}</span>
+                            <svg class="card-toggle" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 9l-7 7-7-7"/>
+                            </svg>
+                        </div>
+                        <div class="card-body">
+                            <div class="entity-tags">
+                                ${data.entities.map(e => `<span class="entity-tag">${escapeHtml(e)}</span>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Top-K 事件卡片
+            if (data.top_k_events && data.top_k_events.length > 0) {
+                html += `
+                    <div class="card">
+                        <div class="card-header" onclick="toggleCard(this)">
+                            <span class="card-title">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z"/>
+                                </svg>
+                                Top-K 事件
+                            </span>
+                            <span class="card-badge">${data.top_k_events.length}</span>
+                            <svg class="card-toggle" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 9l-7 7-7-7"/>
+                            </svg>
+                        </div>
+                        <div class="card-body">
+                            ${data.top_k_events.map((event, idx) => `
+                                <div class="event-item">
+                                    <div class="event-header">
+                                        <span class="event-id">#${idx + 1} ${event.event_id}</span>
+                                        <span class="event-weight">${event.weight.toFixed(4)}</span>
+                                    </div>
+                                    <div class="event-summary">${escapeHtml(event.summary)}</div>
+                                    <div class="event-meta">
+                                        <div class="event-meta-item">
+                                            <span>c_valid:</span>
+                                            <strong>${event.c_valid}</strong>
+                                        </div>
+                                        ${event.action ? `<div class="event-meta-item"><span>动作:</span><strong>${escapeHtml(event.action)}</strong></div>` : ''}
+                                        ${event.location ? `<div class="event-meta-item"><span>位置:</span><strong>${escapeHtml(JSON.stringify(event.location))}</strong></div>` : ''}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 权重计算详情卡片
+            if (debug.weight_calculation_details && debug.weight_calculation_details.length > 0) {
+                html += `
+                    <div class="card collapsed">
+                        <div class="card-header" onclick="toggleCard(this)">
+                            <span class="card-title">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/>
+                                    <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                </svg>
+                                权重计算详情
+                            </span>
+                            <span class="card-badge">${debug.weight_calculation_details.length}</span>
+                            <svg class="card-toggle" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 9l-7 7-7-7"/>
+                            </svg>
+                        </div>
+                        <div class="card-body">
+                            ${debug.weight_calculation_details.map((detail, idx) => `
+                                <div class="debug-detail">
+                                    <div class="debug-detail-header">
+                                        <span class="debug-detail-title">#${idx + 1} ${detail.event_id}</span>
+                                        <span class="event-weight">${detail.weight.toFixed(6)}</span>
+                                    </div>
+                                    <div style="font-size: 0.85rem; margin-bottom: 8px; color: #713f12;">
+                                        ${escapeHtml(detail.summary)}
+                                    </div>
+                                    <div class="debug-detail-grid">
+                                        <div class="debug-detail-item">
+                                            <span class="debug-detail-label">c_valid</span>
+                                            <span class="debug-detail-value">${detail.c_valid}</span>
+                                        </div>
+                                        <div class="debug-detail-item">
+                                            <span class="debug-detail-label">time_diff</span>
+                                            <span class="debug-detail-value">${formatTimeDiff(detail.time_diff)}</span>
+                                        </div>
+                                        <div class="debug-detail-item">
+                                            <span class="debug-detail-label">match_type</span>
+                                            <span class="debug-detail-value">${detail.match_type || '-'}</span>
+                                        </div>
+                                        <div class="debug-detail-item">
+                                            <span class="debug-detail-label">t_expired</span>
+                                            <span class="debug-detail-value">${detail.t_expired || 'null'}</span>
+                                        </div>
+                                    </div>
+                                    ${Object.keys(detail.entity_match_weights || {}).length > 0 ? `
+                                        <div class="entity-weights">
+                                            <div style="font-size: 0.7rem; color: #a16207; margin-bottom: 4px; text-transform: uppercase;">实体匹配权重</div>
+                                            ${Object.entries(detail.entity_match_weights).map(([entity, weight]) => `
+                                                <div class="entity-weight-item">
+                                                    <span>${escapeHtml(entity)}</span>
+                                                    <div class="entity-weight-bar">
+                                                        <div class="entity-weight-fill" style="width: ${Math.min(weight * 100, 100)}%"></div>
+                                                    </div>
+                                                    <span>${weight.toFixed(3)}</span>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    ` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            container.innerHTML = html;
+        }
+
+        // 切换卡片展开/收起
+        function toggleCard(header) {
+            const card = header.closest('.card');
+            card.classList.toggle('collapsed');
+        }
+
+        // 格式化时间
+        function formatTime(date) {
+            return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        // 格式化时间差
+        function formatTimeDiff(seconds) {
+            if (seconds < 60) return `${seconds}秒`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}分钟`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}小时`;
+            return `${Math.floor(seconds / 86400)}天`;
+        }
+
+        // HTML转义
+        function escapeHtml(text) {
+            if (typeof text !== 'string') return text;
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
