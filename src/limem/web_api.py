@@ -161,13 +161,18 @@ async def get_stats():
     stats = {}
 
     # Count node types
-    node_types = ["Event", "Entity", "Episode", "User"]
-    for node_type in node_types:
+    node_type_mapping = {
+        "Event": "events",
+        "Entity": "entities",
+        "Episode": "episodes",
+        "User": "users"
+    }
+    for node_type, key_name in node_type_mapping.items():
         resp = conn.execute(f"MATCH (n:{node_type}) RETURN count(*)")
         if resp.has_next():
-            stats[node_type.lower() + "s"] = resp.get_next()[0]
+            stats[key_name] = resp.get_next()[0]
         else:
-            stats[node_type.lower() + "s"] = 0
+            stats[key_name] = 0
 
     # Count relationships
     resp = conn.execute("MATCH ()-[r:INVOLVES]->() RETURN count(*)")

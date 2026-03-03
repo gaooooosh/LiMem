@@ -86,6 +86,13 @@ class LTMSearcher:
             raise ValueError("Set DASHSCOPE_API_KEY in .env or environment.")
         dashscope.api_key = DASHSCOPE_API_KEY
 
+        # Cache for entity embeddings to avoid repeated API calls
+        self._entity_embedding_cache: dict[str, list[float]] = {}
+        # Cache for database entity embeddings
+        self._db_entity_embeddings_cache: Optional[dict[str, list[float]]] = None
+        self._db_entity_cache_time: float = 0
+        self._db_entity_cache_ttl: float = 60.0  # Cache TTL in seconds
+
     # ========================
     # Stage 1: Entity Extraction
     # ========================
@@ -177,7 +184,7 @@ class LTMSearcher:
     # ========================
 
     def _get_entity_embedding(self, entity: str) -> Optional[list[float]]:
-        """Get embedding vector for an entity.
+        """Get embedding vector for an entity with caching.
 
         Args:
             entity: Entity name string.
@@ -185,15 +192,76 @@ class LTMSearcher:
         Returns:
             Embedding vector or None if generation fails.
         """
+        # Check cache first
+        if entity in self._entity_embedding_cache:
+            return self._entity_embedding_cache[entity]
+
         try:
             resp = TextEmbedding.call(model=EMBEDDING_MODEL, input=entity)
             output = resp.output
             if isinstance(output, dict):
-                return output["embeddings"][0]["embedding"]
-            return output.embeddings[0].embedding
+                embedding = output["embeddings"][0]["embedding"]
+            else:
+                embedding = output.embeddings[0].embedding
+
+            # Cache the result
+            self._entity_embedding_cache[entity] = embedding
+            return embedding
         except Exception as ex:
             print(f"⚠️ Failed to generate embedding for '{entity}': {ex}")
             return None
+
+    def _batch_get_entity_embeddings(self, entities: list[str]) -> dict[str, list[float]]:
+        """Get embeddings for multiple entities in a batch API call.
+
+        Args:
+            entities: List of entity name strings.
+
+        Returns:
+            Dictionary mapping entity names to their embeddings.
+        """
+        if not entities:
+            return {}
+
+        # Separate cached and uncached entities
+        cached = {}
+        uncached = []
+        for entity in entities:
+            if entity in self._entity_embedding_cache:
+                cached[entity] = self._entity_embedding_cache[entity]
+            else:
+                uncached.append(entity)
+
+        if not uncached:
+            return cached
+
+        # Batch call for uncached entities
+        try:
+            resp = TextEmbedding.call(model=EMBEDDING_MODEL, input=uncached)
+            output = resp.output
+
+            if isinstance(output, dict):
+                embeddings_list = output["embeddings"]
+            else:
+                embeddings_list = output.embeddings
+
+            # Map embeddings to entities and cache them
+            for i, entity in enumerate(uncached):
+                if i < len(embeddings_list):
+                    embedding = embeddings_list[i]["embedding"] if isinstance(embeddings_list[i], dict) else embeddings_list[i].embedding
+                    cached[entity] = embedding
+                    self._entity_embedding_cache[entity] = embedding
+
+            print(f"⚡ Batch generated {len(uncached)} entity embeddings")
+        except Exception as ex:
+            print(f"⚠️ Failed to batch generate embeddings: {ex}")
+            # Fallback to individual calls for uncached entities
+            for entity in uncached:
+                emb = self._get_entity_embedding(entity)
+                if emb:
+                    cached[entity] = emb
+
+        return cached
 
     def _cosine_similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         """Calculate cosine similarity between two vectors.
@@ -221,7 +289,7 @@ class LTMSearcher:
     def _vector_match_entities(
         self, entities: list[str]
     ) -> dict[str, float]:
-        """Find similar entities using vector similarity.
+        """Find similar entities using vector similarity with caching.
 
         For each input entity, generates an embedding and finds
         similar entities in the database based on cosine similarity.
@@ -235,29 +303,43 @@ class LTMSearcher:
         if not entities or not self.config.enable_vector_match:
             return {}
 
-        # Fetch all entities with embeddings from database
-        try:
-            resp = self.conn.execute("MATCH (en:Entity) RETURN en.id, en.embedding")
-        except Exception as ex:
-            print(f"⚠️ Failed to fetch entities: {ex}")
-            return {}
+        import time
+        current_time = time.time()
 
-        # Build entity embedding map
-        entity_embeddings = {}
-        while resp.has_next():
-            row = resp.get_next()
-            entity_id, embedding = row[0], row[1]
-            if embedding:  # Only include entities with embeddings
-                entity_embeddings[entity_id] = embedding
+        # Use cached database entity embeddings if available and not expired
+        if (self._db_entity_embeddings_cache is not None and
+            current_time - self._db_entity_cache_time < self._db_entity_cache_ttl):
+            entity_embeddings = self._db_entity_embeddings_cache
+        else:
+            # Fetch all entities with embeddings from database
+            try:
+                resp = self.conn.execute("MATCH (en:Entity) RETURN en.id, en.embedding")
+            except Exception as ex:
+                print(f"⚠️ Failed to fetch entities: {ex}")
+                return {}
+
+            # Build entity embedding map
+            entity_embeddings = {}
+            while resp.has_next():
+                row = resp.get_next()
+                entity_id, embedding = row[0], row[1]
+                if embedding:  # Only include entities with embeddings
+                    entity_embeddings[entity_id] = embedding
+
+            # Update cache
+            self._db_entity_embeddings_cache = entity_embeddings
+            self._db_entity_cache_time = current_time
 
         if not entity_embeddings:
             print("ℹ️ No entities with embeddings found in database")
             return {}
 
+        # Batch generate embeddings for all query entities
+        query_embeddings = self._batch_get_entity_embeddings(entities)
+
         # Match each extracted entity via vector similarity
         matched_entities = {}
-        for entity in entities:
-            query_emb = self._get_entity_embedding(entity)
+        for entity, query_emb in query_embeddings.items():
             if not query_emb:
                 continue
 
