@@ -192,6 +192,7 @@ class RankedEvent:
     participants: str = ""
     location: str = ""
     time_range: str = ""
+    match_type: str = ""  # "exact", "containment", "fuzzy", "exact+fuzzy"
 
     def __lt__(self, other: "RankedEvent") -> bool:
         """Enable sorting by weight (descending)."""

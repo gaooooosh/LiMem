@@ -364,26 +364,30 @@ class LTMSearcher:
 
         return matched_entities
 
-    def fetch_weighted_events(
-        self, entities: list[str]
-    ) -> list[dict[str, Any]]:
-        """Fetch events connected to the given entities.
+    # ========================
+    # Retrieval Methods (Abstraction)
+    # ========================
 
-        Performs hybrid entity matching combining:
-        1. Exact string matching (via Cypher)
-        2. Vector similarity matching (semantic)
+    def _exact_match_search(self, entities: list[str]) -> dict[str, dict[str, Any]]:
+        """Perform exact and containment matching to retrieve events.
+
+        This is the precise retrieval path that prioritizes accuracy:
+        1. Exact string match: query entity == db entity (weight = 1.0)
+        2. Containment match: query entity in db entity (weight = 0.9)
+           e.g., "医院" matches "北京协和医院"
 
         Args:
-            entities: List of entity names to search for.
+            entities: List of extracted entity names from query.
 
         Returns:
-            List of event dictionaries with relationship attributes and
-            entity match weights.
+            Dictionary mapping event_id to event data with entity_match_weights.
         """
         if not entities:
-            return []
+            return {}
 
-        # === Step 1: Exact match ===
+        events = {}
+
+        # Step 1: Exact string match (weight = 1.0)
         query = """
         MATCH (e:Event)-[r:INVOLVES]->(en:Entity)
         WHERE en.id IN $entity_list
@@ -395,15 +399,13 @@ class LTMSearcher:
         try:
             resp = self.conn.execute(query, {"entity_list": entities})
         except Exception as ex:
-            print(f"⚠️ Graph query failed: {ex}")
-            return []
+            print(f"⚠️ Exact match query failed: {ex}")
+            return {}
 
-        # Store event-entity relationships with exact match weights
-        events = {}
         while resp.has_next():
             row = resp.get_next()
             event_id = row[0]
-            entity_id = row[13]  # en.id
+            entity_id = row[13]
 
             if event_id not in events:
                 events[event_id] = {
@@ -420,20 +422,36 @@ class LTMSearcher:
                     "t_valid": row[10] or 0,
                     "t_invalid": row[11],
                     "c_valid": row[12] or 0,
-                    "entity_match_weights": {},  # Map entity_id -> match_weight
+                    "entity_match_weights": {},
+                    "match_type": "exact",
                 }
 
-            # Exact match has weight 1.0
             events[event_id]["entity_match_weights"][entity_id] = 1.0
-            events[event_id]["match_type"] = events[event_id].get("match_type", "exact")
 
-        print(f"🎯 Exact matched {len(events)} events")
+        exact_count = len(events)
+        print(f"🎯 Exact matched {exact_count} events")
 
-        # === Step 2: Vector match (semantic) ===
-        vector_matched_entities = self._vector_match_entities(entities)
-        if vector_matched_entities:
-            # Query events for vector-matched entities
-            vector_entity_ids = list(vector_matched_entities.keys())
+        # Step 2: Containment match (weight = 0.9)
+        # Find DB entities that contain query entities
+        try:
+            resp = self.conn.execute("MATCH (en:Entity) RETURN en.id")
+            db_entities = []
+            while resp.has_next():
+                db_entities.append(resp.get_next()[0])
+        except Exception as ex:
+            print(f"⚠️ Failed to fetch entities for containment: {ex}")
+            db_entities = []
+
+        containment_matched_entities = {}
+        for qe in entities:
+            if len(qe) < 2:  # Skip single chars
+                continue
+            for de in db_entities:
+                if qe in de and qe != de:
+                    containment_matched_entities[de] = 0.9
+
+        if containment_matched_entities:
+            containment_entity_ids = list(containment_matched_entities.keys())
             query = """
             MATCH (e:Event)-[r:INVOLVES]->(en:Entity)
             WHERE en.id IN $entity_list
@@ -443,45 +461,167 @@ class LTMSearcher:
             """
 
             try:
-                resp = self.conn.execute(query, {"entity_list": vector_entity_ids})
+                resp = self.conn.execute(query, {"entity_list": containment_entity_ids})
             except Exception as ex:
-                print(f"⚠️ Vector match query failed: {ex}")
-                return list(events.values())
+                print(f"⚠️ Containment match query failed: {ex}")
+            else:
+                new_events_from_containment = 0
+                while resp.has_next():
+                    row = resp.get_next()
+                    event_id = row[0]
+                    entity_id = row[13]
+                    weight = containment_matched_entities[entity_id]
 
-            while resp.has_next():
-                row = resp.get_next()
-                event_id = row[0]
-                entity_id = row[13]  # en.id
-                similarity = vector_matched_entities[entity_id]**2
+                    if event_id not in events:
+                        events[event_id] = {
+                            "event_id": event_id,
+                            "summary": row[1],
+                            "action": row[2] or "",
+                            "causality": row[3] or "",
+                            "participants": row[4] or "",
+                            "location": row[5] or "",
+                            "time_range": row[6] or "",
+                            "last_active": row[7] or 0,
+                            "t_created": row[8],
+                            "t_expired": row[9],
+                            "t_valid": row[10] or 0,
+                            "t_invalid": row[11],
+                            "c_valid": row[12] or 0,
+                            "entity_match_weights": {},
+                            "match_type": "containment",
+                        }
+                        new_events_from_containment += 1
 
-                # Add if not already present, or mark as both matches
-                if event_id not in events:
-                    events[event_id] = {
-                        "event_id": event_id,
-                        "summary": row[1],
-                        "action": row[2] or "",
-                        "causality": row[3] or "",
-                        "participants": row[4] or "",
-                        "location": row[5] or "",
-                        "time_range": row[6] or "",
-                        "last_active": row[7] or 0,
-                        "t_created": row[8],
-                        "t_expired": row[9],
-                        "t_valid": row[10] or 0,
-                        "t_invalid": row[11],
-                        "c_valid": row[12] or 0,
-                        "entity_match_weights": {},
-                        "match_type": "vector",
-                    }
-                else:
-                    events[event_id]["match_type"] = "both"
+                    # Set weight if not already set by exact match
+                    if entity_id not in events[event_id]["entity_match_weights"]:
+                        events[event_id]["entity_match_weights"][entity_id] = weight
 
-                # Vector match weight is the similarity score
-                # If already has exact match (1.0), keep it; otherwise use similarity
-                if entity_id not in events[event_id]["entity_match_weights"]:
-                    events[event_id]["entity_match_weights"][entity_id] = similarity
+                if new_events_from_containment > 0:
+                    print(f"🔗 Containment matched {new_events_from_containment} additional events")
+                    # Show which entities were matched
+                    matched_names = [k for k in containment_matched_entities.keys()][:3]
+                    print(f"   - Matched entities: {matched_names}")
 
-        return list(events.values())
+        return events
+
+    def _fuzzy_match_search(self, entities: list[str]) -> dict[str, dict[str, Any]]:
+        """Perform fuzzy/semantic matching to retrieve events.
+
+        This is the approximate retrieval path using vector similarity:
+        - Uses embedding vectors to find semantically similar entities
+        - Weight = similarity² (squared to amplify differences)
+
+        Args:
+            entities: List of extracted entity names from query.
+
+        Returns:
+            Dictionary mapping event_id to event data with entity_match_weights.
+        """
+        if not entities or not self.config.enable_vector_match:
+            return {}
+
+        events = {}
+
+        # Get vector-matched entities
+        vector_matched_entities = self._vector_match_entities(entities)
+        if not vector_matched_entities:
+            return {}
+
+        vector_entity_ids = list(vector_matched_entities.keys())
+        query = """
+        MATCH (e:Event)-[r:INVOLVES]->(en:Entity)
+        WHERE en.id IN $entity_list
+        RETURN e.id, e.summary, e.action, e.causality, e.participants,
+               e.location, e.time_range, e.last_active,
+               r.t_created, r.t_expired, r.t_valid, r.t_invalid, r.c_valid, en.id
+        """
+
+        try:
+            resp = self.conn.execute(query, {"entity_list": vector_entity_ids})
+        except Exception as ex:
+            print(f"⚠️ Fuzzy match query failed: {ex}")
+            return {}
+
+        while resp.has_next():
+            row = resp.get_next()
+            event_id = row[0]
+            entity_id = row[13]
+            similarity = vector_matched_entities[entity_id]
+            # Squared similarity to amplify differences
+            weight = similarity ** 2
+
+            if event_id not in events:
+                events[event_id] = {
+                    "event_id": event_id,
+                    "summary": row[1],
+                    "action": row[2] or "",
+                    "causality": row[3] or "",
+                    "participants": row[4] or "",
+                    "location": row[5] or "",
+                    "time_range": row[6] or "",
+                    "last_active": row[7] or 0,
+                    "t_created": row[8],
+                    "t_expired": row[9],
+                    "t_valid": row[10] or 0,
+                    "t_invalid": row[11],
+                    "c_valid": row[12] or 0,
+                    "entity_match_weights": {},
+                    "match_type": "fuzzy",
+                }
+
+            # Set weight if not already set
+            if entity_id not in events[event_id]["entity_match_weights"]:
+                events[event_id]["entity_match_weights"][entity_id] = weight
+
+        print(f"🔮 Fuzzy matched {len(events)} events")
+        return events
+
+    def fetch_weighted_events(
+        self, entities: list[str]
+    ) -> list[dict[str, Any]]:
+        """Fetch events using hybrid retrieval: exact match first, then fuzzy match.
+
+        Combines results from both retrieval paths with weighted fusion:
+        1. Exact match search (exact string + containment) - high precision
+        2. Fuzzy match search (vector semantic) - high recall
+
+        Events from exact match are prioritized; fuzzy match fills in gaps.
+
+        Args:
+            entities: List of entity names to search for.
+
+        Returns:
+            List of event dictionaries with relationship attributes and
+            entity match weights.
+        """
+        if not entities:
+            return []
+
+        # Step 1: Exact match search (precise retrieval)
+        exact_events = self._exact_match_search(entities)
+
+        # Step 2: Fuzzy match search (semantic retrieval)
+        fuzzy_events = self._fuzzy_match_search(entities)
+
+        # Step 3: Merge results - exact takes priority
+        # Events from exact match keep their high weights
+        # Events only from fuzzy match are added with lower priority
+        merged_events = dict(exact_events)  # Start with exact matches
+
+        for event_id, event_data in fuzzy_events.items():
+            if event_id not in merged_events:
+                # New event from fuzzy match
+                merged_events[event_id] = event_data
+            else:
+                # Event exists from exact match - update match type
+                merged_events[event_id]["match_type"] = "exact+fuzzy"
+                # Merge entity match weights (keep higher weights)
+                for entity_id, weight in event_data["entity_match_weights"].items():
+                    if entity_id not in merged_events[event_id]["entity_match_weights"]:
+                        merged_events[event_id]["entity_match_weights"][entity_id] = weight
+
+        print(f"📊 Total: {len(merged_events)} events (exact: {len(exact_events)}, fuzzy-only: {len(merged_events) - len(exact_events)})")
+        return list(merged_events.values())
 
     # ========================
     # Stage 3: Weight-based Reranking
@@ -492,8 +632,12 @@ class LTMSearcher:
 
         Formula: w_ij = log(1 + c_valid) * exp(-DECAY_RATE * (t_now - t_valid)) * entity_match_factor
 
-        The entity_match_factor is the product of all entity match weights,
-        which boosts events connected to more precisely matched entities.
+        The entity_match_factor calculation is stratified by match type:
+        - Exact match (weight >= 1.0): High precision, use max weight as base
+        - Containment match (weight >= 0.9): High precision, use max weight as base
+        - Fuzzy match (weight < 0.9): Low precision, use sum of weights
+
+        This ensures that precise matches are not drowned out by many fuzzy matches.
 
         Hard filter conditions:
         - If t_expired is not None, weight = 0
@@ -529,8 +673,6 @@ class LTMSearcher:
             return 0.0
 
         # Calculate weight using proper exponential decay formula
-        # FIX: Use DECAY_RATE from config, not lambda_param
-        # FIX: Use linear time_diff, not log(1 + abs(time_diff))
         from .config import DECAY_RATE
         decay_rate = DECAY_RATE
 
@@ -543,13 +685,25 @@ class LTMSearcher:
         # Combined weight
         weight = base_weight * temporal_factor
 
-        # Multiply by entity match weights
+        # Calculate entity match factor with stratified weighting
         entity_match_weights = row.get("entity_match_weights", {})
         if entity_match_weights:
-            # FIX: Amplify entity match factor to prioritize semantic relevance over time
-            # This ensures semantically relevant events rank higher even if they're older
-            # Strategy: Use squared sum to amplify the impact of entity matches
-            entity_match_factor = sum(entity_match_weights.values()) ** 2
+            # Separate precise matches from fuzzy matches
+            precise_weights = [w for w in entity_match_weights.values() if w >= 0.9]
+            fuzzy_weights = [w for w in entity_match_weights.values() if w < 0.9]
+
+            if precise_weights:
+                # Precise match (exact or containment): Use max weight * multiplier
+                # This ensures precise matches are not drowned out by fuzzy matches
+                max_precise = max(precise_weights)
+                precise_count = len(precise_weights)
+                # Base factor from precise match, with bonus for multiple precise matches
+                entity_match_factor = max_precise * (1 + 0.5 * (precise_count - 1))
+            else:
+                # Only fuzzy matches: Use sum of weights (lower priority)
+                # Apply a discount factor to fuzzy-only matches
+                entity_match_factor = sum(fuzzy_weights) * 0.5
+
             weight *= entity_match_factor
 
         return weight
@@ -596,6 +750,7 @@ class LTMSearcher:
                     participants=str(event.get("participants", "")),
                     location=str(event.get("location", "")),
                     time_range=str(event.get("time_range", "")),
+                    match_type=event.get("match_type", ""),
                 )
                 ranked.append(ranked_event)
 
