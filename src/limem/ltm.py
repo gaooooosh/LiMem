@@ -220,20 +220,94 @@ class ResearchLTM:
             )
         return entity_id
 
-    def _find_most_similar_event(self, embedding):
-        # Recall step: vector search over existing Event embeddings (Python cosine).
-        resp = self.conn.execute("MATCH (e:Event) RETURN e.id, e.summary, e.embedding")
+    def _find_most_similar_event(self, embedding, current_time=None, incoming_entities=None, incoming_action=None):
+        """
+        Multi-dimensional event similarity search.
+
+        Combines:
+        1. Semantic similarity (vector embeddings)
+        2. Entity overlap (Jaccard similarity)
+        3. Temporal proximity (time decay)
+        4. Action type matching (exact match boost)
+
+        Returns: (best_id, best_summary, combined_score, debug_info)
+        """
+        from .config import (
+            MERGE_WEIGHT_SEMANTIC,
+            MERGE_WEIGHT_ENTITY,
+            MERGE_WEIGHT_TIME,
+            MERGE_WEIGHT_ACTION,
+            MERGE_TIME_WINDOW,
+        )
+
+        resp = self.conn.execute("""
+            MATCH (e:Event)-[r:INVOLVES]->(en:Entity)
+            RETURN e.id, e.summary, e.embedding, e.action, e.last_active, collect(en.id)
+        """)
+
         best_id = None
         best_summary = None
-        best_sim = None
+        best_combined_score = None
+        best_debug = None
+
         while resp.has_next():
-            event_id, summary, stored_emb = resp.get_next()
-            sim = self._cosine_similarity(embedding, stored_emb)
-            if best_sim is None or sim > best_sim:
+            event_id, summary, stored_emb, stored_action, last_active, stored_entities = resp.get_next()
+
+            # 1. Semantic similarity (0-1)
+            semantic_sim = self._cosine_similarity(embedding, stored_emb)
+
+            # 2. Entity overlap (Jaccard similarity, 0-1)
+            entity_sim = 0.0
+            if incoming_entities and stored_entities:
+                incoming_set = set(e.get("name", e) if isinstance(e, dict) else e for e in incoming_entities)
+                stored_set = set(stored_entities)
+                if incoming_set or stored_set:
+                    intersection = len(incoming_set & stored_set)
+                    union = len(incoming_set | stored_set)
+                    entity_sim = intersection / union if union > 0 else 0.0
+
+            # 3. Temporal proximity (0-1, exponential decay)
+            time_sim = 0.0
+            if current_time is not None and last_active is not None:
+                time_diff = abs(current_time - last_active)
+                if time_diff <= MERGE_TIME_WINDOW:
+                    # Exponential decay: full score at t=0, ~0.37 at t=MERGE_TIME_WINDOW
+                    time_sim = math.exp(-3.0 * time_diff / MERGE_TIME_WINDOW)
+                else:
+                    time_sim = 0.0
+            elif current_time is None:
+                # If no time info, don't penalize
+                time_sim = 0.5
+
+            # 4. Action type matching (0 or 1)
+            action_sim = 0.0
+            if incoming_action and stored_action:
+                action_sim = 1.0 if incoming_action == stored_action else 0.0
+
+            # Weighted combination
+            combined_score = (
+                MERGE_WEIGHT_SEMANTIC * semantic_sim +
+                MERGE_WEIGHT_ENTITY * entity_sim +
+                MERGE_WEIGHT_TIME * time_sim +
+                MERGE_WEIGHT_ACTION * action_sim
+            )
+
+            # Debug info
+            debug_info = {
+                "semantic": semantic_sim,
+                "entity": entity_sim,
+                "time": time_sim,
+                "action": action_sim,
+                "combined": combined_score,
+            }
+
+            if best_combined_score is None or combined_score > best_combined_score:
                 best_id = event_id
                 best_summary = summary
-                best_sim = sim
-        return best_id, best_summary, best_sim
+                best_combined_score = combined_score
+                best_debug = debug_info
+
+        return best_id, best_summary, best_combined_score, best_debug
 
     def _cosine_similarity(self, vec_a, vec_b):
         # Simple cosine similarity for small-scale research runs.
@@ -269,16 +343,26 @@ class ResearchLTM:
         entities = self.extract_entities_from_llm(episode_content)
         print(f"🧩 Entities: {entities}")
 
-        # === 4) Recall: embed + vector search ===
+        # === 4) Recall: multi-dimensional similarity search ===
         embedding = self.get_embedding(summary)
-        best_id, best_summary, sim = self._find_most_similar_event(embedding)
-        if sim is not None:
-            print(f"🔎 Top similarity: {sim:.4f} -> {best_summary}")
+        best_id, best_summary, combined_score, debug_info = self._find_most_similar_event(
+            embedding,
+            current_time=current_time,
+            incoming_entities=entities,
+            incoming_action=frame.action
+        )
+        if combined_score is not None:
+            print(f"🔎 Top match (combined={combined_score:.4f}): {best_summary}")
+            if debug_info:
+                print(f"   └─ semantic={debug_info['semantic']:.3f}, "
+                      f"entity={debug_info['entity']:.3f}, "
+                      f"time={debug_info['time']:.3f}, "
+                      f"action={debug_info['action']:.3f}")
 
         # === 5) Consolidation: merge or create ===
         event_fields = self._serialize_event_fields(frame)
         incoming_evidence = frame.to_db_fields()["evidence"]
-        if sim is not None and sim > SIMILARITY_THRESHOLD:
+        if combined_score is not None and combined_score > SIMILARITY_THRESHOLD:
             print(f"🔍 Found existing memory: {best_summary}")
             event_id = best_id
 

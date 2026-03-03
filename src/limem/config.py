@@ -17,7 +17,19 @@ def env_bool(name, default):
 # Experiment Knobs (Research First)
 # =========================
 # These parameters correspond to the hyperparameters in the paper/algorithm.
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.65"))
+
+# Multi-dimensional merge weights (must sum to 1.0)
+# These control how different similarity dimensions contribute to event merging
+MERGE_WEIGHT_SEMANTIC = float(os.getenv("MERGE_WEIGHT_SEMANTIC", "0.4"))
+MERGE_WEIGHT_ENTITY = float(os.getenv("MERGE_WEIGHT_ENTITY", "0.3"))
+MERGE_WEIGHT_TIME = float(os.getenv("MERGE_WEIGHT_TIME", "0.2"))
+MERGE_WEIGHT_ACTION = float(os.getenv("MERGE_WEIGHT_ACTION", "0.1"))
+
+# Time window for temporal proximity in merge decisions (seconds)
+# Events within this window get boosted similarity scores
+# Default: 300 seconds (5 minutes)
+MERGE_TIME_WINDOW = int(os.getenv("MERGE_TIME_WINDOW", "300"))
 
 # FIX: Adjusted DECAY_RATE for time-based memory retrieval
 # For time differences in seconds, use 1e-8 for half-life of ~2.2 years
