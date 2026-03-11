@@ -20,3 +20,8 @@ DB/demo_db.kz
 tuning_log/*
 DB/*
 test_cases.json
+事件定义讨论.md
+.gitignore
+docs/*
+memory/*
+test_results.json
