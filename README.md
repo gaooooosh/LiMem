@@ -87,8 +87,19 @@ python src/script/build_ltm_from_trips.py --clear-db
 默认会：
 
 - 读取 `trips.json`
-- 构建 `./DB/dynamic_trips.kz`
-- 输出构建报告到 `./outputs/`
+- 按时间顺序切分为“基础阶段 + 调试阶段”
+- 先构建 `./DB/dynamic_trips.kz`
+- 再回放第二段数据并输出 `json + html` 调试报告到 `./outputs/`
+
+自定义切分点和调试快照频率：
+
+```bash
+python src/script/build_ltm_from_trips.py \
+  --clear-db \
+  --split-ratio 0.7 \
+  --debug-snapshot-every 5 \
+  --snapshot-limit 10
+```
 
 #### 2. 交互式搜索
 
@@ -115,11 +126,25 @@ python src/script/test_dynamic_trips.py
 python src/script/test_search_fixes.py
 ```
 
+#### 5. 启动交互式 trips 调试页面
+
+```bash
+PYTHONPATH=src uv run python src/script/run_trips_debugger.py
+```
+
+打开 `http://127.0.0.1:8011` 后，可以：
+
+- 从 `trips.json` 逐条或批量选择写入
+- 实时查看 Event / Context / Pattern / NEXT 图变化
+- 直接执行 `merge_event` 和 `merge_context`
+- 手工写入新的 event/context 节点
+
 ### 主要脚本
 
 | 脚本 | 功能 |
 |------|------|
-| `src/script/build_ltm_from_trips.py` | 从 `trips.json` 构建动态记忆库 |
+| `src/script/build_ltm_from_trips.py` | 两段式构建 `trips.json`，并输出可视化调试报告 |
+| `src/script/run_trips_debugger.py` | 启动交互式 trips 调试页面 |
 | `src/script/search_demo.py` | 交互式搜索 / 运行预设查询 |
 | `src/script/test_dynamic_trips.py` | 构建并验证动态演化流程 |
 | `src/script/test_search_fixes.py` | 检查数据库统计和权重计算 |
@@ -218,6 +243,21 @@ source .venv/bin/activate
 python src/script/build_ltm_from_trips.py --clear-db
 ```
 
+Build with split-phase debugging and HTML report output:
+
+```bash
+python src/script/build_ltm_from_trips.py \
+  --clear-db \
+  --split-ratio 0.7 \
+  --debug-snapshot-every 5
+```
+
+Run the interactive debugger UI:
+
+```bash
+PYTHONPATH=src uv run python src/script/run_trips_debugger.py
+```
+
 Search interactively:
 
 ```bash
@@ -239,6 +279,17 @@ from limem import create_ltm
 
 ltm = create_ltm(db_path="./DB/dynamic_trips.kz", config={"offline_mode": True})
 result = ltm.search("What does the user usually do in meeting scenarios?")
+```
+
+Frontend-facing memory graph operations are exposed on the same object:
+
+```python
+event = ltm.write(
+    {"summary": "用户在会议场景开启勿扰模式", "timestamp": 1773326409},
+    kind="event",
+)
+snapshot = ltm.snapshot(limit=10, include_inactive=True)
+query_bundle = ltm.query(text="会议", limit=10)
 ```
 
 ### Note

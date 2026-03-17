@@ -14,6 +14,7 @@ from .builder.memory_builder import MemoryBuilder
 from .retriever.memory_searcher import MemorySearcher
 from .storage.graph_store import GraphStore
 from .config import EPISODE_TTL, DECAY_RATE
+from .ops import MemoryGraphOps
 
 
 class LTMemoryImpl(LTMemory):
@@ -51,6 +52,7 @@ class LTMemoryImpl(LTMemory):
         self.episode_ttl = episode_ttl
         self.decay_rate = decay_rate
         self.dynamic_engine = dynamic_engine
+        self.ops = MemoryGraphOps(store=store, dynamic_engine=dynamic_engine)
 
     def ingest(self, episode: Episode) -> IngestResult:
         """摄入Episode
@@ -174,6 +176,88 @@ class LTMemoryImpl(LTMemory):
         if not self.dynamic_engine:
             return {}
         return self.dynamic_engine.run_consolidation(dry_run=dry_run)
+
+    def write(
+        self,
+        item: Any,
+        kind: str = "",
+        evolve: bool = True,
+        entity_ids: Optional[list[Any]] = None,
+    ) -> dict[str, Any]:
+        return self.ops.write(
+            item=item,
+            kind=kind,
+            evolve=evolve,
+            entity_ids=entity_ids,
+        )
+
+    def remove(
+        self,
+        memory_id: str,
+        kind: str = "event",
+        hard_delete: bool = False,
+        removed_at: Optional[int] = None,
+    ) -> dict[str, Any]:
+        return self.ops.remove(
+            memory_id=memory_id,
+            kind=kind,
+            hard_delete=hard_delete,
+            removed_at=removed_at,
+        )
+
+    def merge_event(
+        self,
+        canonical_event_id: str,
+        merged_event_id: str,
+        merged_at: Optional[int] = None,
+        similarity_score: float = 1.0,
+        merge_reason: str = "manual_merge",
+    ) -> dict[str, Any]:
+        return self.ops.merge_event(
+            canonical_event_id=canonical_event_id,
+            merged_event_id=merged_event_id,
+            merged_at=merged_at,
+            similarity_score=similarity_score,
+            merge_reason=merge_reason,
+        )
+
+    def merge_context(
+        self,
+        canonical_context_id: str,
+        merged_context_id: str,
+        merged_at: Optional[int] = None,
+    ) -> dict[str, Any]:
+        return self.ops.merge_context(
+            canonical_context_id=canonical_context_id,
+            merged_context_id=merged_context_id,
+            merged_at=merged_at,
+        )
+
+    def query(
+        self,
+        text: str = "",
+        limit: int = 20,
+        include_graph: bool = True,
+        include_inactive: bool = False,
+    ) -> dict[str, Any]:
+        return self.ops.query(
+            text=text,
+            limit=limit,
+            include_graph=include_graph,
+            include_inactive=include_inactive,
+        )
+
+    def snapshot(
+        self,
+        limit: int = 20,
+        include_inactive: bool = False,
+        text: str = "",
+    ) -> dict[str, Any]:
+        return self.ops.snapshot(
+            limit=limit,
+            include_inactive=include_inactive,
+            text=text,
+        )
 
     # ==================== 便捷方法 ====================
 

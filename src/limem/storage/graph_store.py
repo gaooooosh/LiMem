@@ -386,6 +386,86 @@ class GraphStore(ABC):
     def archive_event(self, event_id: str, archived_at: int) -> None:
         raise NotImplementedError("archive_event is not implemented")
 
+    def archive_context(self, context_id: str, archived_at: int) -> None:
+        raise NotImplementedError("archive_context is not implemented")
+
+    def delete_event(self, event_id: str) -> None:
+        raise NotImplementedError("delete_event is not implemented")
+
+    def delete_context(self, context_id: str) -> None:
+        raise NotImplementedError("delete_context is not implemented")
+
+    def relink_event_references(
+        self,
+        source_event_id: str,
+        target_event_id: str,
+        timestamp: int,
+    ) -> dict[str, int]:
+        raise NotImplementedError("relink_event_references is not implemented")
+
+    def relink_context_edges(
+        self,
+        source_context_id: str,
+        target_context_id: str,
+        timestamp: int,
+    ) -> int:
+        raise NotImplementedError("relink_context_edges is not implemented")
+
+    def relink_pattern_edges(
+        self,
+        source_pattern_id: str,
+        target_pattern_id: str,
+        timestamp: int,
+    ) -> int:
+        raise NotImplementedError("relink_pattern_edges is not implemented")
+
+    def list_events(
+        self,
+        limit: int = 50,
+        query: str = "",
+        statuses: Optional[list[str]] = None,
+    ) -> list[Event]:
+        raise NotImplementedError("list_events is not implemented")
+
+    def list_contexts(
+        self,
+        limit: int = 50,
+        query: str = "",
+        statuses: Optional[list[str]] = None,
+    ) -> list[Any]:
+        raise NotImplementedError("list_contexts is not implemented")
+
+    def list_patterns(
+        self,
+        limit: int = 50,
+        query: str = "",
+        statuses: Optional[list[str]] = None,
+    ) -> list[Any]:
+        raise NotImplementedError("list_patterns is not implemented")
+
+    def list_event_context_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+        context_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError("list_event_context_edges is not implemented")
+
+    def list_event_pattern_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+        pattern_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError("list_event_pattern_edges is not implemented")
+
+    def list_next_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError("list_next_edges is not implemented")
+
     # ==================== 统计 ====================
 
     @abstractmethod

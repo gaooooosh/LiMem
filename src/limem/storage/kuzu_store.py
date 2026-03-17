@@ -1315,6 +1315,19 @@ class KuzuStore(GraphStore):
         scored.sort(key=lambda item: item[0], reverse=True)
         return [pattern for _, pattern in scored[:limit]]
 
+    def _apply_status_filters(
+        self,
+        alias: str,
+        statuses: Optional[list[str]],
+        params: dict[str, Any],
+        filters: Optional[list[str]] = None,
+    ) -> list[str]:
+        where_filters = list(filters or [])
+        if statuses:
+            where_filters.append(f"{alias}.status IN $statuses")
+            params["statuses"] = list(statuses)
+        return where_filters
+
     def retrieve_events_by_contexts(
         self,
         context_ids: list[str],
@@ -1443,6 +1456,559 @@ class KuzuStore(GraphStore):
             """,
             {"id": event_id, "archived_at": int(archived_at)},
         )
+
+    def archive_context(self, context_id: str, archived_at: int) -> None:
+        self.conn.execute(
+            """
+            MATCH (c:Context {id: $id})
+            SET c.status = 'removed',
+                c.updated_at = $archived_at,
+                c.valid_to = CASE WHEN c.valid_to IS NULL THEN $archived_at ELSE c.valid_to END
+            """,
+            {"id": context_id, "archived_at": int(archived_at)},
+        )
+
+    def delete_event(self, event_id: str) -> None:
+        self.conn.execute(
+            """
+            MATCH (e:Event {id: $id})
+            DETACH DELETE e
+            """,
+            {"id": event_id},
+        )
+
+    def delete_context(self, context_id: str) -> None:
+        self.conn.execute(
+            """
+            MATCH (c:Context {id: $id})
+            DETACH DELETE c
+            """,
+            {"id": context_id},
+        )
+
+    def relink_event_references(
+        self,
+        source_event_id: str,
+        target_event_id: str,
+        timestamp: int,
+    ) -> dict[str, int]:
+        if source_event_id == target_event_id:
+            return {}
+
+        ts = int(timestamp)
+        moved = {
+            "entity_relations": 0,
+            "episode_links": 0,
+            "context_links": 0,
+            "pattern_links": 0,
+            "next_edges": 0,
+            "permanent_traits": 0,
+        }
+
+        resp = self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:INVOLVES]->(en:Entity)
+            RETURN en.id, r.t_created, r.t_expired, r.t_valid, r.t_invalid, r.c_valid
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            entity_id = row[0]
+            existing = self.get_involves_relation(target_event_id, entity_id)
+            if existing:
+                existing.t_created = min(existing.t_created, int(row[1] or ts))
+                existing.t_valid = max(existing.t_valid, int(row[3] or ts))
+                existing.c_valid = max(existing.c_valid, int(row[5] or 1))
+                if row[2] is not None:
+                    existing.t_expired = row[2]
+                if row[4] is not None:
+                    existing.t_invalid = row[4]
+                self.update_involves_relation(existing)
+            else:
+                self.create_involves_relation(
+                    event_id=target_event_id,
+                    entity_id=entity_id,
+                    t_created=int(row[1] or ts),
+                    t_valid=int(row[3] or ts),
+                    c_valid=int(row[5] or 1),
+                    t_expired=row[2],
+                    t_invalid=row[4],
+                )
+            moved["entity_relations"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:INVOLVES]->(:Entity)
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        resp = self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[:EXTRACTED_FROM]->(ep:Episode)
+            RETURN ep.id
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            episode_id = resp.get_next()[0]
+            exists = self.conn.execute(
+                """
+                MATCH (:Event {id: $target_event_id})-[:EXTRACTED_FROM]->(:Episode {id: $episode_id})
+                RETURN count(*)
+                """,
+                {"target_event_id": target_event_id, "episode_id": episode_id},
+            )
+            if not (exists.has_next() and exists.get_next()[0] > 0):
+                self.link_event_to_episode(target_event_id, episode_id)
+            moved["episode_links"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:EXTRACTED_FROM]->(:Episode)
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        resp = self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:IN_REL]->(c:Context)
+            RETURN c.id, r.confidence, r.weight, r.original_type, r.last_seen_at
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            self.link_event_to_context(
+                event_id=target_event_id,
+                context_id=row[0],
+                confidence=float(row[1] or 0.7),
+                weight=float(row[2] or 1.0),
+                original_type=row[3] or "manual_merge",
+                timestamp=int(row[4] or ts),
+            )
+            moved["context_links"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:IN_REL]->(:Context)
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        resp = self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:ABSTRACT_TO]->(p:Pattern)
+            RETURN p.id, r.confidence, r.contribution_weight, r.last_reinforced_at
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            self.link_event_to_pattern(
+                event_id=target_event_id,
+                pattern_id=row[0],
+                confidence=float(row[1] or 0.7),
+                contribution_weight=float(row[2] or 1.0),
+                timestamp=int(row[3] or ts),
+            )
+            moved["pattern_links"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:ABSTRACT_TO]->(:Pattern)
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        resp = self.conn.execute(
+            """
+            MATCH (a:Event)-[r:NEXT]->(:Event {id: $source_event_id})
+            RETURN a.id, r.confidence, r.score, r.relation_hint, r.last_seen_at
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            if row[0] == target_event_id:
+                continue
+            self.link_next(
+                from_event_id=row[0],
+                to_event_id=target_event_id,
+                confidence=float(row[1] or 0.6),
+                score=float(row[2] or 0.0),
+                relation_hint=row[3] or "manual_merge",
+                timestamp=int(row[4] or ts),
+            )
+            moved["next_edges"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event)-[r:NEXT]->(:Event {id: $source_event_id})
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        resp = self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:NEXT]->(b:Event)
+            RETURN b.id, r.confidence, r.score, r.relation_hint, r.last_seen_at
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            if row[0] == target_event_id:
+                continue
+            self.link_next(
+                from_event_id=target_event_id,
+                to_event_id=row[0],
+                confidence=float(row[1] or 0.6),
+                score=float(row[2] or 0.0),
+                relation_hint=row[3] or "manual_merge",
+                timestamp=int(row[4] or ts),
+            )
+            moved["next_edges"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:NEXT]->(:Event)
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        resp = self.conn.execute(
+            """
+            MATCH (u:User)-[r:PERMANENT_TRAIT]->(:Event {id: $source_event_id})
+            RETURN u.id, r.t_created
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            self.promote_permanent_trait(row[0], target_event_id, int(row[1] or ts))
+            moved["permanent_traits"] += 1
+        self.conn.execute(
+            """
+            MATCH (:User)-[r:PERMANENT_TRAIT]->(:Event {id: $source_event_id})
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+        return moved
+
+    def relink_context_edges(
+        self,
+        source_context_id: str,
+        target_context_id: str,
+        timestamp: int,
+    ) -> int:
+        if source_context_id == target_context_id:
+            return 0
+        ts = int(timestamp)
+        moved = 0
+        resp = self.conn.execute(
+            """
+            MATCH (e:Event)-[r:IN_REL]->(:Context {id: $source_context_id})
+            RETURN e.id, r.confidence, r.weight, r.original_type, r.last_seen_at
+            """,
+            {"source_context_id": source_context_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            self.link_event_to_context(
+                event_id=row[0],
+                context_id=target_context_id,
+                confidence=float(row[1] or 0.7),
+                weight=float(row[2] or 1.0),
+                original_type=row[3] or "manual_context_merge",
+                timestamp=int(row[4] or ts),
+            )
+            moved += 1
+        self.conn.execute(
+            """
+            MATCH (:Event)-[r:IN_REL]->(:Context {id: $source_context_id})
+            DELETE r
+            """,
+            {"source_context_id": source_context_id},
+        )
+        return moved
+
+    def relink_pattern_edges(
+        self,
+        source_pattern_id: str,
+        target_pattern_id: str,
+        timestamp: int,
+    ) -> int:
+        if source_pattern_id == target_pattern_id:
+            return 0
+        ts = int(timestamp)
+        moved = 0
+        resp = self.conn.execute(
+            """
+            MATCH (e:Event)-[r:ABSTRACT_TO]->(:Pattern {id: $source_pattern_id})
+            RETURN e.id, r.confidence, r.contribution_weight, r.last_reinforced_at
+            """,
+            {"source_pattern_id": source_pattern_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            self.link_event_to_pattern(
+                event_id=row[0],
+                pattern_id=target_pattern_id,
+                confidence=float(row[1] or 0.7),
+                contribution_weight=float(row[2] or 1.0),
+                timestamp=int(row[3] or ts),
+            )
+            moved += 1
+        self.conn.execute(
+            """
+            MATCH (:Event)-[r:ABSTRACT_TO]->(:Pattern {id: $source_pattern_id})
+            DELETE r
+            """,
+            {"source_pattern_id": source_pattern_id},
+        )
+        return moved
+
+    def list_events(
+        self,
+        limit: int = 50,
+        query: str = "",
+        statuses: Optional[list[str]] = None,
+    ) -> list[Event]:
+        params: dict[str, Any] = {"limit": int(max(limit, 1) * (6 if query else 1))}
+        filters = self._apply_status_filters("e", statuses, params)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Event)
+            {where_clause}
+            RETURN {self._event_select_clause('e')}
+            ORDER BY e.last_active DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        events: list[tuple[float, Event]] = []
+        while resp.has_next():
+            event = self._row_to_event(list(resp.get_next()))
+            score = 1.0
+            if query:
+                haystack = " ".join(
+                    [
+                        event.summary,
+                        event.action,
+                        event.causality,
+                        safe_json_dumps(event.location),
+                        safe_json_dumps(event.payload),
+                    ]
+                )
+                score = self._text_similarity_score(haystack, query, [])
+                if score <= 0.0:
+                    continue
+            events.append((score, event))
+        events.sort(key=lambda item: (item[0], item[1].last_active or item[1].timestamp), reverse=True)
+        return [event for _, event in events[:limit]]
+
+    def list_contexts(
+        self,
+        limit: int = 50,
+        query: str = "",
+        statuses: Optional[list[str]] = None,
+    ) -> list[Context]:
+        params: dict[str, Any] = {"limit": int(max(limit, 1) * (6 if query else 1))}
+        filters = self._apply_status_filters("c", statuses, params)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        resp = self.conn.execute(
+            f"""
+            MATCH (c:Context)
+            {where_clause}
+            RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
+                   c.confidence, c.support_count, c.created_at, c.updated_at,
+                   c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
+            ORDER BY c.last_seen_at DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        cols = [
+            "id", "context_type", "subtype", "summary", "structured_slots",
+            "confidence", "support_count", "created_at", "updated_at",
+            "valid_from", "valid_to", "last_seen_at", "status", "embedding",
+        ]
+        rows: list[tuple[float, Context]] = []
+        while resp.has_next():
+            context = Context.from_db_row(list(resp.get_next()), cols)
+            score = 1.0
+            if query:
+                score = self._text_similarity_score(
+                    f"{context.summary} {safe_json_dumps(context.structured_slots)}",
+                    query,
+                    [],
+                )
+                if score <= 0.0:
+                    continue
+            rows.append((score, context))
+        rows.sort(key=lambda item: (item[0], item[1].last_seen_at), reverse=True)
+        return [context for _, context in rows[:limit]]
+
+    def list_patterns(
+        self,
+        limit: int = 50,
+        query: str = "",
+        statuses: Optional[list[str]] = None,
+    ) -> list[Pattern]:
+        params: dict[str, Any] = {"limit": int(max(limit, 1) * (6 if query else 1))}
+        filters = self._apply_status_filters("p", statuses, params)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        resp = self.conn.execute(
+            f"""
+            MATCH (p:Pattern)
+            {where_clause}
+            RETURN p.id, p.pattern_type, p.summary, p.prototype_features,
+                   p.support_count, p.confidence, p.stability_score, p.drift_score,
+                   p.created_at, p.updated_at, p.valid_from, p.valid_to,
+                   p.last_seen_at, p.status, p.embedding
+            ORDER BY p.last_seen_at DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        cols = [
+            "id", "pattern_type", "summary", "prototype_features",
+            "support_count", "confidence", "stability_score", "drift_score",
+            "created_at", "updated_at", "valid_from", "valid_to",
+            "last_seen_at", "status", "embedding",
+        ]
+        rows: list[tuple[float, Pattern]] = []
+        while resp.has_next():
+            pattern = Pattern.from_db_row(list(resp.get_next()), cols)
+            score = 1.0
+            if query:
+                score = self._text_similarity_score(
+                    f"{pattern.summary} {safe_json_dumps(pattern.prototype_features)}",
+                    query,
+                    [],
+                )
+                if score <= 0.0:
+                    continue
+            rows.append((score, pattern))
+        rows.sort(key=lambda item: (item[0], item[1].last_seen_at), reverse=True)
+        return [pattern for _, pattern in rows[:limit]]
+
+    def list_event_context_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+        context_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": int(limit)}
+        filters: list[str] = []
+        filters = self._apply_status_filters("e", event_statuses, params, filters)
+        if context_statuses:
+            filters.append("c.status IN $context_statuses")
+            params["context_statuses"] = list(context_statuses)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Event)-[r:IN_REL]->(c:Context)
+            {where_clause}
+            RETURN e.id, c.id, r.confidence, r.weight, r.original_type, r.last_seen_at
+            ORDER BY r.last_seen_at DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        rows = []
+        while resp.has_next():
+            row = resp.get_next()
+            rows.append(
+                {
+                    "event_id": row[0],
+                    "context_id": row[1],
+                    "confidence": float(row[2] or 0.0),
+                    "weight": float(row[3] or 0.0),
+                    "original_type": row[4] or "",
+                    "last_seen_at": int(row[5] or 0),
+                }
+            )
+        return rows
+
+    def list_event_pattern_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+        pattern_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": int(limit)}
+        filters: list[str] = []
+        filters = self._apply_status_filters("e", event_statuses, params, filters)
+        if pattern_statuses:
+            filters.append("p.status IN $pattern_statuses")
+            params["pattern_statuses"] = list(pattern_statuses)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Event)-[r:ABSTRACT_TO]->(p:Pattern)
+            {where_clause}
+            RETURN e.id, p.id, r.confidence, r.contribution_weight, r.last_reinforced_at
+            ORDER BY r.last_reinforced_at DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        rows = []
+        while resp.has_next():
+            row = resp.get_next()
+            rows.append(
+                {
+                    "event_id": row[0],
+                    "pattern_id": row[1],
+                    "confidence": float(row[2] or 0.0),
+                    "contribution_weight": float(row[3] or 0.0),
+                    "last_reinforced_at": int(row[4] or 0),
+                }
+            )
+        return rows
+
+    def list_next_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": int(limit)}
+        filters: list[str] = []
+        filters = self._apply_status_filters("a", event_statuses, params, filters)
+        if event_statuses:
+            filters.append("b.status IN $next_target_statuses")
+            params["next_target_statuses"] = list(event_statuses)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        resp = self.conn.execute(
+            f"""
+            MATCH (a:Event)-[r:NEXT]->(b:Event)
+            {where_clause}
+            RETURN a.id, b.id, r.confidence, r.score, r.relation_hint, r.last_seen_at, r.support_count
+            ORDER BY r.last_seen_at DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        rows = []
+        while resp.has_next():
+            row = resp.get_next()
+            rows.append(
+                {
+                    "from_event_id": row[0],
+                    "to_event_id": row[1],
+                    "confidence": float(row[2] or 0.0),
+                    "score": float(row[3] or 0.0),
+                    "relation_hint": row[4] or "",
+                    "last_seen_at": int(row[5] or 0),
+                    "support_count": int(row[6] or 0),
+                }
+            )
+        return rows
 
     # ==================== 统计 ====================
 

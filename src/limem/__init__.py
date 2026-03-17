@@ -57,6 +57,8 @@ from .retriever import (
 
 # ==================== 系统实现 ====================
 from .ltmemory_impl import LTMemoryImpl
+from .ops import MemoryGraphOps
+from .trips_debugger import TripsDebuggerConfig, TripsDebuggerSession, create_trips_debugger_app
 from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
 from .migration import migrate_to_dynamic_graph, MigrationReport, LegacyEdgeAdapter
 
@@ -167,6 +169,10 @@ __all__ = [
     "SearcherConfig",
     # ===== 系统实现 =====
     "LTMemoryImpl",
+    "MemoryGraphOps",
+    "TripsDebuggerConfig",
+    "TripsDebuggerSession",
+    "create_trips_debugger_app",
     "DynamicEvolutionEngine",
     "DynamicEvolutionConfig",
     "migrate_to_dynamic_graph",

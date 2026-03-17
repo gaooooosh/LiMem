@@ -496,6 +496,11 @@ class DynamicEvolutionEngine:
             pattern_a.prototype_features, pattern_b.prototype_features
         )
         self.store.update_pattern(pattern_a)
+        self.store.relink_pattern_edges(
+            source_pattern_id=pattern_b.id,
+            target_pattern_id=pattern_a.id,
+            timestamp=now,
+        )
 
         pattern_b.status = "merged"
         pattern_b.valid_to = now
@@ -659,6 +664,11 @@ class DynamicEvolutionEngine:
                 a.last_seen_at = max(a.last_seen_at, b.last_seen_at, now)
                 a.structured_slots = self._merge_slots(a.structured_slots, b.structured_slots)
                 self.store.update_context(a)
+                self.store.relink_context_edges(
+                    source_context_id=b.id,
+                    target_context_id=a.id,
+                    timestamp=now,
+                )
                 b.status = "merged"
                 b.valid_to = now
                 b.updated_at = now
@@ -913,6 +923,11 @@ class DynamicEvolutionEngine:
         canonical.evidence = canonical.evidence + merged.evidence
         canonical.payload = self._merge_event_payload(canonical.payload, merged.payload, merged.id, merged_at)
         self.store.update_event(canonical)
+        self.store.relink_event_references(
+            source_event_id=merged.id,
+            target_event_id=canonical.id,
+            timestamp=merged_at,
+        )
 
         merged.status = "merged"
         merged.valid_to = merged_at
@@ -1230,6 +1245,76 @@ class DynamicEvolutionEngine:
             if value not in (None, "", [], {}):
                 merged[key] = value
         return merged
+
+    def merge_events(
+        self,
+        canonical_event_id: str,
+        merged_event_id: str,
+        merged_at: Optional[int] = None,
+        similarity_score: float = 1.0,
+        merge_reason: str = "manual_merge",
+    ) -> dict[str, Any]:
+        canonical = self.store.get_event(canonical_event_id)
+        merged = self.store.get_event(merged_event_id)
+        if canonical is None:
+            raise ValueError(f"Canonical event not found: {canonical_event_id}")
+        if merged is None:
+            raise ValueError(f"Merged event not found: {merged_event_id}")
+        if canonical.id == merged.id:
+            raise ValueError("Cannot merge the same event")
+        ts = int(merged_at or time.time())
+        self._merge_event_pair(
+            canonical=canonical,
+            merged=merged,
+            similarity_score=similarity_score,
+            merge_reason=merge_reason,
+            merged_at=ts,
+        )
+        return {
+            "canonical_event_id": canonical.id,
+            "merged_event_id": merged.id,
+            "merged_at": ts,
+            "similarity_score": float(similarity_score),
+            "merge_reason": merge_reason,
+        }
+
+    def merge_contexts(
+        self,
+        canonical_context_id: str,
+        merged_context_id: str,
+        merged_at: Optional[int] = None,
+    ) -> dict[str, Any]:
+        canonical = self.store.get_context(canonical_context_id)
+        merged = self.store.get_context(merged_context_id)
+        if canonical is None:
+            raise ValueError(f"Canonical context not found: {canonical_context_id}")
+        if merged is None:
+            raise ValueError(f"Merged context not found: {merged_context_id}")
+        if canonical.id == merged.id:
+            raise ValueError("Cannot merge the same context")
+        ts = int(merged_at or time.time())
+        canonical.support_count += max(1, merged.support_count)
+        canonical.confidence = min(1.0, max(canonical.confidence, merged.confidence) + 0.03)
+        canonical.updated_at = ts
+        canonical.last_seen_at = max(canonical.last_seen_at, merged.last_seen_at, ts)
+        canonical.structured_slots = self._merge_slots(canonical.structured_slots, merged.structured_slots)
+        canonical.summary = canonical.summary or merged.summary
+        self.store.update_context(canonical)
+        moved_links = self.store.relink_context_edges(
+            source_context_id=merged.id,
+            target_context_id=canonical.id,
+            timestamp=ts,
+        )
+        merged.status = "merged"
+        merged.valid_to = ts
+        merged.updated_at = ts
+        self.store.update_context(merged)
+        return {
+            "canonical_context_id": canonical.id,
+            "merged_context_id": merged.id,
+            "merged_at": ts,
+            "moved_links": moved_links,
+        }
 
     def _new_context_id(self, context: Context) -> str:
         signature = f"{context.context_type}|{context.subtype}|{safe_json_dumps(context.structured_slots)}"

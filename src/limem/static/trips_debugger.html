@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiMem Trips 交互式调试器</title>
+    <style>
+        :root {
+            --bg: #f6efe4;
+            --bg-deep: #efe4d2;
+            --panel: rgba(255, 251, 245, 0.86);
+            --card: rgba(255, 255, 255, 0.94);
+            --line: #d6c2a5;
+            --text: #2c261f;
+            --muted: #776a58;
+            --accent: #bc6333;
+            --accent-strong: #8f4318;
+            --teal: #1d706c;
+            --olive: #547541;
+            --warn: #b77b20;
+            --danger: #9a3b2b;
+            --event: #c76538;
+            --context: #2f7c78;
+            --pattern: #5e7f3e;
+            --merged: #998c7b;
+            --shadow: 0 24px 50px rgba(82, 55, 28, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at top left, rgba(255, 246, 225, 0.85), transparent 32%),
+                radial-gradient(circle at bottom right, rgba(188, 99, 51, 0.1), transparent 28%),
+                linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+            color: var(--text);
+            font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        }
+
+        .app-shell {
+            display: grid;
+            grid-template-rows: auto auto 1fr;
+            min-height: 100vh;
+        }
+
+        .hero {
+            padding: 22px 24px 14px;
+        }
+
+        .hero-card {
+            border: 1px solid rgba(255,255,255,0.52);
+            border-radius: 28px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.75), rgba(255,246,236,0.92));
+            box-shadow: var(--shadow);
+            padding: 22px 24px;
+        }
+
+        .hero-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .hero h1 {
+            margin: 0;
+            font-size: 30px;
+            letter-spacing: 0.03em;
+        }
+
+        .hero p {
+            margin: 8px 0 0;
+            max-width: 860px;
+            line-height: 1.65;
+            color: var(--muted);
+        }
+
+        .hero-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .primary-btn,
+        .ghost-btn,
+        .danger-btn,
+        .mini-btn {
+            border: none;
+            border-radius: 999px;
+            padding: 11px 16px;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+        }
+
+        .primary-btn:hover,
+        .ghost-btn:hover,
+        .danger-btn:hover,
+        .mini-btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .primary-btn {
+            background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+            color: #fff;
+            box-shadow: 0 16px 28px rgba(143, 67, 24, 0.24);
+        }
+
+        .ghost-btn {
+            background: rgba(255,255,255,0.8);
+            color: var(--accent-strong);
+            border: 1px solid var(--line);
+        }
+
+        .danger-btn {
+            background: linear-gradient(135deg, #be5845, var(--danger));
+            color: #fff;
+        }
+
+        .mini-btn {
+            background: rgba(47, 124, 120, 0.12);
+            color: var(--teal);
+            border: 1px solid rgba(47, 124, 120, 0.18);
+            padding: 8px 12px;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            padding: 0 24px 18px;
+        }
+
+        .metric {
+            padding: 16px;
+            border-radius: 20px;
+            background: rgba(255, 253, 249, 0.76);
+            border: 1px solid rgba(214, 194, 165, 0.8);
+            box-shadow: 0 8px 24px rgba(101, 77, 44, 0.06);
+        }
+
+        .metric-label {
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        .metric-value {
+            margin-top: 8px;
+            font-size: 28px;
+            font-weight: 800;
+        }
+
+        .workspace {
+            display: grid;
+            grid-template-columns: 360px minmax(540px, 1fr) 360px;
+            gap: 18px;
+            padding: 0 24px 24px;
+        }
+
+        .panel {
+            min-height: 200px;
+            border-radius: 26px;
+            border: 1px solid rgba(214, 194, 165, 0.82);
+            background: var(--panel);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 16px 40px rgba(71, 52, 31, 0.08);
+            overflow: hidden;
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 18px 20px 12px;
+        }
+
+        .panel-title {
+            font-size: 18px;
+            font-weight: 800;
+        }
+
+        .panel-subtitle {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .panel-body {
+            padding: 0 20px 20px;
+        }
+
+        .stack {
+            display: grid;
+            gap: 14px;
+        }
+
+        .block {
+            padding: 14px;
+            border-radius: 20px;
+            background: var(--card);
+            border: 1px solid rgba(214, 194, 165, 0.76);
+        }
+
+        .block h3 {
+            margin: 0 0 10px;
+            font-size: 15px;
+        }
+
+        .control-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .field {
+            display: grid;
+            gap: 6px;
+        }
+
+        .field label {
+            font-size: 12px;
+            color: var(--muted);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select,
+        textarea {
+            width: 100%;
+            border-radius: 16px;
+            border: 1px solid var(--line);
+            background: rgba(255,255,255,0.95);
+            color: var(--text);
+            padding: 11px 13px;
+            font-size: 14px;
+            outline: none;
+        }
+
+        textarea {
+            min-height: 160px;
+            resize: vertical;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            line-height: 1.5;
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            border-color: rgba(188, 99, 51, 0.52);
+            box-shadow: 0 0 0 4px rgba(188, 99, 51, 0.12);
+        }
+
+        .checkbox-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: var(--muted);
+        }
+
+        .episode-list {
+            max-height: 420px;
+            overflow: auto;
+            display: grid;
+            gap: 10px;
+        }
+
+        .episode-card {
+            padding: 12px;
+            border-radius: 18px;
+            border: 1px solid rgba(214, 194, 165, 0.72);
+            background: #fffdfa;
+            display: grid;
+            gap: 8px;
+        }
+
+        .episode-card.is-written {
+            background: rgba(84, 117, 65, 0.08);
+            border-color: rgba(84, 117, 65, 0.28);
+        }
+
+        .episode-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: start;
+        }
+
+        .episode-meta {
+            font-size: 12px;
+            color: var(--muted);
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 12px;
+            font-weight: 700;
+            background: rgba(188, 99, 51, 0.12);
+            color: var(--accent-strong);
+        }
+
+        .pill.teal {
+            background: rgba(29,112,108,0.12);
+            color: var(--teal);
+        }
+
+        .pill.olive {
+            background: rgba(84,117,65,0.14);
+            color: var(--olive);
+        }
+
+        .pill.gray {
+            background: rgba(119,106,88,0.14);
+            color: var(--muted);
+        }
+
+        .episode-content {
+            font-size: 14px;
+            line-height: 1.55;
+        }
+
+        .graph-panel {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+        }
+
+        .graph-toolbar {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            padding: 0 20px 12px;
+            flex-wrap: wrap;
+        }
+
+        .graph-legend {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .legend-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .graph-wrap {
+            position: relative;
+            min-height: 720px;
+            margin: 0 20px 18px;
+            border-radius: 22px;
+            overflow: hidden;
+            background:
+                linear-gradient(90deg, rgba(198,101,56,0.06) 0%, rgba(198,101,56,0.06) 33%, transparent 33%, transparent 66%, rgba(47,124,120,0.05) 66%, rgba(94,127,62,0.05) 100%),
+                linear-gradient(180deg, rgba(255,255,255,0.9), rgba(252,248,241,0.96));
+            border: 1px solid rgba(214, 194, 165, 0.78);
+        }
+
+        #graphSvg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .graph-empty {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: var(--muted);
+            text-align: center;
+            padding: 24px;
+        }
+
+        .lane-title {
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            fill: rgba(44,38,31,0.72);
+        }
+
+        .graph-footnote {
+            padding: 0 20px 18px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .detail-body,
+        .log-list {
+            max-height: 320px;
+            overflow: auto;
+            display: grid;
+            gap: 10px;
+        }
+
+        .detail-empty,
+        .log-empty {
+            padding: 14px;
+            border-radius: 16px;
+            background: rgba(255,255,255,0.72);
+            color: var(--muted);
+            border: 1px dashed var(--line);
+            line-height: 1.6;
+        }
+
+        .kv {
+            display: grid;
+            grid-template-columns: 88px 1fr;
+            gap: 8px;
+            align-items: start;
+            font-size: 13px;
+            line-height: 1.6;
+            padding: 10px 0;
+            border-bottom: 1px dashed rgba(214, 194, 165, 0.7);
+        }
+
+        .kv:last-child {
+            border-bottom: none;
+        }
+
+        .kv-key {
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-size: 11px;
+        }
+
+        .json-block {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            background: #fbf5eb;
+            border: 1px solid rgba(214, 194, 165, 0.76);
+            border-radius: 16px;
+            padding: 10px;
+            font-size: 12px;
+        }
+
+        .log-item {
+            border-radius: 18px;
+            background: #fffdfa;
+            border: 1px solid rgba(214, 194, 165, 0.72);
+            padding: 12px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .log-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .log-action {
+            font-weight: 800;
+            font-size: 14px;
+        }
+
+        .log-time {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .status-line {
+            margin: 0 24px 20px;
+            padding: 12px 14px;
+            border-radius: 18px;
+            border: 1px solid rgba(214, 194, 165, 0.76);
+            background: rgba(255,255,255,0.86);
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .status-line strong {
+            color: var(--text);
+        }
+
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(39, 31, 24, 0.22);
+            backdrop-filter: blur(2px);
+            z-index: 20;
+        }
+
+        .loading-overlay.visible {
+            display: flex;
+        }
+
+        .loading-card {
+            border-radius: 22px;
+            background: rgba(255, 251, 245, 0.96);
+            border: 1px solid rgba(214, 194, 165, 0.82);
+            padding: 18px 20px;
+            box-shadow: var(--shadow);
+            color: var(--text);
+            font-weight: 700;
+        }
+
+        @media (max-width: 1280px) {
+            .workspace {
+                grid-template-columns: 340px 1fr;
+                grid-template-areas:
+                    "left center"
+                    "right center";
+            }
+            .panel.left { grid-area: left; }
+            .panel.center { grid-area: center; }
+            .panel.right { grid-area: right; }
+        }
+
+        @media (max-width: 960px) {
+            .workspace {
+                grid-template-columns: 1fr;
+                grid-template-areas:
+                    "left"
+                    "center"
+                    "right";
+            }
+            .graph-wrap {
+                min-height: 540px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-shell">
+        <section class="hero">
+            <div class="hero-card">
+                <div class="hero-top">
+                    <div>
+                        <h1>LiMem Trips 交互式调试器</h1>
+                        <p>从 `trips.json` 中按条选择写入数据，实时观察 Event / Context / Pattern / NEXT 图结构变化，并在同一页面直接执行 `merge_event` 与 `merge_context`。</p>
+                    </div>
+                    <div class="hero-actions">
+                        <button class="ghost-btn" id="refreshBtn">刷新图</button>
+                        <button class="danger-btn" id="resetBtn">从 0 重置数据库</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="metrics" id="metrics"></section>
+
+        <main class="workspace">
+            <aside class="panel left">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">写入控制台</div>
+                        <div class="panel-subtitle">选择 trips 数据或手工写入新节点</div>
+                    </div>
+                </div>
+                <div class="panel-body stack">
+                    <div class="block">
+                        <h3>快速写入</h3>
+                        <div class="control-row">
+                            <button class="mini-btn" data-write-next="1">写入下 1 条</button>
+                            <button class="mini-btn" data-write-next="5">写入下 5 条</button>
+                            <button class="mini-btn" data-write-next="10">写入下 10 条</button>
+                        </div>
+                        <div style="margin-top: 12px;" class="checkbox-line">
+                            <input type="checkbox" id="allowReplay">
+                            <label for="allowReplay">允许重放已写入条目</label>
+                        </div>
+                    </div>
+
+                    <div class="block">
+                        <h3>Trips 选择器</h3>
+                        <div class="stack">
+                            <div class="field">
+                                <label for="episodeSearch">搜索内容</label>
+                                <input id="episodeSearch" type="text" placeholder="按文本、bucket 或 source 搜索">
+                            </div>
+                            <div class="field">
+                                <label for="bucketFilter">Bucket</label>
+                                <select id="bucketFilter"></select>
+                            </div>
+                            <div class="checkbox-line">
+                                <input type="checkbox" id="pendingOnly" checked>
+                                <label for="pendingOnly">只看未写入数据</label>
+                            </div>
+                            <div class="control-row">
+                                <button class="primary-btn" id="writeSelectedBtn">写入选中条目</button>
+                                <button class="ghost-btn" id="clearSelectionBtn">清空选择</button>
+                            </div>
+                            <div class="episode-list" id="episodeList"></div>
+                        </div>
+                    </div>
+
+                    <div class="block">
+                        <h3>手工 write</h3>
+                        <div class="stack">
+                            <div class="control-row">
+                                <button class="mini-btn" data-template="event">事件模板</button>
+                                <button class="mini-btn" data-template="context">上下文模板</button>
+                            </div>
+                            <div class="field">
+                                <label for="manualKind">Kind</label>
+                                <select id="manualKind">
+                                    <option value="event">event</option>
+                                    <option value="context">context</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="manualEntityIds">Entity IDs</label>
+                                <input id="manualEntityIds" type="text" placeholder="逗号分隔，可选">
+                            </div>
+                            <div class="field">
+                                <label for="manualJson">JSON Payload</label>
+                                <textarea id="manualJson"></textarea>
+                            </div>
+                            <button class="primary-btn" id="manualWriteBtn">执行 write</button>
+                        </div>
+                    </div>
+
+                    <div class="block">
+                        <h3>Merge 操作</h3>
+                        <div class="stack">
+                            <div class="field">
+                                <label for="canonicalEventId">merge_event: canonical</label>
+                                <select id="canonicalEventId"></select>
+                            </div>
+                            <div class="field">
+                                <label for="mergedEventId">merge_event: merged</label>
+                                <select id="mergedEventId"></select>
+                            </div>
+                            <div class="field">
+                                <label for="mergeReason">merge_reason</label>
+                                <input id="mergeReason" type="text" value="manual_merge_from_ui">
+                            </div>
+                            <button class="ghost-btn" id="mergeEventBtn">执行 merge_event</button>
+
+                            <div class="field">
+                                <label for="canonicalContextId">merge_context: canonical</label>
+                                <select id="canonicalContextId"></select>
+                            </div>
+                            <div class="field">
+                                <label for="mergedContextId">merge_context: merged</label>
+                                <select id="mergedContextId"></select>
+                            </div>
+                            <button class="ghost-btn" id="mergeContextBtn">执行 merge_context</button>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <section class="panel center graph-panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">实时图视图</div>
+                        <div class="panel-subtitle">每次 write / merge 后自动刷新</div>
+                    </div>
+                </div>
+                <div class="graph-toolbar">
+                    <div class="graph-legend">
+                        <span class="legend-chip"><span class="legend-dot" style="background: var(--event);"></span> Event</span>
+                        <span class="legend-chip"><span class="legend-dot" style="background: var(--context);"></span> Context</span>
+                        <span class="legend-chip"><span class="legend-dot" style="background: var(--pattern);"></span> Pattern</span>
+                        <span class="legend-chip"><span class="legend-dot" style="background: var(--merged);"></span> Merged / Archived</span>
+                    </div>
+                    <div class="panel-subtitle" id="graphMeta">等待加载图快照</div>
+                </div>
+                <div class="graph-wrap">
+                    <svg id="graphSvg" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid meet"></svg>
+                    <div class="graph-empty" id="graphEmpty">
+                        <div style="font-size: 56px;">◎</div>
+                        <div>当前数据库为空。先从左侧选择几条 `trips.json` 数据写入。</div>
+                    </div>
+                </div>
+                <div class="graph-footnote">
+                    视图按三条泳道显示节点：左侧为 Event，中间为 Context，右侧为 Pattern。`IN_REL` 和 `ABSTRACT_TO` 横向连接，不同 Event 之间的 `NEXT` 关系会绘制为同泳道弧线。
+                </div>
+            </section>
+
+            <aside class="panel right">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">详情与操作日志</div>
+                        <div class="panel-subtitle">点击图节点可查看详细字段</div>
+                    </div>
+                </div>
+                <div class="panel-body stack">
+                    <div class="block">
+                        <h3>节点详情</h3>
+                        <div class="detail-body" id="detailBody">
+                            <div class="detail-empty">点击图中的节点后，这里会展示其字段、关联关系和状态。</div>
+                        </div>
+                    </div>
+
+                    <div class="block">
+                        <h3>最近操作</h3>
+                        <div class="log-list" id="logList">
+                            <div class="log-empty">还没有操作记录。</div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <div class="status-line">
+            <div id="statusText"><strong>状态：</strong>等待初始化</div>
+            <div id="configText"></div>
+        </div>
+    </div>
+
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-card">正在操作数据库并刷新图快照…</div>
+    </div>
+
+    <script>
+        const state = {
+            appState: null,
+            episodes: [],
+            selectedEpisodeIndexes: new Set(),
+            selectedNode: null,
+        };
+
+        const templates = {
+            event: {
+                summary: "用户在会议场景手工开启静音模式",
+                event_type: "meeting_mode",
+                action: "开启静音",
+                timestamp: 1773326409,
+                last_active: 1773326409,
+                participants: [{ role: "用户" }],
+                location: { digital_context: "会议模式", place: ["车内"] },
+                payload: { context: { scene: "会议场景", digital_context: "会议模式" } }
+            },
+            context: {
+                summary: "context:会议场景 / 会议模式",
+                context_type: "situation",
+                subtype: "会议场景",
+                structured_slots: {
+                    scene: "会议场景",
+                    digital_context: "会议模式",
+                    goal_hint: "保持安静"
+                }
+            }
+        };
+
+        document.addEventListener("DOMContentLoaded", async () => {
+            bindEvents();
+            document.getElementById("manualJson").value = JSON.stringify(templates.event, null, 2);
+            await Promise.all([refreshState(), loadEpisodes()]);
+        });
+
+        function bindEvents() {
+            document.getElementById("refreshBtn").addEventListener("click", async () => {
+                await refreshState();
+                await loadEpisodes();
+                setStatus("已刷新数据库状态和图快照。");
+            });
+
+            document.getElementById("resetBtn").addEventListener("click", async () => {
+                if (!confirm("这会清空当前调试数据库并从 0 开始，是否继续？")) return;
+                await withLoading(async () => {
+                    const data = await api("/api/trips-debug/reset", {
+                        method: "POST",
+                        body: JSON.stringify({ clear_db: true }),
+                    });
+                    state.appState = data;
+                    state.selectedEpisodeIndexes.clear();
+                    state.selectedNode = null;
+                    renderAll();
+                    await loadEpisodes();
+                    setStatus("数据库已重置，可以重新选择 trips 数据写入。");
+                });
+            });
+
+            document.querySelectorAll("[data-write-next]").forEach((button) => {
+                button.addEventListener("click", async () => {
+                    const count = Number(button.getAttribute("data-write-next") || "1");
+                    await withLoading(async () => {
+                        const data = await api("/api/trips-debug/write-next", {
+                            method: "POST",
+                            body: JSON.stringify({
+                                count,
+                                allow_replay: document.getElementById("allowReplay").checked,
+                            }),
+                        });
+                        state.appState = data.state;
+                        renderAll();
+                        await loadEpisodes();
+                        setStatus(`已写入下一批数据，共 ${data.results.length} 条。`);
+                    });
+                });
+            });
+
+            document.getElementById("writeSelectedBtn").addEventListener("click", async () => {
+                const episodeIndexes = Array.from(state.selectedEpisodeIndexes).sort((a, b) => a - b);
+                if (!episodeIndexes.length) {
+                    setStatus("请先在 trips 列表中勾选要写入的条目。", true);
+                    return;
+                }
+                await withLoading(async () => {
+                    const data = await api("/api/trips-debug/write-selected", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            episode_indexes: episodeIndexes,
+                            allow_replay: document.getElementById("allowReplay").checked,
+                        }),
+                    });
+                    state.appState = data.state;
+                    state.selectedEpisodeIndexes.clear();
+                    renderAll();
+                    await loadEpisodes();
+                    setStatus(`已处理 ${data.results.length} 条选中记录。`);
+                });
+            });
+
+            document.getElementById("clearSelectionBtn").addEventListener("click", () => {
+                state.selectedEpisodeIndexes.clear();
+                renderEpisodeList();
+                setStatus("已清空当前选择。");
+            });
+
+            document.getElementById("episodeSearch").addEventListener("input", renderEpisodeList);
+            document.getElementById("bucketFilter").addEventListener("change", renderEpisodeList);
+            document.getElementById("pendingOnly").addEventListener("change", renderEpisodeList);
+
+            document.querySelectorAll("[data-template]").forEach((button) => {
+                button.addEventListener("click", () => {
+                    const key = button.getAttribute("data-template");
+                    document.getElementById("manualKind").value = key;
+                    document.getElementById("manualJson").value = JSON.stringify(templates[key], null, 2);
+                });
+            });
+
+            document.getElementById("manualWriteBtn").addEventListener("click", async () => {
+                const kind = document.getElementById("manualKind").value;
+                let payload;
+                try {
+                    payload = JSON.parse(document.getElementById("manualJson").value);
+                } catch (error) {
+                    setStatus(`手工 write 的 JSON 解析失败: ${error.message}`, true);
+                    return;
+                }
+                const entityIds = document.getElementById("manualEntityIds").value
+                    .split(",")
+                    .map(item => item.trim())
+                    .filter(Boolean);
+
+                await withLoading(async () => {
+                    const data = await api("/api/trips-debug/write-manual", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            kind,
+                            payload,
+                            entity_ids: entityIds,
+                            evolve: true,
+                        }),
+                    });
+                    state.appState = data.state;
+                    renderAll();
+                    setStatus(`已执行手工 write，kind=${kind}。`);
+                });
+            });
+
+            document.getElementById("mergeEventBtn").addEventListener("click", async () => {
+                const canonicalEventId = document.getElementById("canonicalEventId").value;
+                const mergedEventId = document.getElementById("mergedEventId").value;
+                if (!canonicalEventId || !mergedEventId) {
+                    setStatus("请选择 merge_event 的 canonical 和 merged event。", true);
+                    return;
+                }
+                await withLoading(async () => {
+                    const data = await api("/api/trips-debug/merge-event", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            canonical_event_id: canonicalEventId,
+                            merged_event_id: mergedEventId,
+                            merge_reason: document.getElementById("mergeReason").value || "manual_merge_from_ui",
+                        }),
+                    });
+                    state.appState = data.state;
+                    renderAll();
+                    setStatus(`已执行 merge_event: ${canonicalEventId} <- ${mergedEventId}`);
+                });
+            });
+
+            document.getElementById("mergeContextBtn").addEventListener("click", async () => {
+                const canonicalContextId = document.getElementById("canonicalContextId").value;
+                const mergedContextId = document.getElementById("mergedContextId").value;
+                if (!canonicalContextId || !mergedContextId) {
+                    setStatus("请选择 merge_context 的 canonical 和 merged context。", true);
+                    return;
+                }
+                await withLoading(async () => {
+                    const data = await api("/api/trips-debug/merge-context", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            canonical_context_id: canonicalContextId,
+                            merged_context_id: mergedContextId,
+                        }),
+                    });
+                    state.appState = data.state;
+                    renderAll();
+                    setStatus(`已执行 merge_context: ${canonicalContextId} <- ${mergedContextId}`);
+                });
+            });
+        }
+
+        async function api(url, options = {}) {
+            const response = await fetch(url, {
+                headers: { "Content-Type": "application/json" },
+                ...options,
+            });
+            if (!response.ok) {
+                let message = response.statusText;
+                try {
+                    const data = await response.json();
+                    message = data.detail || message;
+                } catch (_) {}
+                throw new Error(message);
+            }
+            return response.json();
+        }
+
+        async function withLoading(callback) {
+            toggleLoading(true);
+            try {
+                await callback();
+            } catch (error) {
+                console.error(error);
+                setStatus(error.message || "操作失败", true);
+            } finally {
+                toggleLoading(false);
+            }
+        }
+
+        function toggleLoading(visible) {
+            document.getElementById("loadingOverlay").classList.toggle("visible", visible);
+        }
+
+        async function refreshState() {
+            await withLoading(async () => {
+                state.appState = await api("/api/trips-debug/state");
+                renderAll();
+            });
+        }
+
+        async function loadEpisodes() {
+            const data = await api("/api/trips-debug/episodes?limit=5000");
+            state.episodes = data.items;
+            renderBucketFilter(data.bucket_options || []);
+            syncWrittenFlags();
+            renderEpisodeList();
+        }
+
+        function syncWrittenFlags() {
+            const writtenIndexes = new Set(state.appState?.progress?.written_indexes || []);
+            state.episodes = state.episodes.map(item => ({
+                ...item,
+                written: writtenIndexes.has(item.index),
+            }));
+        }
+
+        function renderAll() {
+            if (!state.appState) return;
+            syncWrittenFlags();
+            if (state.selectedNode?.id) {
+                state.selectedNode = findNode(state.selectedNode.id);
+            }
+            renderMetrics();
+            renderEpisodeList();
+            renderGraph();
+            renderNodeInspector();
+            renderOperationLog();
+            renderMergeSelectors();
+            renderFooter();
+        }
+
+        function renderMetrics() {
+            const stats = state.appState.stats || {};
+            const progress = state.appState.progress || {};
+            const metrics = [
+                ["总 trips 条目", state.appState.config.episodes_total || 0],
+                ["已写入", progress.written_count || 0],
+                ["待写入", progress.pending_count || 0],
+                ["Events", stats.event_count || 0],
+                ["Contexts", stats.context_count || 0],
+                ["Patterns", stats.pattern_count || 0],
+                ["NEXT", stats.next_count || 0],
+                ["IN_REL", stats.in_count || 0],
+            ];
+
+            document.getElementById("metrics").innerHTML = metrics.map(([label, value]) => `
+                <div class="metric">
+                    <div class="metric-label">${escapeHtml(label)}</div>
+                    <div class="metric-value">${value}</div>
+                </div>
+            `).join("");
+        }
+
+        function renderBucketFilter(options) {
+            const select = document.getElementById("bucketFilter");
+            const current = select.value;
+            select.innerHTML = [
+                `<option value="">全部 bucket</option>`,
+                ...options.map(option => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`)
+            ].join("");
+            if (options.includes(current)) {
+                select.value = current;
+            }
+        }
+
+        function renderEpisodeList() {
+            const query = (document.getElementById("episodeSearch").value || "").trim().toLowerCase();
+            const bucket = document.getElementById("bucketFilter").value || "";
+            const pendingOnly = document.getElementById("pendingOnly").checked;
+            const container = document.getElementById("episodeList");
+
+            const filtered = state.episodes.filter(item => {
+                if (pendingOnly && item.written) return false;
+                if (bucket && item.metadata?.bucket_name !== bucket) return false;
+                const haystack = `${item.content} ${JSON.stringify(item.metadata || {})}`.toLowerCase();
+                if (query && !haystack.includes(query)) return false;
+                return true;
+            });
+
+            if (!filtered.length) {
+                container.innerHTML = `<div class="detail-empty">当前过滤条件下没有可展示的 trips 记录。</div>`;
+                return;
+            }
+
+            container.innerHTML = filtered.map(item => {
+                const selected = state.selectedEpisodeIndexes.has(item.index);
+                return `
+                    <div class="episode-card ${item.written ? "is-written" : ""}">
+                        <div class="episode-top">
+                            <label class="checkbox-line" style="align-items: flex-start;">
+                                <input
+                                    type="checkbox"
+                                    ${selected ? "checked" : ""}
+                                    onchange="toggleEpisodeSelection(${item.index}, this.checked)"
+                                >
+                                <div>
+                                    <div style="font-weight: 700;">#${item.index}</div>
+                                    <div class="episode-meta">
+                                        <span>${escapeHtml(item.timestamp_text || "no-time")}</span>
+                                        <span>${escapeHtml(item.metadata?.bucket_name || "-")}</span>
+                                    </div>
+                                </div>
+                            </label>
+                            <div class="pill ${item.written ? "olive" : "gray"}">${item.written ? "已写入" : "待写入"}</div>
+                        </div>
+                        <div class="episode-content">${escapeHtml(item.content_preview)}</div>
+                        <div class="episode-meta">
+                            <span>${escapeHtml(item.metadata?.source || "unknown-source")}</span>
+                            <span>trip=${escapeHtml(String(item.metadata?.trip_index ?? "-"))}</span>
+                            <span>record=${escapeHtml(String(item.metadata?.record_index ?? "-"))}</span>
+                        </div>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        function toggleEpisodeSelection(index, checked) {
+            if (checked) state.selectedEpisodeIndexes.add(index);
+            else state.selectedEpisodeIndexes.delete(index);
+            setStatus(`当前已选择 ${state.selectedEpisodeIndexes.size} 条 trips 记录。`);
+        }
+
+        function renderGraph() {
+            const snapshot = state.appState?.snapshot || {};
+            const events = [...(snapshot.events || [])];
+            const contexts = [...(snapshot.contexts || [])];
+            const patterns = [...(snapshot.patterns || [])];
+            const svg = document.getElementById("graphSvg");
+            const graphEmpty = document.getElementById("graphEmpty");
+            const graphMeta = document.getElementById("graphMeta");
+
+            if (!events.length && !contexts.length && !patterns.length) {
+                svg.innerHTML = "";
+                graphEmpty.style.display = "flex";
+                graphMeta.textContent = "当前数据库没有节点";
+                return;
+            }
+
+            graphEmpty.style.display = "none";
+            graphMeta.textContent = `events=${events.length}, contexts=${contexts.length}, patterns=${patterns.length}`;
+
+            events.sort((a, b) => (b.last_active || b.timestamp || 0) - (a.last_active || a.timestamp || 0));
+            contexts.sort((a, b) => (b.last_seen_at || 0) - (a.last_seen_at || 0));
+            patterns.sort((a, b) => (b.last_seen_at || 0) - (a.last_seen_at || 0));
+
+            const baseHeight = 150;
+            const laneSpacing = 84;
+            const maxRows = Math.max(events.length, contexts.length, patterns.length, 1);
+            const height = Math.max(760, baseHeight + maxRows * laneSpacing);
+            const width = 1200;
+            svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+            const laneX = {
+                event: 200,
+                context: 610,
+                pattern: 1000,
+            };
+
+            const positions = {};
+            events.forEach((item, index) => {
+                positions[item.id] = { x: laneX.event, y: 120 + index * laneSpacing, type: "event", item };
+            });
+            contexts.forEach((item, index) => {
+                positions[item.id] = { x: laneX.context, y: 120 + index * laneSpacing, type: "context", item };
+            });
+            patterns.forEach((item, index) => {
+                positions[item.id] = { x: laneX.pattern, y: 120 + index * laneSpacing, type: "pattern", item };
+            });
+
+            const edgeSegments = [];
+            const eventContextEdges = snapshot.edges?.event_context || [];
+            const eventPatternEdges = snapshot.edges?.event_pattern || [];
+            const nextEdges = snapshot.edges?.next || [];
+
+            eventContextEdges.forEach(edge => {
+                const from = positions[edge.event_id];
+                const to = positions[edge.context_id];
+                if (!from || !to) return;
+                edgeSegments.push(`
+                    <path d="M ${from.x + 104} ${from.y} C ${from.x + 190} ${from.y}, ${to.x - 190} ${to.y}, ${to.x - 104} ${to.y}"
+                        fill="none"
+                        stroke="rgba(47,124,120,0.35)"
+                        stroke-width="${Math.max(1.2, Math.min(3.4, edge.weight || 1.2))}"
+                        stroke-linecap="round" />
+                `);
+            });
+
+            eventPatternEdges.forEach(edge => {
+                const from = positions[edge.event_id];
+                const to = positions[edge.pattern_id];
+                if (!from || !to) return;
+                edgeSegments.push(`
+                    <path d="M ${from.x + 104} ${from.y} C ${from.x + 250} ${from.y - 18}, ${to.x - 250} ${to.y - 18}, ${to.x - 104} ${to.y}"
+                        fill="none"
+                        stroke="rgba(94,127,62,0.34)"
+                        stroke-width="${Math.max(1.2, Math.min(3.8, edge.contribution_weight || 1.4))}"
+                        stroke-linecap="round" />
+                `);
+            });
+
+            nextEdges.forEach(edge => {
+                const from = positions[edge.from_event_id];
+                const to = positions[edge.to_event_id];
+                if (!from || !to) return;
+                const midX = from.x - 70;
+                const lift = Math.max(30, Math.abs(to.y - from.y) * 0.32);
+                edgeSegments.push(`
+                    <path d="M ${from.x - 104} ${from.y} C ${midX} ${from.y - lift}, ${midX} ${to.y - lift}, ${to.x - 104} ${to.y}"
+                        fill="none"
+                        stroke="rgba(188,99,51,0.22)"
+                        stroke-width="${Math.max(1.2, Math.min(3.6, edge.score || 1.2))}"
+                        stroke-dasharray="4 5"
+                        stroke-linecap="round" />
+                `);
+            });
+
+            const laneTitles = `
+                <text x="${laneX.event}" y="52" text-anchor="middle" class="lane-title">Event Lane</text>
+                <text x="${laneX.context}" y="52" text-anchor="middle" class="lane-title">Context Lane</text>
+                <text x="${laneX.pattern}" y="52" text-anchor="middle" class="lane-title">Pattern Lane</text>
+            `;
+
+            const nodeSegments = [
+                ...events.map(item => renderNodeSvg(item, positions[item.id], 220, 58, "event")),
+                ...contexts.map(item => renderNodeSvg(item, positions[item.id], 220, 58, "context")),
+                ...patterns.map(item => renderNodeSvg(item, positions[item.id], 220, 58, "pattern")),
+            ];
+
+            svg.innerHTML = `
+                <defs>
+                    <filter id="nodeShadow" x="-40%" y="-40%" width="180%" height="180%">
+                        <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="rgba(90, 60, 30, 0.18)" />
+                    </filter>
+                </defs>
+                ${laneTitles}
+                ${edgeSegments.join("")}
+                ${nodeSegments.join("")}
+            `;
+        }
+
+        function renderNodeSvg(item, position, width, height, type) {
+            const status = item.status || "active";
+            const color = type === "event" ? "var(--event)" : type === "context" ? "var(--context)" : "var(--pattern)";
+            const fill = status === "active" ? color : "var(--merged)";
+            const title = truncate(type === "pattern" ? (item.summary || item.id) : (item.summary || item.id), 40);
+            const subtitle = truncate(item.id, 24);
+            const x = position.x - width / 2;
+            const y = position.y - height / 2;
+            return `
+                <g style="cursor:pointer" onclick="selectNode('${escapeJs(item.id)}')">
+                    <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="22"
+                        fill="${fill}" fill-opacity="${status === "active" ? 0.95 : 0.58}"
+                        stroke="rgba(255,255,255,0.82)"
+                        stroke-width="2"
+                        filter="url(#nodeShadow)" />
+                    <text x="${position.x}" y="${position.y - 5}" text-anchor="middle" fill="#fff"
+                        font-size="14" font-weight="800">${escapeHtml(title)}</text>
+                    <text x="${position.x}" y="${position.y + 16}" text-anchor="middle" fill="rgba(255,255,255,0.84)"
+                        font-size="11">${escapeHtml(subtitle)} · ${escapeHtml(status)}</text>
+                </g>
+            `;
+        }
+
+        function renderMergeSelectors() {
+            const snapshot = state.appState?.snapshot || {};
+            fillSelect(
+                document.getElementById("canonicalEventId"),
+                snapshot.events || [],
+                item => `${item.id} | ${truncate(item.summary || "", 32)}`
+            );
+            fillSelect(
+                document.getElementById("mergedEventId"),
+                snapshot.events || [],
+                item => `${item.id} | ${truncate(item.summary || "", 32)}`
+            );
+            fillSelect(
+                document.getElementById("canonicalContextId"),
+                snapshot.contexts || [],
+                item => `${item.id} | ${truncate(item.summary || "", 32)}`
+            );
+            fillSelect(
+                document.getElementById("mergedContextId"),
+                snapshot.contexts || [],
+                item => `${item.id} | ${truncate(item.summary || "", 32)}`
+            );
+        }
+
+        function fillSelect(select, items, labeler) {
+            const current = select.value;
+            select.innerHTML = [
+                `<option value="">请选择</option>`,
+                ...items.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(labeler(item))}</option>`)
+            ].join("");
+            if (items.some(item => item.id === current)) {
+                select.value = current;
+            }
+        }
+
+        function selectNode(nodeId) {
+            state.selectedNode = findNode(nodeId);
+            renderNodeInspector();
+        }
+
+        function findNode(nodeId) {
+            const snapshot = state.appState?.snapshot || {};
+            return [...(snapshot.events || []), ...(snapshot.contexts || []), ...(snapshot.patterns || [])]
+                .find(item => item.id === nodeId) || null;
+        }
+
+        function renderNodeInspector() {
+            const container = document.getElementById("detailBody");
+            const node = state.selectedNode;
+            if (!node) {
+                container.innerHTML = `<div class="detail-empty">点击图中的节点后，这里会展示其字段、关联关系和状态。</div>`;
+                return;
+            }
+
+            const rows = Object.entries(node).map(([key, value]) => `
+                <div class="kv">
+                    <div class="kv-key">${escapeHtml(key)}</div>
+                    <div>${renderValue(value)}</div>
+                </div>
+            `).join("");
+            container.innerHTML = rows;
+        }
+
+        function renderValue(value) {
+            if (Array.isArray(value) || (value && typeof value === "object")) {
+                return `<div class="json-block">${escapeHtml(JSON.stringify(value, null, 2))}</div>`;
+            }
+            return `<div>${escapeHtml(String(value))}</div>`;
+        }
+
+        function renderOperationLog() {
+            const container = document.getElementById("logList");
+            const logs = state.appState?.operation_log || [];
+            if (!logs.length) {
+                container.innerHTML = `<div class="log-empty">还没有操作记录。</div>`;
+                return;
+            }
+            container.innerHTML = logs.map(log => `
+                <div class="log-item">
+                    <div class="log-top">
+                        <div class="log-action">${escapeHtml(log.action)}</div>
+                        <div class="log-time">${escapeHtml(log.timestamp)}</div>
+                    </div>
+                    <div class="json-block">${escapeHtml(JSON.stringify(log.detail, null, 2))}</div>
+                </div>
+            `).join("");
+        }
+
+        function renderFooter() {
+            const config = state.appState?.config || {};
+            const progress = state.appState?.progress || {};
+            document.getElementById("configText").innerHTML = `
+                <span class="pill">DB: ${escapeHtml(config.db_path || "-")}</span>
+                <span class="pill teal">Trips: ${escapeHtml(config.trips_path || "-")}</span>
+                <span class="pill olive">next pending: ${(progress.next_pending_indexes || []).slice(0, 5).join(", ") || "-"}</span>
+            `;
+        }
+
+        function setStatus(message, isError = false) {
+            const status = document.getElementById("statusText");
+            status.innerHTML = `<strong>${isError ? "错误" : "状态"}：</strong>${escapeHtml(message)}`;
+            status.style.color = isError ? "var(--danger)" : "var(--muted)";
+        }
+
+        function truncate(text, maxLength) {
+            const raw = String(text || "");
+            return raw.length > maxLength ? raw.slice(0, maxLength - 1) + "…" : raw;
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        function escapeJs(value) {
+            return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        }
+    </script>
+</body>
+</html>
