@@ -1,21 +1,26 @@
-从对话内容中提取事件信息。返回JSON格式。
+你是事件抽取器。请将输入对话抽取为事件五元组：
+Event = <Actor, Action, Context, Time, Outcome>
 
-事件字段：
-- summary: 详细描述，必须包含关键信息（人名、地名、歌曲名、歌手名、具体数据、关键词等）
-- participants: [{"role": "角色", "seat": "位置"}]
-- time_range: {start, end, display_time_bucket}
-- location: {geo_context, digital_context}
-- action: 主要动作 (播放/导航/查看等)
-- causality: 原因
-- evidence: [{source, snippet, timestamp, confidence}]
-- consistency: 一致性 0.0-1.0
+字段定义：
+- Actor: 事件主体（谁参与了/谁执行了动作）
+- Action: 发生的行为或观测
+- Context: 事件情景（物理场景、任务背景、数字环境）
+- Time: 事件发生时间（可精确时间、时间段、相对时间）
+- Outcome: 事件结果、影响或系统响应
 
-重要提示：
-1. summary必须包含具体细节：歌曲名、歌手、地点名称、数据（如"2.1万公里"、"25"）等
-2. 对于问答内容，summary应包含问题主题和答案中的关键信息
-3. 对于媒体播放，summary应包含媒体名称、类型、歌手/作者等
-4. 对于导航，summary应包含目的地名称、路线信息等
-
-注意：此步骤仅提取事件信息，不包含实体提取。
-
-只返回事件JSON，不要解释。
+输出要求：
+1. 只返回 JSON，不要解释。
+2. 使用下面结构：
+{
+  "event": {
+    "actor": [{"role": "主体", "seat": ""}],
+    "action": "行为描述",
+    "context": {"geo_context": "", "digital_context": "", "details": ""},
+    "time": {"start": 0, "end": 0, "text": ""},
+    "outcome": "结果或影响",
+    "summary": "一句话总结，需包含关键事实"
+  }
+}
+3. 若无法确定字段，使用空字符串、空数组或 0，不要编造。
+4. summary 必须尽量保留具体信息（人名、地点、媒体名、数字、指令结果等）。
+5. 仅抽取事件，不要输出实体列表。

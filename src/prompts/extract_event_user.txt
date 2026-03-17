@@ -1,4 +1,4 @@
 对话内容：
 {episode_text}
 
-输出JSON：
+输出 JSON（事件按 Event=<Actor, Action, Context, Time, Outcome>）：

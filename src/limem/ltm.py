@@ -23,6 +23,7 @@ from .models import EpisodicEventFrame
 from .utils import (
     hash_summary,
     load_prompt,
+    normalize_event_payload,
     robust_json_loads,
     safe_json_dumps,
     safe_json_loads,
@@ -73,8 +74,7 @@ class ResearchLTM:
         data = robust_json_loads(content, {})
         if not data or not isinstance(data, dict):
             raise ValueError(f"Failed to parse event data from LLM output: {content[:200]}")
-        # Return event data directly
-        return data
+        return normalize_event_payload(data, episode_text=episode_text)
 
     def extract_entities_from_llm(self, episode_text):
         # Step 2: Extract entities separately

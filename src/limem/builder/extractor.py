@@ -17,7 +17,7 @@ from ..config import (
     GENERATION_MODEL,
     ENABLE_THINKING,
 )
-from ..utils import load_prompt, robust_json_loads
+from ..utils import load_prompt, normalize_event_payload, robust_json_loads
 
 
 @dataclass
@@ -154,12 +154,7 @@ class TwoStageExtractor(LLMExtractor):
 
         if not data or not isinstance(data, dict):
             raise ValueError(f"Failed to parse event data from LLM output: {content[:200]}")
-
-        # 处理嵌套的 event 字段
-        if "event" in data and isinstance(data["event"], dict):
-            data = data["event"]
-
-        return data
+        return normalize_event_payload(data, episode_text=text)
 
     def _extract_entities(self, text: str) -> list[str]:
         """Stage 2: 提取实体列表

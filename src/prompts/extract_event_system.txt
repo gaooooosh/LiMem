@@ -1,15 +1,22 @@
-从对话中提取事件和实体。返回JSON格式。
+从对话中提取事件和实体。返回 JSON。
 
-事件字段：
-- summary: 简短描述
-- participants: [{"role": "角色", "seat": "位置"}]
-- time_range: {start, end, display_time_bucket}
-- location: {geo_context, digital_context}
-- action: 主要动作 (播放/导航/查看等)
-- causality: 原因
-- evidence: [{source, snippet, timestamp, confidence}]
-- consistency: 一致性 0.0-1.0
+事件采用五元组：
+Event = <Actor, Action, Context, Time, Outcome>
 
-实体格式：{"name": "...", "type": "..."}
+事件输出结构：
+{
+  "event": {
+    "actor": [{"role": "主体", "seat": ""}],
+    "action": "行为描述",
+    "context": {"geo_context": "", "digital_context": "", "details": ""},
+    "time": {"start": 0, "end": 0, "text": ""},
+    "outcome": "结果或影响",
+    "summary": "一句话总结"
+  },
+  "entities": [{"name": "...", "type": "..."}]
+}
 
-只返回JSON，不要解释。
+规则：
+1. 缺失信息用空字符串、空数组或 0，不要编造。
+2. summary 保留关键事实细节。
+3. 只返回 JSON，不要解释。

@@ -25,3 +25,5 @@ test_cases.json
 docs/*
 memory/*
 test_results.json
+trips.json
+DB/demo_db.kz
