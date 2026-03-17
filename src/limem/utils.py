@@ -324,8 +324,9 @@ def _looks_like_dynamic_change(summary: str, action: str) -> bool:
         return False
 
     dynamic_hints = [
-        "说", "问", "播放", "导航", "打开", "关闭", "切换", "设置", "开始", "停止",
+        "说", "问", "播放", "导航", "打开", "开启", "关闭", "切换", "设置", "开始", "停止",
         "暂停", "恢复", "提醒", "发现", "检测", "选择", "决定", "请求", "回复", "开始导航",
+        "调高", "调低", "拉满",
     ]
     return any(token in text for token in dynamic_hints)
 

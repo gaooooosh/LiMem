@@ -38,9 +38,9 @@ class TestTwoStageEventExtractor(unittest.TestCase):
                 if "空调先拉满" in user_message:
                     return {
                         "event": {
-                            "summary": "用户把空调拉满",
+                            "summary": "用户开启空调最大风量",
                             "participants": [{"role": "用户"}],
-                            "action": "把空调拉满",
+                            "action": "开启空调最大风量",
                             "time": {"text": "下午5点半左右"},
                             "causality": "",
                         }
@@ -75,7 +75,7 @@ class TestTwoStageEventExtractor(unittest.TestCase):
         events = extractor._extract_events(episode_text)
 
         self.assertEqual(len(events), 3)
-        self.assertEqual(events[0]["action"], "把空调拉满")
+        self.assertEqual(events[0]["action"], "开启空调最大风量")
         self.assertEqual(events[1]["action"], "播放热身歌")
         self.assertIn("极速制冷", events[2]["action"])
         self.assertEqual(events[2]["participants"], [{"role": "系统", "seat": ""}])
