@@ -37,6 +37,8 @@ from ..config import (
     ENABLE_AUTO_CONSOLIDATION,
     ENABLE_EVENT_RELATIONS,
     EVENT_CONSOLIDATION_CANDIDATE_LIMIT,
+    EVENT_CONSOLIDATION_EMBEDDING_CANDIDATE_THRESHOLD,
+    EVENT_CONSOLIDATION_EMBEDDING_TOP_K,
     EVENT_CONSOLIDATION_PAYLOAD_WEIGHT,
     EVENT_CONSOLIDATION_TEXT_WEIGHT,
     EVENT_CONSOLIDATION_CONTEXT_WEIGHT,
@@ -94,6 +96,8 @@ class DynamicEvolutionConfig:
     consolidation_log_path: str = CONSOLIDATION_LOG_PATH
     event_consolidation_window_seconds: int = EVENT_CONSOLIDATION_WINDOW_SECONDS
     event_consolidation_candidate_limit: int = EVENT_CONSOLIDATION_CANDIDATE_LIMIT
+    event_consolidation_embedding_candidate_threshold: float = EVENT_CONSOLIDATION_EMBEDDING_CANDIDATE_THRESHOLD
+    event_consolidation_embedding_top_k: int = EVENT_CONSOLIDATION_EMBEDDING_TOP_K
     event_consolidation_threshold: float = EVENT_CONSOLIDATION_THRESHOLD
     event_consolidation_text_weight: float = EVENT_CONSOLIDATION_TEXT_WEIGHT
     event_consolidation_context_weight: float = EVENT_CONSOLIDATION_CONTEXT_WEIGHT
@@ -471,9 +475,25 @@ class DynamicEvolutionEngine:
             if score > best_score:
                 best = candidate
                 best_score = score
+        if best is not None and best_score >= self.config.context_reuse_threshold:
+            return best
+
+        # Secondary pass: allow cross-subtype reuse for highly similar contexts.
+        cross_candidates = self.store.find_context_candidates(
+            context_type=context_draft.context_type,
+            subtype="",
+            limit=self.config.context_candidate_limit,
+            only_active=True,
+        )
+        for candidate in cross_candidates:
+            score = self._context_similarity(candidate, context_draft)
+            if score > best_score:
+                best = candidate
+                best_score = score
         if best is None:
             return None
-        return best if best_score >= self.config.context_reuse_threshold else None
+        cross_reuse_gate = min(0.88, self.config.context_reuse_threshold + 0.08)
+        return best if best_score >= cross_reuse_gate else None
 
     def update_context_with_evidence(
         self,
@@ -710,11 +730,13 @@ class DynamicEvolutionEngine:
             strategy=strategy,
             max_pairs=max_pairs,
         ) if include_events else []
-        context_plans = self.detect_context_merges(
+        context_merge_result = self.merge_all_contexts(
             current_time=now,
             strategy=strategy,
+            dry_run=True,
             max_pairs=max_pairs,
-        ) if include_contexts else []
+        ) if include_contexts else {"context_plans": [], "context_candidates": 0}
+        context_plans = list(context_merge_result.get("context_plans", []))
 
         applied_events = 0
         applied_contexts = 0
@@ -722,9 +744,16 @@ class DynamicEvolutionEngine:
             for plan in event_plans:
                 if self._apply_event_merge_plan(plan, merged_at=now):
                     applied_events += 1
-            for plan in context_plans:
-                if self._apply_context_merge_plan(plan, merged_at=now):
-                    applied_contexts += 1
+            if include_contexts:
+                applied_contexts = int(
+                    self.merge_all_contexts(
+                        current_time=now,
+                        strategy=strategy,
+                        dry_run=False,
+                        max_pairs=max_pairs,
+                    ).get("merged_contexts", 0)
+                    or 0
+                )
 
         return {
             "scope": normalized_scope,
@@ -732,7 +761,7 @@ class DynamicEvolutionEngine:
             "resolved_strategy": self._resolve_merge_strategy(strategy),
             "dry_run": bool(dry_run),
             "event_candidates": len(event_plans),
-            "context_candidates": len(context_plans),
+            "context_candidates": int(context_merge_result.get("context_candidates", len(context_plans)) or len(context_plans)),
             "merged_events": applied_events,
             "merged_contexts": applied_contexts,
             "event_plans": event_plans,
@@ -777,12 +806,22 @@ class DynamicEvolutionEngine:
                 visited_pairs.add(pair_key)
 
                 score, reason = self._event_merge_similarity(event, candidate, now)
+                embedding_similarity = self._event_embedding_similarity(
+                    self._ensure_event_embedding(event),
+                    self._ensure_event_embedding(candidate),
+                )
                 gate = llm_gate
-                if score < gate:
+                if resolved_strategy != "llm" and score < gate:
                     continue
 
                 canonical, merged = self._pick_canonical_event(event, candidate)
-                plan_reason = reason
+                plan_reason = self._build_event_merge_reason(
+                    source="embedding_preselect+heuristic_gate",
+                    local_reason=reason,
+                    embedding_similarity=embedding_similarity,
+                    llm_reason="",
+                    strategy=resolved_strategy,
+                )
                 confidence = score
                 strategy_used = resolved_strategy
 
@@ -801,7 +840,14 @@ class DynamicEvolutionEngine:
                         canonical, merged = event, candidate
                     elif canonical_id == candidate.id:
                         canonical, merged = candidate, event
-                    plan_reason = str(decision.get("reason", "") or reason or "llm_merge")
+                    llm_reason = str(decision.get("reason", "") or "").strip()
+                    plan_reason = self._build_event_merge_reason(
+                        source="embedding_preselect+llm_judge",
+                        local_reason=reason,
+                        embedding_similarity=embedding_similarity,
+                        llm_reason=llm_reason,
+                        strategy="llm",
+                    )
                     confidence = max(score, float(decision.get("confidence", score) or score))
 
                 plans.append(
@@ -813,6 +859,7 @@ class DynamicEvolutionEngine:
                         "canonical_summary": canonical.summary,
                         "merged_summary": merged.summary,
                         "score": round(float(confidence), 4),
+                        "embedding_similarity": round(float(embedding_similarity), 4),
                         "reason": plan_reason,
                     }
                 )
@@ -830,14 +877,217 @@ class DynamicEvolutionEngine:
         max_pairs: int = 10,
     ) -> list[dict[str, Any]]:
         _ = int(current_time or time.time())
+        plans, _resolved = self._plan_context_merges(strategy=strategy, max_pairs=max_pairs)
+        return plans
+
+    def merge_all_contexts(
+        self,
+        current_time: Optional[int] = None,
+        strategy: str = "auto",
+        dry_run: bool = False,
+        max_pairs: int = 50,
+    ) -> dict[str, Any]:
+        now = int(current_time or time.time())
+        plans, resolved_strategy = self._plan_context_merges(
+            strategy=strategy,
+            max_pairs=max_pairs,
+        )
+        merged_count = 0
+        if not dry_run:
+            for plan in plans:
+                canonical_id = str(plan.get("canonical_context_id", "") or "").strip()
+                merged_id = str(plan.get("merged_context_id", "") or "").strip()
+                if not canonical_id or not merged_id or canonical_id == merged_id:
+                    continue
+                self.merge_contexts(
+                    canonical_context_id=canonical_id,
+                    merged_context_id=merged_id,
+                    merged_at=now,
+                )
+                merged_count += 1
+
+        return {
+            "requested_strategy": (strategy or "auto").strip().lower(),
+            "resolved_strategy": resolved_strategy,
+            "dry_run": bool(dry_run),
+            "context_candidates": len(plans),
+            "merged_contexts": merged_count,
+            "context_plans": plans,
+        }
+
+    def consolidate_contexts(self, now: int, strategy: str = "auto") -> int:
+        result = self.merge_all_contexts(
+            current_time=now,
+            strategy=strategy,
+            dry_run=False,
+            max_pairs=max(1, self.config.context_candidate_limit * 3),
+        )
+        return int(result.get("merged_contexts", 0) or 0)
+
+    def consolidate_events(
+        self,
+        now: int,
+        dry_run: bool = False,
+        strategy: str = "auto",
+    ) -> dict[str, int]:
+        report = {
+            "scanned_events": 0,
+            "candidate_pairs": 0,
+            "merged_events": 0,
+            "archived_events": 0,
+            "skipped_events": 0,
+        }
         resolved_strategy = self._resolve_merge_strategy(strategy)
         if resolved_strategy == "disabled":
-            return []
+            return report
+        llm_gate = self.config.event_consolidation_threshold * 0.72
+        events = self.store.get_recent_events(
+            current_time=now,
+            window_seconds=self.config.event_consolidation_window_seconds,
+            limit=300,
+        )
+        report["scanned_events"] = len(events)
+        if not events:
+            return report
+
+        event_map = {event.id: event for event in events}
+        merged_sources: set[str] = set()
+        visited_pairs: set[tuple[str, str]] = set()
+
+        for event in events:
+            if event.id in merged_sources or event.status in {"merged", "archived"}:
+                report["skipped_events"] += 1
+                continue
+
+            candidates = self._retrieve_event_consolidation_candidates(event, event_map, now)
+            for candidate in candidates:
+                if candidate.id == event.id or candidate.id in merged_sources:
+                    continue
+                pair_key = tuple(sorted([event.id, candidate.id]))
+                if pair_key in visited_pairs:
+                    continue
+                visited_pairs.add(pair_key)
+                report["candidate_pairs"] += 1
+
+                score, reason = self._event_merge_similarity(event, candidate, now)
+                embedding_similarity = self._event_embedding_similarity(
+                    self._ensure_event_embedding(event),
+                    self._ensure_event_embedding(candidate),
+                )
+                gate = llm_gate
+                if resolved_strategy != "llm" and score < gate:
+                    continue
+
+                canonical, merged = self._pick_canonical_event(event, candidate)
+                merge_reason = self._build_event_merge_reason(
+                    source="embedding_preselect+heuristic_gate",
+                    local_reason=reason,
+                    embedding_similarity=embedding_similarity,
+                    llm_reason="",
+                    strategy=resolved_strategy,
+                )
+                if resolved_strategy == "llm":
+                    decision = self._llm_event_merge_decision(
+                        left=event,
+                        right=candidate,
+                        similarity_score=score,
+                        local_reason=reason,
+                    )
+                    if decision is None or not decision.get("should_merge", False):
+                        continue
+                    canonical_id = str(decision.get("canonical_id", "") or "").strip()
+                    if canonical_id == event.id:
+                        canonical, merged = event, candidate
+                    elif canonical_id == candidate.id:
+                        canonical, merged = candidate, event
+                    llm_reason = str(decision.get("reason", "") or "").strip()
+                    merge_reason = self._build_event_merge_reason(
+                        source="embedding_preselect+llm_judge",
+                        local_reason=reason,
+                        embedding_similarity=embedding_similarity,
+                        llm_reason=llm_reason,
+                        strategy="llm",
+                    )
+                    score = max(score, float(decision.get("confidence", score) or score))
+                if not dry_run:
+                    self._merge_event_pair(
+                        canonical=canonical,
+                        merged=merged,
+                        similarity_score=score,
+                        merge_reason=merge_reason,
+                        embedding_similarity=embedding_similarity,
+                        merged_at=now,
+                    )
+                merged_sources.add(merged.id)
+                report["merged_events"] += 1
+                report["archived_events"] += 1
+                break
+
+        return report
+
+    def decay_stale_nodes(self, now: int) -> int:
+        changed = 0
+        stale_before = now - self.config.stale_seconds
+        for context in self._list_all_contexts(only_active=False):
+            if context.last_seen_at and context.last_seen_at >= stale_before:
+                continue
+            old_conf = context.confidence
+            context.confidence = max(0.0, context.confidence - self.config.decay_step)
+            context.updated_at = now
+            if context.confidence < 0.25:
+                context.status = "deprecated"
+                context.valid_to = context.valid_to or now
+            if abs(old_conf - context.confidence) > 1e-6:
+                self.store.update_context(context)
+                changed += 1
+
+        return changed
+
+    def prune_weak_edges(self, now: int) -> int:
+        stale_before = now - self.config.stale_seconds
+        return 0
+
+    # -------------------------------------------------------------------------
+    # Algorithm 5: Conflict and Drift Management
+    # -------------------------------------------------------------------------
+    def detect_conflict(self, node: Context, new_evidence: ContextDraft) -> bool:
+        overlap_count = self._context_overlap_key_count(node, new_evidence)
+        if overlap_count < 2:
+            return False
+        return self._context_conflict_ratio(node, new_evidence) >= self.config.context_conflict_threshold
+
+    def handle_context_conflict(self, context_node: Context, evidence: ContextDraft) -> Context:
+        now = evidence.valid_from or int(time.time())
+        sibling = evidence.to_node(
+            context_id=f"{self._new_context_id(evidence)}_sib_{uuid.uuid4().hex[:6]}",
+            timestamp=now,
+            embedding=self._maybe_embed_context(evidence.summary),
+        )
+        sibling.confidence = max(0.45, sibling.confidence)
+        self.store.save_context(sibling)
+        if context_node.confidence < 0.4:
+            context_node.status = "deprecated"
+            context_node.valid_to = context_node.valid_to or now
+        else:
+            context_node.status = "weakened"
+        context_node.updated_at = now
+        self.store.update_context(context_node)
+        return sibling
+
+    def _plan_context_merges(
+        self,
+        strategy: str,
+        max_pairs: int,
+    ) -> tuple[list[dict[str, Any]], str]:
+        resolved_strategy = self._resolve_merge_strategy(strategy)
+        if resolved_strategy == "disabled":
+            return [], resolved_strategy
         contexts = self._list_all_contexts(only_active=True)
         if not contexts:
-            return []
+            return [], resolved_strategy
 
-        threshold = 0.56
+        threshold = max(self.config.context_reuse_threshold, 0.58)
+        conflict_skip_threshold = min(0.95, self.config.context_conflict_threshold + 0.20)
         candidates: list[tuple[float, dict[str, Any]]] = []
         for i in range(len(contexts)):
             for j in range(i + 1, len(contexts)):
@@ -845,7 +1095,9 @@ class DynamicEvolutionEngine:
                 right = contexts[j]
                 if left.status != "active" or right.status != "active":
                     continue
-                if left.context_type != right.context_type or left.subtype != right.subtype:
+                if left.context_type != right.context_type:
+                    continue
+                if self._context_conflict_ratio(left, right) >= conflict_skip_threshold:
                     continue
 
                 score = self._context_merge_score(left, right)
@@ -902,177 +1154,7 @@ class DynamicEvolutionEngine:
             plans.append(plan)
             if len(plans) >= max_pairs:
                 break
-        return plans
-
-    def consolidate_contexts(self, now: int, strategy: str = "auto") -> int:
-        contexts = self._list_all_contexts(only_active=True)
-        resolved_strategy = self._resolve_merge_strategy(strategy)
-        if resolved_strategy == "disabled":
-            return 0
-        llm_gate = 0.56
-        merged = 0
-        for i in range(len(contexts)):
-            for j in range(i + 1, len(contexts)):
-                a = contexts[i]
-                b = contexts[j]
-                if a.status != "active" or b.status != "active":
-                    continue
-                if a.context_type != b.context_type:
-                    continue
-                score = self._context_similarity(a, b)
-                gate = max(self.config.context_reuse_threshold, llm_gate)
-                if score < gate:
-                    continue
-
-                canonical, merged_context = self._pick_canonical_context(a, b)
-                if resolved_strategy == "llm":
-                    decision = self._llm_context_merge_decision(
-                        left=a,
-                        right=b,
-                        similarity_score=score,
-                    )
-                    if decision is None or not decision.get("should_merge", False):
-                        continue
-                    canonical_id = str(decision.get("canonical_id", "") or "").strip()
-                    if canonical_id == a.id:
-                        canonical, merged_context = a, b
-                    elif canonical_id == b.id:
-                        canonical, merged_context = b, a
-
-                self.merge_contexts(
-                    canonical_context_id=canonical.id,
-                    merged_context_id=merged_context.id,
-                    merged_at=now,
-                )
-                merged += 1
-        return merged
-
-    def consolidate_events(
-        self,
-        now: int,
-        dry_run: bool = False,
-        strategy: str = "auto",
-    ) -> dict[str, int]:
-        resolved_strategy = self._resolve_merge_strategy(strategy)
-        if resolved_strategy == "disabled":
-            return report
-        llm_gate = self.config.event_consolidation_threshold * 0.72
-        events = self.store.get_recent_events(
-            current_time=now,
-            window_seconds=self.config.event_consolidation_window_seconds,
-            limit=300,
-        )
-        report = {
-            "scanned_events": len(events),
-            "candidate_pairs": 0,
-            "merged_events": 0,
-            "archived_events": 0,
-            "skipped_events": 0,
-        }
-        if not events:
-            return report
-
-        event_map = {event.id: event for event in events}
-        merged_sources: set[str] = set()
-        visited_pairs: set[tuple[str, str]] = set()
-
-        for event in events:
-            if event.id in merged_sources or event.status in {"merged", "archived"}:
-                report["skipped_events"] += 1
-                continue
-
-            candidates = self._retrieve_event_consolidation_candidates(event, event_map, now)
-            for candidate in candidates:
-                if candidate.id == event.id or candidate.id in merged_sources:
-                    continue
-                pair_key = tuple(sorted([event.id, candidate.id]))
-                if pair_key in visited_pairs:
-                    continue
-                visited_pairs.add(pair_key)
-                report["candidate_pairs"] += 1
-
-                score, reason = self._event_merge_similarity(event, candidate, now)
-                gate = llm_gate
-                if score < gate:
-                    continue
-
-                canonical, merged = self._pick_canonical_event(event, candidate)
-                if resolved_strategy == "llm":
-                    decision = self._llm_event_merge_decision(
-                        left=event,
-                        right=candidate,
-                        similarity_score=score,
-                        local_reason=reason,
-                    )
-                    if decision is None or not decision.get("should_merge", False):
-                        continue
-                    canonical_id = str(decision.get("canonical_id", "") or "").strip()
-                    if canonical_id == event.id:
-                        canonical, merged = event, candidate
-                    elif canonical_id == candidate.id:
-                        canonical, merged = candidate, event
-                    reason = str(decision.get("reason", "") or reason or "llm_merge")
-                    score = max(score, float(decision.get("confidence", score) or score))
-                if not dry_run:
-                    self._merge_event_pair(
-                        canonical=canonical,
-                        merged=merged,
-                        similarity_score=score,
-                        merge_reason=reason,
-                        merged_at=now,
-                    )
-                merged_sources.add(merged.id)
-                report["merged_events"] += 1
-                report["archived_events"] += 1
-                break
-
-        return report
-
-    def decay_stale_nodes(self, now: int) -> int:
-        changed = 0
-        stale_before = now - self.config.stale_seconds
-        for context in self._list_all_contexts(only_active=False):
-            if context.last_seen_at and context.last_seen_at >= stale_before:
-                continue
-            old_conf = context.confidence
-            context.confidence = max(0.0, context.confidence - self.config.decay_step)
-            context.updated_at = now
-            if context.confidence < 0.25:
-                context.status = "deprecated"
-                context.valid_to = context.valid_to or now
-            if abs(old_conf - context.confidence) > 1e-6:
-                self.store.update_context(context)
-                changed += 1
-
-        return changed
-
-    def prune_weak_edges(self, now: int) -> int:
-        stale_before = now - self.config.stale_seconds
-        return 0
-
-    # -------------------------------------------------------------------------
-    # Algorithm 5: Conflict and Drift Management
-    # -------------------------------------------------------------------------
-    def detect_conflict(self, node: Context, new_evidence: ContextDraft) -> bool:
-        return self._context_conflict_ratio(node, new_evidence) >= self.config.context_conflict_threshold
-
-    def handle_context_conflict(self, context_node: Context, evidence: ContextDraft) -> Context:
-        now = evidence.valid_from or int(time.time())
-        sibling = evidence.to_node(
-            context_id=f"{self._new_context_id(evidence)}_sib_{uuid.uuid4().hex[:6]}",
-            timestamp=now,
-            embedding=self._maybe_embed_context(evidence.summary),
-        )
-        sibling.confidence = max(0.45, sibling.confidence)
-        self.store.save_context(sibling)
-        if context_node.confidence < 0.4:
-            context_node.status = "deprecated"
-            context_node.valid_to = context_node.valid_to or now
-        else:
-            context_node.status = "weakened"
-        context_node.updated_at = now
-        self.store.update_context(context_node)
-        return sibling
+        return plans, resolved_strategy
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -1092,6 +1174,33 @@ class DynamicEvolutionEngine:
                 return
             candidates[candidate.id] = candidate
 
+        # Step 1: embedding-high candidates as the primary candidate set.
+        base_embedding = self._ensure_event_embedding(event)
+        if base_embedding:
+            ranked: list[tuple[float, Event]] = []
+            threshold = float(self.config.event_consolidation_embedding_candidate_threshold or 0.0)
+            for candidate in event_map.values():
+                if candidate.id == event.id or candidate.status in {"merged", "archived"}:
+                    continue
+                similarity = self._event_embedding_similarity(
+                    base_embedding,
+                    self._ensure_event_embedding(candidate),
+                )
+                if similarity < threshold:
+                    continue
+                ranked.append((similarity, candidate))
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            top_k = max(
+                1,
+                min(
+                    int(self.config.event_consolidation_embedding_top_k or 1),
+                    int(self.config.event_consolidation_candidate_limit or 1),
+                ),
+            )
+            for _, candidate in ranked[:top_k]:
+                add_candidate(candidate)
+
+        # Step 2: temporal/context fallback to keep recall when embeddings are missing/noisy.
         event_time = event.last_active or event.timestamp or now
         recent = self.store.get_recent_events(
             current_time=event_time,
@@ -1160,11 +1269,21 @@ class DynamicEvolutionEngine:
         similarity_score: float,
         merge_reason: str,
         merged_at: int,
+        embedding_similarity: Optional[float] = None,
     ) -> None:
         canonical.support_count += max(1, merged.support_count)
+        canonical.summary = self._merge_event_summary(canonical.summary, merged.summary)
+        canonical.action = canonical.action or merged.action
+        canonical.causality = canonical.causality or merged.causality
+        canonical.time_range = self._merge_slots(
+            canonical.time_range if isinstance(canonical.time_range, dict) else {},
+            merged.time_range if isinstance(merged.time_range, dict) else {},
+        )
+        canonical.participants = self._merge_list_values(canonical.participants, merged.participants)
         canonical.last_active = max(canonical.last_active, merged.last_active, merged_at)
         canonical.updated_at = merged_at
-        canonical.evidence = canonical.evidence + merged.evidence
+        canonical.evidence = self._merge_list_values(canonical.evidence, merged.evidence)
+        canonical.embedding = canonical.embedding or merged.embedding
         canonical.payload = self._merge_event_payload(canonical.payload, merged.payload, merged.id, merged_at)
         self.store.update_event(canonical)
         self.store.relink_event_references(
@@ -1193,6 +1312,7 @@ class DynamicEvolutionEngine:
             target_event_id=canonical.id,
             merge_reason=merge_reason,
             similarity_score=similarity_score,
+            embedding_similarity=embedding_similarity,
         )
 
     def _merge_event_payload(
@@ -1203,7 +1323,7 @@ class DynamicEvolutionEngine:
         merged_at: int,
         source_event_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        base = dict(payload or {})
+        base = self._merge_payload_values(dict(payload or {}), dict(incoming_payload or {}))
         if incoming_payload:
             base.setdefault("merge_inputs", []).append(incoming_payload)
         merge_trace = base.setdefault("merge_trace", [])
@@ -1218,6 +1338,101 @@ class DynamicEvolutionEngine:
             trace_entry["source_event_id"] = source_id
         merge_trace.append(trace_entry)
         return base
+
+    def _merge_payload_values(
+        self,
+        existing: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = dict(existing or {})
+        for key, value in (incoming or {}).items():
+            if key not in merged or merged.get(key) in (None, "", [], {}):
+                merged[key] = value
+                continue
+            current = merged.get(key)
+            if isinstance(current, dict) and isinstance(value, dict):
+                merged[key] = self._merge_payload_values(current, value)
+                continue
+            if isinstance(current, list) and isinstance(value, list):
+                merged[key] = self._merge_list_values(current, value)
+        return merged
+
+    def _merge_event_summary(self, canonical_summary: str, merged_summary: str) -> str:
+        left = str(canonical_summary or "").strip()
+        right = str(merged_summary or "").strip()
+        if not left:
+            return right
+        if not right or right in left:
+            return left
+        return f"{left}；{right}"
+
+    def _merge_list_values(self, left: Any, right: Any) -> list[Any]:
+        result: list[Any] = []
+        seen: set[str] = set()
+        for item in list(left or []) + list(right or []):
+            signature = safe_json_dumps(item)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            result.append(item)
+        return result
+
+    def _event_embedding_similarity(
+        self,
+        left_embedding: Optional[list[float]],
+        right_embedding: Optional[list[float]],
+    ) -> float:
+        if not left_embedding or not right_embedding:
+            return 0.0
+        try:
+            numerator = sum(float(a) * float(b) for a, b in zip(left_embedding, right_embedding))
+            left_norm = math.sqrt(sum(float(a) * float(a) for a in left_embedding))
+            right_norm = math.sqrt(sum(float(b) * float(b) for b in right_embedding))
+            if left_norm <= 0.0 or right_norm <= 0.0:
+                return 0.0
+            return max(0.0, min(1.0, numerator / (left_norm * right_norm)))
+        except Exception:
+            return 0.0
+
+    def _ensure_event_embedding(self, event: Event) -> Optional[list[float]]:
+        if event.embedding:
+            return event.embedding
+        text = self._event_text_for_embedding(event)
+        if not text:
+            return None
+        embedding = self._maybe_embed_context(text)
+        if embedding:
+            event.embedding = embedding
+            try:
+                self.store.update_event(event)
+            except Exception:
+                pass
+        return embedding
+
+    def _event_text_for_embedding(self, event: Event) -> str:
+        parts = [
+            str(event.summary or "").strip(),
+            str(event.action or "").strip(),
+            str(event.causality or "").strip(),
+        ]
+        return " ".join(part for part in parts if part)
+
+    def _build_event_merge_reason(
+        self,
+        source: str,
+        local_reason: str,
+        embedding_similarity: float,
+        llm_reason: str,
+        strategy: str,
+    ) -> str:
+        payload = {
+            "source": str(source or "").strip(),
+            "strategy": str(strategy or "").strip(),
+            "local_reason": str(local_reason or "").strip(),
+            "llm_reason": str(llm_reason or "").strip(),
+            "embedding_similarity": round(float(embedding_similarity or 0.0), 4),
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
     def _build_context_draft(self, event: Event) -> ContextDraft:
         timestamp = event.last_active or event.timestamp or int(time.time())
@@ -1237,14 +1452,27 @@ class DynamicEvolutionEngine:
     def _context_similarity(self, a: Any, b: Any) -> float:
         slots_a = self._context_slots(a)
         slots_b = self._context_slots(b)
-        slot_sim = self._value_similarity(slots_a, slots_b)
+        core_keys = self._core_context_slot_keys()
+        aux_keys = self._aux_context_slot_keys()
+        core_slot_sim = self._slot_group_similarity(slots_a, slots_b, core_keys)
+        aux_slot_sim = self._slot_group_similarity(slots_a, slots_b, aux_keys)
+        total_slot_weight = max(
+            1e-6,
+            float(self.config.context_core_slot_weight or 0.0) + float(self.config.context_aux_slot_weight or 0.0),
+        )
+        slot_sim = (
+            float(self.config.context_core_slot_weight or 0.0) * core_slot_sim
+            + float(self.config.context_aux_slot_weight or 0.0) * aux_slot_sim
+        ) / total_slot_weight
+        set_slot_sim = self._value_similarity(slots_a, slots_b)
         summary_sim = self._lexical_similarity(self._context_summary(a), self._context_summary(b))
-        subtype_sim = 1.0 if self._context_subtype(a) == self._context_subtype(b) else 0.0
+        subtype_sim = self._context_subtype_similarity(self._context_subtype(a), self._context_subtype(b))
         active_sim = 1.0 if self._context_status(a) == "active" else 0.75
         temporal_sim = self._context_temporal_compatibility(a, b)
         embedding_sim = self._context_embedding_similarity(a, b)
         return (
-            0.28 * slot_sim
+            0.26 * slot_sim
+            + 0.10 * set_slot_sim
             + 0.24 * summary_sim
             + 0.18 * subtype_sim
             + 0.12 * active_sim
@@ -1311,6 +1539,34 @@ class DynamicEvolutionEngine:
             if not self._value_overlap(va, vb):
                 conflicts += 1
         return (conflicts / overlap) if overlap else 0.0
+
+    def _context_overlap_key_count(self, a: Any, b: Any) -> int:
+        slots_a = self._context_slots(a)
+        slots_b = self._context_slots(b)
+        overlap_keys = set(slots_a.keys()) & set(slots_b.keys())
+        count = 0
+        for key in overlap_keys:
+            va = slots_a.get(key)
+            vb = slots_b.get(key)
+            if va in (None, "", [], {}) or vb in (None, "", [], {}):
+                continue
+            count += 1
+        return count
+
+    def _context_subtype_similarity(self, left: str, right: str) -> float:
+        left_norm = str(left or "").strip().lower()
+        right_norm = str(right or "").strip().lower()
+        if left_norm == right_norm:
+            return 1.0
+        compatible_groups = [
+            {"situation", "environment", "state"},
+            {"constraint", "goal"},
+            {"phase", "state"},
+        ]
+        for group in compatible_groups:
+            if left_norm in group and right_norm in group:
+                return 0.68
+        return 0.0
 
     def _infer_context_subtype(self, event: Event, slots: dict[str, Any]) -> str:
         if str(slots.get("phase", "") or slots.get("task_stage", "")).strip():
@@ -1643,6 +1899,7 @@ class DynamicEvolutionEngine:
         canonical_context_id: str,
         merged_context_id: str,
         merged_at: Optional[int] = None,
+        rewrite_strategy: str = "rewrite",
     ) -> dict[str, Any]:
         canonical = self.store.get_context(canonical_context_id)
         merged = self.store.get_context(merged_context_id)
@@ -1658,8 +1915,27 @@ class DynamicEvolutionEngine:
         canonical.updated_at = ts
         canonical.last_seen_at = max(canonical.last_seen_at, merged.last_seen_at, ts)
         canonical.structured_slots = self._merge_slots(canonical.structured_slots, merged.structured_slots)
-        canonical.summary = canonical.summary or merged.summary
+        original_canonical_summary = str(canonical.summary or "").strip()
+        original_merged_summary = str(merged.summary or "").strip()
+        if (rewrite_strategy or "rewrite").strip().lower() == "rewrite":
+            canonical.summary = self._rewrite_merged_context_summary(canonical, merged)
+        else:
+            canonical.summary = canonical.summary or merged.summary
         canonical.source_refs = self._merge_source_refs(canonical.source_refs, merged.source_refs)
+        canonical.source_refs = self._merge_source_refs(
+            canonical.source_refs,
+            [
+                {
+                    "source": "context_merge_rewrite",
+                    "canonical_context_id": canonical.id,
+                    "merged_context_id": merged.id,
+                    "canonical_summary_before": original_canonical_summary,
+                    "merged_summary_before": original_merged_summary,
+                    "canonical_summary_after": canonical.summary,
+                    "merged_at": ts,
+                }
+            ],
+        )
         canonical.merged_from = sorted(set(canonical.merged_from + [merged.id] + merged.merged_from))
         self.store.update_context(canonical)
         moved_links = self.store.relink_context_edges(
@@ -1679,6 +1955,19 @@ class DynamicEvolutionEngine:
             "moved_links": moved_links,
         }
 
+    def _rewrite_merged_context_summary(self, canonical: Context, merged: Context) -> str:
+        merged_slots = self._merge_slots(
+            dict(canonical.structured_slots if isinstance(canonical.structured_slots, dict) else {}),
+            dict(merged.structured_slots if isinstance(merged.structured_slots, dict) else {}),
+        )
+        subtype = self._context_subtype(canonical) or self._context_subtype(merged) or "situation"
+        rewritten = self._build_context_summary(subtype, merged_slots)
+        rewritten = str(rewritten or "").strip()
+        if rewritten:
+            return rewritten[:180]
+        fallback = str(canonical.summary or merged.summary or subtype).strip()
+        return fallback[:180]
+
     def _apply_event_merge_plan(self, plan: dict[str, Any], merged_at: int) -> bool:
         canonical_event_id = str(plan.get("canonical_event_id", "") or "").strip()
         merged_event_id = str(plan.get("merged_event_id", "") or "").strip()
@@ -1697,6 +1986,11 @@ class DynamicEvolutionEngine:
             merged=merged,
             similarity_score=float(plan.get("score", 1.0) or 1.0),
             merge_reason=str(plan.get("reason", "auto_merge") or "auto_merge"),
+            embedding_similarity=(
+                float(plan.get("embedding_similarity"))
+                if plan.get("embedding_similarity") is not None
+                else None
+            ),
             merged_at=int(merged_at),
         )
         return True
@@ -2006,6 +2300,7 @@ class DynamicEvolutionEngine:
         target_event_id: str,
         merge_reason: str,
         similarity_score: float,
+        embedding_similarity: Optional[float] = None,
     ) -> None:
         path = self.config.event_merge_trace_log_path
         parent = os.path.dirname(path)
@@ -2019,5 +2314,7 @@ class DynamicEvolutionEngine:
             "similarity_score": similarity_score,
             "strategy_version": self.config.event_merge_trace_strategy_version,
         }
+        if embedding_similarity is not None:
+            payload["embedding_similarity"] = float(embedding_similarity)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")

@@ -34,6 +34,10 @@ _HABIT_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯
 _EVENT_LIKE_MARKERS = (
     "打开", "搜索", "开始", "完成", "成功", "失败", "找到", "支付", "导航", "播放", "推荐", "决定",
 )
+_CONTEXT_SIGNAL_MARKERS = (
+    "由于", "因为", "当前", "目前", "此时", "只剩", "仅剩", "不足", "需要", "希望", "目标", "阶段",
+    "环境", "状态", "网络", "电量", "限制", "条件", "情况下", "场景",
+)
 _GENERIC_CLAUSE_PATTERNS: list[tuple[str, str, str]] = [
     (r"由于[^，。；,;]+", "constraint", "causal_clause"),
     (r"因为[^，。；,;]+", "constraint", "causal_clause"),
@@ -148,6 +152,36 @@ class ContextExtractionPipeline:
                     ContextSpan(
                         text=text_value,
                         signal=f"event_payload:{key}",
+                        subtype_hint=subtype,
+                        source="event",
+                    )
+                )
+            context_payload = payload.get("context", {}) if isinstance(payload.get("context", {}), dict) else {}
+            context_key_map: list[tuple[str, str]] = [
+                ("scene", "situation"),
+                ("state", "state"),
+                ("constraint", "constraint"),
+                ("goal", "goal"),
+                ("phase", "phase"),
+                ("environment", "environment"),
+                ("geo_context", "environment"),
+                ("digital_context", "environment"),
+                ("time_bucket", "state"),
+                ("task_stage", "phase"),
+            ]
+            for key, subtype in context_key_map:
+                value = context_payload.get(key)
+                text_value = str(value or "").strip()
+                if not text_value:
+                    continue
+                dedupe_key = (text_value, f"context:{key}")
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                spans.append(
+                    ContextSpan(
+                        text=text_value,
+                        signal=f"event_payload:context.{key}",
                         subtype_hint=subtype,
                         source="event",
                     )
@@ -504,12 +538,14 @@ class ContextExtractionPipeline:
         normalized = self._normalize_free_text(text)
         if not normalized:
             return True
+        has_context_signal = any(marker in normalized for marker in _CONTEXT_SIGNAL_MARKERS)
         if any(marker in normalized for marker in _EVENT_LIKE_MARKERS):
-            if not any(token in normalized for token in ("当前", "需要", "希望", "阶段", "只剩", "不足")):
+            if not has_context_signal:
                 return True
         if event is not None:
             event_text = " ".join(part for part in [event.summary, event.action, event.causality] if part)
-            if self._lexical_similarity(normalized, event_text) >= 0.88:
+            lexical_sim = self._lexical_similarity(normalized, event_text)
+            if lexical_sim >= (0.90 if has_context_signal else 0.84):
                 return True
             if normalized == self._normalize_free_text(event.summary) or normalized == self._normalize_free_text(event.action):
                 return True

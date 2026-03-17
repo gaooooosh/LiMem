@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 import time
+import uuid
 
 from .core.context import Context
 from .core.event import Event
@@ -143,6 +144,7 @@ class MemoryGraphOps:
         canonical_context_id: str,
         merged_context_id: str,
         merged_at: Optional[int] = None,
+        rewrite_strategy: str = "rewrite",
     ) -> dict[str, Any]:
         if not self.dynamic_engine:
             raise RuntimeError("Dynamic evolution engine is required for context merging")
@@ -150,6 +152,7 @@ class MemoryGraphOps:
             canonical_context_id=canonical_context_id,
             merged_context_id=merged_context_id,
             merged_at=merged_at,
+            rewrite_strategy=rewrite_strategy,
         )
         result["canonical_context"] = self._serialize_context(self.store.get_context(canonical_context_id))
         result["merged_context"] = self._serialize_context(self.store.get_context(merged_context_id))

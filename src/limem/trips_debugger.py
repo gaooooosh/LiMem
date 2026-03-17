@@ -77,6 +77,7 @@ class MergeEventRequest(BaseModel):
 class MergeContextRequest(BaseModel):
     canonical_context_id: str
     merged_context_id: str
+    rewrite_strategy: str = "rewrite"
 
 
 class AutoMergeRequest(BaseModel):
@@ -227,6 +228,19 @@ class TripsDebuggerSession:
                         "is_new": bool(ingest_result.is_new),
                         "merged_with": ingest_result.merged_with,
                         "entities_created": int(ingest_result.entities_created),
+                        "event_count": len(ingest_result.events or [ingest_result.event]),
+                        "event_ids": [
+                            event.id
+                            for event in (ingest_result.events or [ingest_result.event])
+                        ],
+                        "event_items": [
+                            {
+                                "id": event.id,
+                                "summary": event.summary,
+                                "status": event.status,
+                            }
+                            for event in (ingest_result.events or [ingest_result.event])
+                        ],
                     },
                 }
                 results.append(result)
@@ -349,6 +363,7 @@ class TripsDebuggerSession:
         self,
         canonical_context_id: str,
         merged_context_id: str,
+        rewrite_strategy: str = "rewrite",
     ) -> dict[str, Any]:
         with self._lock:
             if self._ltm is None:
@@ -356,6 +371,7 @@ class TripsDebuggerSession:
             result = self._ltm.merge_context(
                 canonical_context_id=canonical_context_id,
                 merged_context_id=merged_context_id,
+                rewrite_strategy=rewrite_strategy,
             )
             self._append_log(
                 action="merge_context",
@@ -541,6 +557,7 @@ def create_trips_debugger_app(config: TripsDebuggerConfig) -> FastAPI:
             return session.merge_context(
                 canonical_context_id=request.canonical_context_id,
                 merged_context_id=request.merged_context_id,
+                rewrite_strategy=request.rewrite_strategy,
             )
         except (ValueError, RuntimeError) as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex

@@ -162,6 +162,15 @@ def create_ltm_system(
                 llm_base_url=base_url,
                 llm_model=config.get("generation_model", GENERATION_MODEL),
                 enable_auto_consolidation=config.get("enable_auto_consolidation", True),
+                event_consolidation_candidate_limit=config.get("event_consolidation_candidate_limit", 12),
+                event_consolidation_embedding_candidate_threshold=config.get(
+                    "event_consolidation_embedding_candidate_threshold",
+                    0.80,
+                ),
+                event_consolidation_embedding_top_k=config.get(
+                    "event_consolidation_embedding_top_k",
+                    8,
+                ),
                 enable_event_relations=config.get("enable_event_relations", ENABLE_EVENT_RELATIONS),
             ),
         )

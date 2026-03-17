@@ -40,12 +40,15 @@ class ExtractionResult:
     """
 
     event_data: dict[str, Any]
+    events_data: list[dict[str, Any]] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
     confidence: float = 1.0
 
     def has_valid_event(self) -> bool:
         """检查是否有有效的事件数据"""
-        return bool(self.event_data and self.event_data.get("summary"))
+        if self.event_data and self.event_data.get("summary"):
+            return True
+        return any(isinstance(item, dict) and item.get("summary") for item in self.events_data)
 
 
 class LLMExtractor(ABC):
@@ -121,24 +124,26 @@ class TwoStageExtractor(LLMExtractor):
             ExtractionResult
         """
         # Stage 1: 提取事件
-        event_data = self._extract_event(text)
+        events_data = self._extract_events(text)
+        event_data = events_data[0] if events_data else {}
 
         # Stage 2: 提取实体
         entities = self._extract_entities(text)
 
         return ExtractionResult(
             event_data=event_data,
+            events_data=events_data,
             entities=entities,
         )
 
-    def _extract_event(self, text: str) -> dict[str, Any]:
-        """Stage 1: 提取事件信息
+    def _extract_events(self, text: str) -> list[dict[str, Any]]:
+        """Stage 1: 提取事件信息（支持单次输入多事件）
 
         Args:
             text: 原始文本
 
         Returns:
-            事件数据字典
+            事件数据列表
         """
         user_msg = self._event_user_prompt.format(episode_text=text)
 
@@ -163,10 +168,63 @@ class TwoStageExtractor(LLMExtractor):
 
         content = resp.output.choices[0].message.content
         data = robust_json_loads(content, {})
-
-        if not data or not isinstance(data, dict):
+        if not data:
             raise ValueError(f"Failed to parse event data from LLM output: {content[:200]}")
-        return normalize_event_payload(data, episode_text=text)
+
+        normalized: list[dict[str, Any]] = []
+        raw_events = self._collect_raw_event_items(data)
+        if not raw_events and isinstance(data, dict):
+            raw_events = [data]
+
+        for item in raw_events:
+            if not isinstance(item, dict):
+                continue
+            normalized_item = normalize_event_payload({"event": item}, episode_text=text)
+            if normalized_item:
+                normalized.append(normalized_item)
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in normalized:
+            signature = "|".join(
+                [
+                    str(item.get("summary", "") or "").strip(),
+                    str(item.get("action", "") or "").strip(),
+                    str(item.get("causality", "") or "").strip(),
+                ]
+            )
+            if signature and signature in seen:
+                continue
+            if signature:
+                seen.add(signature)
+            deduped.append(item)
+        return deduped
+
+    def _collect_raw_event_items(self, payload: Any) -> list[dict[str, Any]]:
+        if payload is None:
+            return []
+        if isinstance(payload, list):
+            result: list[dict[str, Any]] = []
+            for item in payload:
+                result.extend(self._collect_raw_event_items(item))
+            return result
+        if not isinstance(payload, dict):
+            return []
+
+        result: list[dict[str, Any]] = []
+        raw_events = payload.get("events")
+        if isinstance(raw_events, list):
+            for item in raw_events:
+                if isinstance(item, dict):
+                    result.append(item)
+        raw_event = payload.get("event")
+        if isinstance(raw_event, dict):
+            result.append(raw_event)
+        if result:
+            return result
+
+        # Fallback: treat this dict as an event object itself when no wrapper keys exist.
+        return [payload]
 
     def _extract_entities(self, text: str) -> list[str]:
         """Stage 2: 提取实体列表

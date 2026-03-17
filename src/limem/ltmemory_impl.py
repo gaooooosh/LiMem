@@ -226,11 +226,13 @@ class LTMemoryImpl(LTMemory):
         canonical_context_id: str,
         merged_context_id: str,
         merged_at: Optional[int] = None,
+        rewrite_strategy: str = "rewrite",
     ) -> dict[str, Any]:
         return self.ops.merge_context(
             canonical_context_id=canonical_context_id,
             merged_context_id=merged_context_id,
             merged_at=merged_at,
+            rewrite_strategy=rewrite_strategy,
         )
 
     def query(

@@ -433,6 +433,17 @@
             border-radius: 50%;
         }
 
+        .legend-line {
+            width: 18px;
+            height: 0;
+            border-top: 2px solid rgba(198, 106, 55, 0.7);
+        }
+
+        .legend-line.rel {
+            border-top-style: dashed;
+            border-top-color: rgba(174, 125, 37, 0.78);
+        }
+
         .graph-wrap {
             position: relative;
             margin: 0 20px 18px;
@@ -478,6 +489,33 @@
             font-size: 13px;
             color: var(--muted);
             line-height: 1.7;
+        }
+
+        .edge-label {
+            font-size: 10px;
+            font-weight: 700;
+            fill: rgba(93, 63, 25, 0.9);
+            pointer-events: none;
+        }
+
+        .log-event-list {
+            margin-top: 10px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .log-event-item {
+            border-radius: 12px;
+            border: 1px solid rgba(210, 190, 160, 0.72);
+            background: rgba(255, 255, 255, 0.75);
+            padding: 8px 10px;
+        }
+
+        .log-event-summary {
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--text);
+            margin-top: 4px;
         }
 
         .lane-title {
@@ -744,6 +782,8 @@
                     <div class="graph-legend">
                         <span class="legend-chip"><span class="legend-dot" style="background: var(--event);"></span> Event</span>
                         <span class="legend-chip"><span class="legend-dot" style="background: var(--context);"></span> Context</span>
+                        <span class="legend-chip"><span class="legend-line"></span> Event→Context</span>
+                        <span class="legend-chip"><span class="legend-line rel"></span> Event→Event Relation</span>
                         <span class="legend-chip"><span class="legend-dot" style="background: var(--merged);"></span> Merged / Archived</span>
                     </div>
                     <div class="panel-subtitle" id="graphMeta">等待图快照</div>
@@ -758,7 +798,7 @@
                     </div>
                 </div>
                 <div class="graph-footnote">
-                    左泳道是 Event，右泳道是 Context。`IN_REL` 使用横向连边。高亮边框表示当前选中的节点。
+                    左泳道是 Event，右泳道是 Context。实线是 `IN_REL`（Event→Context），虚线是 `EVENT_RELATION`（Event→Event，含关系类型标签）。高亮边框表示当前选中的节点。
                 </div>
             </section>
 
@@ -805,9 +845,9 @@
                     </div>
 
                     <div class="block">
-                        <h3>节点详情</h3>
+                        <h3>节点 / 边详情</h3>
                         <div class="detail-body" id="detailBody">
-                            <div class="detail-empty">点击图中的节点后，这里会显示字段、状态和关联信息。</div>
+                            <div class="detail-empty">点击图中的节点或关系边后，这里会显示字段、状态和关联信息。</div>
                         </div>
                     </div>
 
@@ -837,6 +877,7 @@
             episodes: [],
             selectedEpisodeIndexes: new Set(),
             selectedNode: null,
+            selectedEdge: null,
             latestMergeReport: null,
             uiInitialized: false,
             ui: {
@@ -892,6 +933,7 @@
                     state.latestMergeReport = data.latest_auto_merge || null;
                     state.selectedEpisodeIndexes.clear();
                     state.selectedNode = null;
+                    state.selectedEdge = null;
                     applyUiFromState();
                     renderAll();
                     await loadEpisodes();
@@ -1138,6 +1180,9 @@
             if (state.selectedNode?.id) {
                 state.selectedNode = findNode(state.selectedNode.id);
             }
+            if (state.selectedEdge?.key) {
+                state.selectedEdge = findEdge(state.selectedEdge.key);
+            }
             renderHeroStrip();
             renderMetrics();
             renderEpisodeList();
@@ -1167,6 +1212,7 @@
                 ["Events", stats.event_count || 0],
                 ["Contexts", stats.context_count || 0],
                 ["IN_REL", stats.in_count || 0],
+                ["EVENT_REL", stats.event_relation_count || 0],
             ];
             document.getElementById("metrics").innerHTML = metrics.map(([label, value]) => `
                 <div class="metric">
@@ -1269,6 +1315,8 @@
             const snapshot = state.appState?.snapshot || {};
             const events = [...(snapshot.events || [])];
             const contexts = [...(snapshot.contexts || [])];
+            const eventContextEdges = snapshot.edges?.event_context || [];
+            const eventEventEdges = snapshot.edges?.event_event || [];
             const svg = document.getElementById("graphSvg");
             const graphEmpty = document.getElementById("graphEmpty");
             const graphMeta = document.getElementById("graphMeta");
@@ -1281,7 +1329,7 @@
             }
 
             graphEmpty.style.display = "none";
-            graphMeta.textContent = `events=${events.length}, contexts=${contexts.length}`;
+            graphMeta.textContent = `events=${events.length}, contexts=${contexts.length}, event_rel=${eventEventEdges.length}, in_rel=${eventContextEdges.length}`;
 
             events.sort((a, b) => (b.last_active || b.timestamp || 0) - (a.last_active || a.timestamp || 0));
             contexts.sort((a, b) => (b.last_seen_at || 0) - (a.last_seen_at || 0));
@@ -1302,19 +1350,55 @@
                 positions[item.id] = { x: laneX.context, y: 120 + index * rowGap, type: "context", item };
             });
 
-            const eventContextEdges = snapshot.edges?.event_context || [];
             const edgeSegments = [];
+            const eventRelationSegments = [];
+            const eventRelationLabels = [];
 
-            eventContextEdges.forEach(edge => {
+            eventContextEdges.forEach((edge, idx) => {
                 const from = positions[edge.event_id];
                 const to = positions[edge.context_id];
                 if (!from || !to) return;
+                const edgeKey = buildEdgeKey("event_context", edge);
+                const selected = state.selectedEdge?.key === edgeKey;
                 edgeSegments.push(`
                     <path d="M ${from.x + 104} ${from.y} C ${from.x + 180} ${from.y}, ${to.x - 180} ${to.y}, ${to.x - 104} ${to.y}"
                         fill="none"
-                        stroke="rgba(47,121,117,0.38)"
-                        stroke-width="${Math.max(1.2, Math.min(3.6, edge.weight || 1.2))}"
-                        stroke-linecap="round" />
+                        stroke="${selected ? "rgba(24,102,95,0.9)" : "rgba(47,121,117,0.38)"}"
+                        stroke-width="${selected ? 4.2 : Math.max(1.2, Math.min(3.6, edge.weight || 1.2))}"
+                        stroke-linecap="round"
+                        style="cursor:pointer"
+                        onclick="selectEdge('event_context', ${idx})" />
+                `);
+            });
+
+            eventEventEdges.forEach((edge, idx) => {
+                const from = positions[edge.from_event_id];
+                const to = positions[edge.to_event_id];
+                if (!from || !to) return;
+                const edgeKey = buildEdgeKey("event_event", edge);
+                const selected = state.selectedEdge?.key === edgeKey;
+                const anchorX = from.x - 112;
+                const midX = anchorX - Math.max(40, 80 + (idx % 3) * 18);
+                const midY = (from.y + to.y) / 2;
+                const relationType = String(edge.relation_type || "related");
+                const relationDesc = String(edge.description || "");
+                eventRelationSegments.push(`
+                    <path d="M ${anchorX} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${anchorX} ${to.y}"
+                        fill="none"
+                        stroke="${selected ? "rgba(126,86,18,0.98)" : "rgba(174,125,37,0.78)"}"
+                        stroke-width="${selected ? 4.4 : Math.max(1.1, Math.min(3.0, (edge.confidence || 0.5) * 3.2))}"
+                        stroke-dasharray="6 5"
+                        stroke-linecap="round"
+                        marker-end="url(#relArrow)"
+                        style="cursor:pointer"
+                        onclick="selectEdge('event_event', ${idx})">
+                        <title>${escapeHtml(`${relationType}: ${relationDesc}`)}</title>
+                    </path>
+                `);
+                eventRelationLabels.push(`
+                    <text x="${midX - 4}" y="${midY - 4}" text-anchor="end" class="edge-label">
+                        ${escapeHtml(truncate(relationType, 16))}
+                    </text>
                 `);
             });
 
@@ -1333,16 +1417,21 @@
                     <filter id="nodeShadow" x="-40%" y="-40%" width="180%" height="180%">
                         <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="rgba(90,60,30,0.18)" />
                     </filter>
+                    <marker id="relArrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto">
+                        <path d="M 0 0 L 8 3 L 0 6 z" fill="rgba(174,125,37,0.88)"></path>
+                    </marker>
                 </defs>
                 ${laneTitles}
+                ${eventRelationSegments.join("")}
                 ${edgeSegments.join("")}
+                ${eventRelationLabels.join("")}
                 ${nodeSegments.join("")}
             `;
         }
 
         function renderNodeSvg(item, position, width, height, type) {
             const status = item.status || "active";
-            const selected = state.selectedNode?.id === item.id;
+            const selected = state.selectedNode?.id === item.id || isNodeLinkedToSelectedEdge(item.id);
             const color = type === "event" ? "var(--event)" : type === "context" ? "var(--context)" : "var(--pattern)";
             const fill = status === "active" ? color : "var(--merged)";
             const title = truncate(item.summary || item.id, 40);
@@ -1410,6 +1499,9 @@
                                 <div class="pill ${plan.kind === "event" ? "" : "teal"}">${escapeHtml(plan.kind)}</div>
                                 <div class="episode-meta">
                                     <span>score=${escapeHtml(String(plan.score ?? "-"))}</span>
+                                    ${plan.embedding_similarity !== undefined && plan.embedding_similarity !== null
+                                        ? `<span>emb=${escapeHtml(String(plan.embedding_similarity))}</span>`
+                                        : ""}
                                     <span>${escapeHtml(plan.strategy || "-")}</span>
                                 </div>
                             </div>
@@ -1425,7 +1517,7 @@
                                     <span>merged=${escapeHtml(plan.merged_event_id || plan.merged_context_id || "-")}</span>
                                 </div>
                             </div>
-                            <div class="pill gold">${escapeHtml(plan.reason || "auto_merge")}</div>
+                            ${renderMergeReason(plan.reason || "auto_merge")}
                         </div>
                     `).join("")}
                 </div>
@@ -1434,6 +1526,24 @@
 
         function selectNode(nodeId) {
             state.selectedNode = findNode(nodeId);
+            state.selectedEdge = null;
+            renderGraph();
+            renderNodeInspector();
+        }
+
+        function selectEdge(edgeType, index) {
+            const snapshot = state.appState?.snapshot || {};
+            const edges = edgeType === "event_event"
+                ? (snapshot.edges?.event_event || [])
+                : (snapshot.edges?.event_context || []);
+            const edge = edges[index];
+            if (!edge) return;
+            state.selectedNode = null;
+            state.selectedEdge = {
+                edgeType,
+                key: buildEdgeKey(edgeType, edge),
+                data: edge,
+            };
             renderGraph();
             renderNodeInspector();
         }
@@ -1444,11 +1554,80 @@
                 .find(item => item.id === nodeId) || null;
         }
 
+        function isNodeLinkedToSelectedEdge(nodeId) {
+            const selectedEdge = state.selectedEdge;
+            if (!selectedEdge?.data) return false;
+            const edge = selectedEdge.data;
+            if (selectedEdge.edgeType === "event_event") {
+                return nodeId === edge.from_event_id || nodeId === edge.to_event_id;
+            }
+            if (selectedEdge.edgeType === "event_context") {
+                return nodeId === edge.event_id || nodeId === edge.context_id;
+            }
+            return false;
+        }
+
+        function buildEdgeKey(edgeType, edge) {
+            if (edgeType === "event_event") {
+                return [
+                    edgeType,
+                    edge.from_event_id || "",
+                    edge.to_event_id || "",
+                    edge.relation_type || "",
+                    edge.created_at || "",
+                ].join("|");
+            }
+            return [
+                edgeType,
+                edge.event_id || "",
+                edge.context_id || "",
+                edge.created_at || "",
+                edge.last_seen_at || "",
+            ].join("|");
+        }
+
+        function findEdge(edgeKey) {
+            const snapshot = state.appState?.snapshot || {};
+            const edgeTypes = [
+                ["event_event", snapshot.edges?.event_event || []],
+                ["event_context", snapshot.edges?.event_context || []],
+            ];
+            for (const [edgeType, edges] of edgeTypes) {
+                const matched = edges.find(edge => buildEdgeKey(edgeType, edge) === edgeKey);
+                if (matched) {
+                    return { edgeType, key: edgeKey, data: matched };
+                }
+            }
+            return null;
+        }
+
         function renderNodeInspector() {
             const container = document.getElementById("detailBody");
+            const selectedEdge = state.selectedEdge;
+            if (selectedEdge?.data) {
+                const edge = selectedEdge.data;
+                const edgeType = selectedEdge.edgeType;
+                const rows = Object.entries({
+                    edge_type: edgeType,
+                    ...edge,
+                }).map(([key, value]) => `
+                    <div class="kv">
+                        <div class="kv-key">${escapeHtml(key)}</div>
+                        <div>${renderValue(value)}</div>
+                    </div>
+                `).join("");
+                container.innerHTML = `
+                    <div class="episode-meta" style="margin-bottom:10px;">
+                        <span>当前选择：关系边</span>
+                        <span>${escapeHtml(edgeType)}</span>
+                    </div>
+                    ${rows}
+                `;
+                return;
+            }
             const node = state.selectedNode;
             if (!node) {
-                container.innerHTML = `<div class="detail-empty">点击图中的节点后，这里会显示字段、状态和关联信息。</div>`;
+                container.innerHTML = `<div class="detail-empty">点击图中的节点或关系边后，这里会显示字段、状态和关联信息。</div>`;
                 return;
             }
 
@@ -1481,9 +1660,34 @@
                         <div style="font-weight:800;">${escapeHtml(log.action)}</div>
                         <div class="episode-meta">${escapeHtml(log.timestamp)}</div>
                     </div>
+                    ${renderLogHighlights(log)}
                     <div class="json-block">${escapeHtml(JSON.stringify(log.detail, null, 2))}</div>
                 </div>
             `).join("");
+        }
+
+        function renderLogHighlights(log) {
+            if (log.action !== "write_episode") return "";
+            const ingest = log.detail?.ingest_result || {};
+            const eventItems = Array.isArray(ingest.event_items) ? ingest.event_items : [];
+            if (!eventItems.length) return "";
+            return `
+                <div class="log-event-list">
+                    <div class="episode-meta">
+                        <span>本次写入提取事件数: ${escapeHtml(String(ingest.event_count || eventItems.length))}</span>
+                    </div>
+                    ${eventItems.map((item, idx) => `
+                        <div class="log-event-item">
+                            <div class="episode-meta">
+                                <span>#${idx}</span>
+                                <span>${escapeHtml(item.id || "-")}</span>
+                                <span>${escapeHtml(item.status || "active")}</span>
+                            </div>
+                            <div class="log-event-summary">${escapeHtml(item.summary || "(empty summary)")}</div>
+                        </div>
+                    `).join("")}
+                </div>
+            `;
         }
 
         function renderFooter() {
@@ -1507,6 +1711,37 @@
             return raw.length > maxLength ? raw.slice(0, maxLength - 1) + "…" : raw;
         }
 
+        function parseMergeReason(reason) {
+            const raw = String(reason || "").trim();
+            if (!raw) return null;
+            try {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === "object") return parsed;
+            } catch (_) {}
+            return null;
+        }
+
+        function renderMergeReason(reason) {
+            const parsed = parseMergeReason(reason);
+            if (!parsed) {
+                return `<div class="pill gold">${escapeHtml(String(reason || "auto_merge"))}</div>`;
+            }
+            const source = String(parsed.source || "").trim();
+            const strategy = String(parsed.strategy || "").trim();
+            const localReason = String(parsed.local_reason || "").trim();
+            const llmReason = String(parsed.llm_reason || "").trim();
+            const emb = parsed.embedding_similarity;
+            const embText = emb === undefined || emb === null ? "" : String(emb);
+            const chips = [
+                source ? `<span>src=${escapeHtml(source)}</span>` : "",
+                strategy ? `<span>strategy=${escapeHtml(strategy)}</span>` : "",
+                embText ? `<span>emb=${escapeHtml(embText)}</span>` : "",
+                localReason ? `<span>local=${escapeHtml(truncate(localReason, 40))}</span>` : "",
+                llmReason ? `<span>llm=${escapeHtml(truncate(llmReason, 40))}</span>` : "",
+            ].filter(Boolean).join("");
+            return `<div class="episode-meta">${chips || `<span>${escapeHtml(String(reason || "auto_merge"))}</span>`}</div>`;
+        }
+
         function escapeHtml(value) {
             return String(value)
                 .replace(/&/g, "&amp;")
@@ -1523,6 +1758,7 @@
         window.toggleEpisodeSelection = toggleEpisodeSelection;
         window.writeSingleEpisode = writeSingleEpisode;
         window.selectNode = selectNode;
+        window.selectEdge = selectEdge;
     </script>
 </body>
 </html>

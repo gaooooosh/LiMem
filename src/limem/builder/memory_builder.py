@@ -125,93 +125,119 @@ class MemoryBuilder:
         # Step 2: LLM提取
         extraction = self.extractor.extract(episode.content)
 
-        # 构建事件帧
-        event = self._build_event_frame(extraction, episode, current_time)
-        print(f"🧠 Extracted Event: {event.summary}")
+        event_payloads = self._collect_event_payloads(extraction)
+        if not event_payloads:
+            event_payloads = [{}]
+        print(f"🧠 Extracted Events: {len(event_payloads)}")
 
         # 获取实体
         entities = extraction.entities
         print(f"🧩 Entities: {entities}")
+        built_events: list[Event] = []
+        is_new_flags: list[bool] = []
+        merged_targets: list[Optional[str]] = []
+        entities_created_total = 0
 
-        # Step 3: 生成嵌入向量
-        embedding = self._get_embedding(event.summary)
+        for idx, event_payload in enumerate(event_payloads):
+            event = self._build_event_frame(event_payload, episode, current_time, index=idx)
+            if not self._is_effective_event(event):
+                continue
+            print(f"   - Event[{idx}]: {event.summary}")
 
-        # Event is the append-first atomic memory unit.
-        # Online overwrite/merge remains compatibility-only and is disabled by default.
-        if self.config.append_first_mode or not self.config.enable_legacy_online_event_merge:
-            event.id = self._append_first_event_id(event)
-            event.embedding = embedding
-            event.timestamp = event.timestamp or current_time
-            event.created_at = event.created_at or current_time
-            event.updated_at = current_time
-            event.valid_from = event.valid_from or current_time
-            event.status = event.status or "active"
-            self.store.save_event(event)
-            is_new = True
-            consolidation = ConsolidationResult(should_merge=False)
-            print(f"🆕 Append-first event created: {event.id[:12]}...")
-        else:
-            print("⚠️ Legacy online event merge compatibility mode enabled")
-            consolidation = self.consolidator.find_similar_event(
-                embedding=embedding,
-                entities=entities,
-                action=event.action,
-                current_time=current_time,
-            )
+            # Step 3: 生成嵌入向量
+            embedding = self._get_embedding(event.summary)
 
-            if consolidation.similarity_score > 0:
-                print(f"🔎 Top match (combined={consolidation.similarity_score:.4f})")
-                if consolidation.debug_info:
-                    debug = consolidation.debug_info
-                    print(
-                        f"   └─ semantic={debug.get('semantic', 0):.3f}, "
-                        f"entity={debug.get('entity', 0):.3f}, "
-                        f"time={debug.get('time', 0):.3f}, "
-                        f"action={debug.get('action', 0):.3f}"
-                    )
-
-            if consolidation.should_merge:
-                event = self._merge_event(
-                    event_id=consolidation.target_event_id,
-                    incoming_event=event,
-                    embedding=embedding,
-                    current_time=current_time,
-                )
-                is_new = False
-                print(f"🔍 Merged into existing memory: {consolidation.target_event_id[:8]}...")
-            else:
-                event.id = hash_summary(event.summary)
+            # Event is the append-first atomic memory unit.
+            # Online overwrite/merge remains compatibility-only and is disabled by default.
+            if self.config.append_first_mode or not self.config.enable_legacy_online_event_merge:
+                event.id = self._append_first_event_id(event)
                 event.embedding = embedding
+                event.timestamp = event.timestamp or current_time
+                event.created_at = event.created_at or current_time
+                event.updated_at = current_time
+                event.valid_from = event.valid_from or current_time
+                event.status = event.status or "active"
                 self.store.save_event(event)
                 is_new = True
-                print(f"🆕 Created new memory: {event.id[:8]}...")
+                consolidation = ConsolidationResult(should_merge=False)
+                print(f"🆕 Append-first event created: {event.id[:12]}...")
+            else:
+                print("⚠️ Legacy online event merge compatibility mode enabled")
+                consolidation = self.consolidator.find_similar_event(
+                    embedding=embedding,
+                    entities=entities,
+                    action=event.action,
+                    current_time=current_time,
+                )
 
-        # Step 6: 创建Event → Episode链接
-        self.store.link_event_to_episode(event.id, episode.id)
+                if consolidation.similarity_score > 0:
+                    print(f"🔎 Top match (combined={consolidation.similarity_score:.4f})")
+                    if consolidation.debug_info:
+                        debug = consolidation.debug_info
+                        print(
+                            f"   └─ semantic={debug.get('semantic', 0):.3f}, "
+                            f"entity={debug.get('entity', 0):.3f}, "
+                            f"time={debug.get('time', 0):.3f}, "
+                            f"action={debug.get('action', 0):.3f}"
+                        )
 
-        # Step 7: 更新INVOLVES关系
-        entities_created = self._update_entity_relations(
-            event_id=event.id,
-            entities=entities,
-            current_time=current_time,
-        )
+                if consolidation.should_merge:
+                    event = self._merge_event(
+                        event_id=consolidation.target_event_id,
+                        incoming_event=event,
+                        embedding=embedding,
+                        current_time=current_time,
+                    )
+                    is_new = False
+                    print(f"🔍 Merged into existing memory: {consolidation.target_event_id[:8]}...")
+                else:
+                    event.id = hash_summary(event.summary)
+                    event.embedding = embedding
+                    self.store.save_event(event)
+                    is_new = True
+                    print(f"🆕 Created new memory: {event.id[:8]}...")
+
+            # Step 6: 创建Event → Episode链接
+            self.store.link_event_to_episode(event.id, episode.id)
+
+            # Step 7: 更新INVOLVES关系
+            entities_created_total += self._update_entity_relations(
+                event_id=event.id,
+                entities=entities,
+                current_time=current_time,
+            )
+            built_events.append(event)
+            is_new_flags.append(is_new)
+            merged_targets.append(consolidation.target_event_id if not is_new else None)
+
+        if not built_events:
+            fallback_event = self._build_event_frame({}, episode, current_time, index=0)
+            fallback_event.id = self._append_first_event_id(fallback_event)
+            fallback_event.embedding = self._get_embedding(fallback_event.summary)
+            self.store.save_event(fallback_event)
+            self.store.link_event_to_episode(fallback_event.id, episode.id)
+            built_events = [fallback_event]
+            is_new_flags = [True]
+            merged_targets = [None]
 
         # Dynamic evolution updates are strictly local and incremental.
         if self.dynamic_engine:
-            self.dynamic_engine.evolve_existing_events([event])
+            self.dynamic_engine.evolve_existing_events(built_events)
 
         return IngestResult(
-            event=event,
-            is_new=is_new,
-            merged_with=consolidation.target_event_id if not is_new else None,
-            entities_created=entities_created,
+            event=built_events[0],
+            is_new=is_new_flags[0],
+            merged_with=merged_targets[0],
+            entities_created=entities_created_total,
+            events=built_events,
         )
 
     def _build_event_frame(
         self,
-        extraction: ExtractionResult,
+        data: dict[str, Any],
         episode: Episode,
         current_time: int,
+        index: int = 0,
     ) -> Event:
         """构建事件帧
 
@@ -223,8 +249,6 @@ class MemoryBuilder:
         Returns:
             Event实例
         """
-        data = extraction.event_data
-
         # 使用摘要或截取Episode内容作为摘要
         summary = data.get("summary", "")
         if not summary:
@@ -242,6 +266,7 @@ class MemoryBuilder:
         payload = dict(data)
         payload["episode_id"] = episode.id
         payload["episode_text"] = episode.content
+        payload["event_index"] = int(index)
         if episode.metadata:
             payload["episode_metadata"] = dict(episode.metadata)
 
@@ -261,6 +286,35 @@ class MemoryBuilder:
             payload=payload,
             status=str(data.get("status", "active")),
         )
+
+    def _collect_event_payloads(self, extraction: ExtractionResult) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        if isinstance(extraction.events_data, list):
+            payloads.extend(item for item in extraction.events_data if isinstance(item, dict))
+        if isinstance(extraction.event_data, dict) and extraction.event_data:
+            signature = self._event_payload_signature(extraction.event_data)
+            existing = {self._event_payload_signature(item) for item in payloads}
+            if signature and signature not in existing:
+                payloads.insert(0, extraction.event_data)
+        return payloads
+
+    def _event_payload_signature(self, payload: dict[str, Any]) -> str:
+        return "|".join(
+            [
+                str(payload.get("summary", "") or "").strip(),
+                str(payload.get("action", "") or "").strip(),
+                str(payload.get("causality", "") or "").strip(),
+            ]
+        )
+
+    def _is_effective_event(self, event: Event) -> bool:
+        if (event.summary or "").strip():
+            return True
+        if (event.action or "").strip():
+            return True
+        if (event.causality or "").strip():
+            return True
+        return False
 
     def _merge_event(
         self,

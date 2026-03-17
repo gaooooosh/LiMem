@@ -56,14 +56,18 @@ class IngestResult:
     is_new: bool
     merged_with: Optional[str] = None
     entities_created: int = 0
+    events: list[Event] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
+        all_events = self.events or [self.event]
         return {
             "event_id": self.event.id,
             "is_new": self.is_new,
             "merged_with": self.merged_with,
             "entities_created": self.entities_created,
+            "event_ids": [event.id for event in all_events],
+            "event_count": len(all_events),
         }
 
 
