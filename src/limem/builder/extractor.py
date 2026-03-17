@@ -215,32 +215,28 @@ class HeuristicExtractor(LLMExtractor):
         import re
         now_ts = int(time.time())
 
-        # 规则摘要：优先截取“用户说/车机回答”片段
-        summary = text.strip()
-        if "->" in summary:
-            left, right = summary.split("->", 1)
-            summary = f"{left.strip()} -> {right.strip()}"
-        summary = summary[:180]
-
         action = self._infer_action(text)
         event_type = self._infer_event_type(text)
+        result = self._infer_result(text)
+        participants = self._infer_participants(text)
+        location = self._infer_location(text)
 
         # 轻量实体提取：中文连续词 + 英文词 + 数字短词
         candidates = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_]{1,20}|\d{2,}", text)
         entities = normalize_entity_candidates(candidates, source_text=text)
 
         event_data = {
-            "summary": summary,
+            "summary": "",
             "event_type": event_type,
             "action": action,
-            "causality": "",
+            "causality": result,
             "time_range": {
                 "start": now_ts,
                 "end": now_ts,
                 "display_time_bucket": "",
             },
-            "participants": [{"role": "用户", "seat": ""}],
-            "location": {"geo_context": "车内", "digital_context": "车机"},
+            "participants": participants,
+            "location": location,
             "evidence": [{"source": "heuristic", "snippet": text[:160], "timestamp": now_ts, "confidence": 0.7}],
             "consistency": "uncertain",
             "salience": 0.5,
@@ -277,3 +273,41 @@ class HeuristicExtractor(LLMExtractor):
         if any(token in text for token in ["用户说", "车机回答", "帮我", "请", "问"]):
             return "interaction"
         return "action"
+
+    def _infer_result(self, text: str) -> str:
+        result_hints = [
+            ("已开始导航", "开始导航"),
+            ("开始导航", "开始导航"),
+            ("已开启", "已开启"),
+            ("开启成功", "开启成功"),
+            ("已播放", "开始播放"),
+            ("开始播放", "开始播放"),
+            ("已暂停", "已暂停"),
+            ("已关闭", "已关闭"),
+        ]
+        for token, result in result_hints:
+            if token in text:
+                return result
+        return ""
+
+    def _infer_participants(self, text: str) -> list[dict[str, str]]:
+        participants = []
+        if "用户" in text or "我" in text:
+            participants.append({"role": "用户", "seat": ""})
+        if "车机" in text or "系统" in text:
+            participants.append({"role": "系统", "seat": ""})
+        if not participants:
+            participants.append({"role": "用户", "seat": ""})
+        return participants
+
+    def _infer_location(self, text: str) -> dict[str, str]:
+        geo_context = "车内" if any(token in text for token in ["车机", "导航", "空调", "勿扰"]) else ""
+        digital_context = "车机" if any(token in text for token in ["车机", "系统"]) else ""
+        if "导航" in text:
+            digital_context = "导航系统"
+        elif any(token in text for token in ["播放", "暂停", "音乐", "歌曲"]):
+            digital_context = "媒体系统"
+        return {
+            "geo_context": geo_context,
+            "digital_context": digital_context,
+        }

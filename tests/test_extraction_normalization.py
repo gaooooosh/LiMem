@@ -59,6 +59,26 @@ class TestExtractionNormalization(unittest.TestCase):
         self.assertEqual(normalized["summary"], "")
         self.assertEqual(normalized["action"], "")
 
+    def test_episode_like_summary_is_rewritten_to_event_summary(self):
+        episode_text = "用户说: 导航去公司 | 车机回答: 已开始导航"
+        normalized = normalize_event_payload(
+            {
+                "event": {
+                    "summary": episode_text,
+                    "participants": [{"role": "用户"}],
+                    "action": "导航去公司",
+                    "location": {"geo_context": "车内", "digital_context": "导航系统"},
+                    "time": {"text": "今天上午"},
+                    "outcome": "开始导航",
+                }
+            },
+            episode_text=episode_text,
+        )
+
+        self.assertNotEqual(normalized["summary"], episode_text)
+        self.assertIn("用户", normalized["summary"])
+        self.assertIn("导航去公司", normalized["summary"])
+
     def test_entity_candidates_are_de_fragmented(self):
         entities = normalize_entity_candidates(
             [

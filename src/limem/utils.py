@@ -466,6 +466,26 @@ def _build_event_summary(
     return "；".join(parts).strip("；")
 
 
+def _looks_like_episode_text(summary: str, episode_text: str) -> bool:
+    summary_text = _to_text(summary)
+    episode = _to_text(episode_text)
+    if not summary_text or not episode:
+        return False
+
+    normalized_summary = summary_text.replace(" ", "")
+    normalized_episode = episode.replace(" ", "")
+    if normalized_summary == normalized_episode:
+        return True
+
+    prefix_markers = ("用户说:", "用户说：", "车机回答:", "车机回答：", "[")
+    if summary_text.startswith(prefix_markers):
+        return True
+
+    overlap = len(set(normalized_summary) & set(normalized_episode))
+    ratio = overlap / max(1, len(set(normalized_summary)))
+    return len(summary_text) >= 20 and ratio >= 0.85
+
+
 _ENTITY_GENERIC_TERMS = {
     "内容", "歌曲", "歌", "音乐", "视频", "动画片", "电影", "纪录片", "节目", "专辑",
     "路线", "导航", "地址", "位置", "地方", "东西", "事情", "信息", "答案", "问题",
@@ -623,11 +643,11 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
     )
     event_type = _normalize_event_type(event_type_value, summary=summary, action=action, result=result)
 
+    if summary and _looks_like_episode_text(summary, episode_text):
+        summary = ""
+
     if not summary:
         summary = _build_event_summary(participants, action, location, time_range, result)
-
-    if not summary and episode_text:
-        summary = episode_text[:120]
 
     causality = _to_text(_pick_first(event_payload, ["causality", "cause", "reason"], ""))
     if not causality:
