@@ -18,6 +18,7 @@ from typing import Any, Optional
 import json
 import math
 import os
+import re
 import time
 import uuid
 
@@ -28,10 +29,23 @@ from ..config import (
     CONSOLIDATION_MIN_INTERVAL_SECONDS,
     CONTEXT_CANDIDATE_LIMIT,
     CONTEXT_CONFLICT_THRESHOLD,
+    CONTEXT_CORE_SLOT_WEIGHT,
+    CONTEXT_AUX_SLOT_WEIGHT,
+    CONTEXT_QUERY_CANDIDATE_LIMIT,
     CONTEXT_REUSE_THRESHOLD,
     DECAY_RATE,
     DECAY_STEP,
     ENABLE_AUTO_CONSOLIDATION,
+    EVENT_CONSOLIDATION_CANDIDATE_LIMIT,
+    EVENT_CONSOLIDATION_PAYLOAD_WEIGHT,
+    EVENT_CONSOLIDATION_PATTERN_WEIGHT,
+    EVENT_CONSOLIDATION_TEXT_WEIGHT,
+    EVENT_CONSOLIDATION_CONTEXT_WEIGHT,
+    EVENT_CONSOLIDATION_THRESHOLD,
+    EVENT_CONSOLIDATION_TIME_WEIGHT,
+    EVENT_CONSOLIDATION_WINDOW_SECONDS,
+    EVENT_MERGE_TRACE_LOG_PATH,
+    EVENT_MERGE_TRACE_STRATEGY_VERSION,
     NEXT_MAX_PREDECESSORS,
     NEXT_MIN_SCORE,
     NEXT_RECENT_WINDOW_SECONDS,
@@ -39,8 +53,10 @@ from ..config import (
     PATTERN_CANDIDATE_LIMIT,
     PATTERN_DRIFT_THRESHOLD,
     PATTERN_MERGE_THRESHOLD,
+    PATTERN_QUERY_CANDIDATE_LIMIT,
     PATTERN_SPLIT_DRIFT_THRESHOLD,
     REINFORCEMENT_STEP,
+    RETRIEVAL_DEFAULT_CANDIDATE_LIMIT,
     RETRIEVAL_WEIGHT_CONTEXT,
     RETRIEVAL_WEIGHT_EVENT_SIM,
     RETRIEVAL_WEIGHT_PATTERN,
@@ -62,6 +78,9 @@ class DynamicEvolutionConfig:
     context_reuse_threshold: float = CONTEXT_REUSE_THRESHOLD
     context_conflict_threshold: float = CONTEXT_CONFLICT_THRESHOLD
     context_candidate_limit: int = CONTEXT_CANDIDATE_LIMIT
+    context_query_candidate_limit: int = CONTEXT_QUERY_CANDIDATE_LIMIT
+    context_core_slot_weight: float = CONTEXT_CORE_SLOT_WEIGHT
+    context_aux_slot_weight: float = CONTEXT_AUX_SLOT_WEIGHT
 
     next_recent_window_seconds: int = NEXT_RECENT_WINDOW_SECONDS
     next_max_predecessors: int = NEXT_MAX_PREDECESSORS
@@ -72,6 +91,7 @@ class DynamicEvolutionConfig:
     pattern_split_drift_threshold: float = PATTERN_SPLIT_DRIFT_THRESHOLD
     pattern_merge_threshold: float = PATTERN_MERGE_THRESHOLD
     pattern_candidate_limit: int = PATTERN_CANDIDATE_LIMIT
+    pattern_query_candidate_limit: int = PATTERN_QUERY_CANDIDATE_LIMIT
 
     reinforcement_step: float = REINFORCEMENT_STEP
     decay_step: float = DECAY_STEP
@@ -84,11 +104,22 @@ class DynamicEvolutionConfig:
     retrieval_weight_recency: float = RETRIEVAL_WEIGHT_RECENCY
     retrieval_weight_validity: float = RETRIEVAL_WEIGHT_VALIDITY
     retrieval_weight_support: float = RETRIEVAL_WEIGHT_SUPPORT
+    retrieval_default_candidate_limit: int = RETRIEVAL_DEFAULT_CANDIDATE_LIMIT
 
     enable_auto_consolidation: bool = ENABLE_AUTO_CONSOLIDATION
     consolidation_min_interval_seconds: int = CONSOLIDATION_MIN_INTERVAL_SECONDS
     weak_edge_prune_threshold: float = WEAK_EDGE_PRUNE_THRESHOLD
     consolidation_log_path: str = CONSOLIDATION_LOG_PATH
+    event_consolidation_window_seconds: int = EVENT_CONSOLIDATION_WINDOW_SECONDS
+    event_consolidation_candidate_limit: int = EVENT_CONSOLIDATION_CANDIDATE_LIMIT
+    event_consolidation_threshold: float = EVENT_CONSOLIDATION_THRESHOLD
+    event_consolidation_text_weight: float = EVENT_CONSOLIDATION_TEXT_WEIGHT
+    event_consolidation_context_weight: float = EVENT_CONSOLIDATION_CONTEXT_WEIGHT
+    event_consolidation_pattern_weight: float = EVENT_CONSOLIDATION_PATTERN_WEIGHT
+    event_consolidation_payload_weight: float = EVENT_CONSOLIDATION_PAYLOAD_WEIGHT
+    event_consolidation_time_weight: float = EVENT_CONSOLIDATION_TIME_WEIGHT
+    event_merge_trace_strategy_version: str = EVENT_MERGE_TRACE_STRATEGY_VERSION
+    event_merge_trace_log_path: str = EVENT_MERGE_TRACE_LOG_PATH
 
 
 class DynamicEvolutionEngine:
@@ -484,8 +515,12 @@ class DynamicEvolutionEngine:
     ) -> list[dict[str, Any]]:
         query_entities = query_entities or []
         if events is None:
-            now = int(time.time())
-            events = self.store.get_recent_events(now, self.config.archive_event_seconds * 2, limit=300)
+            route_bundle = self.retrieve_candidate_events_for_query(
+                query=query,
+                query_entities=query_entities,
+                limit=max(top_k * 4, self.config.retrieval_default_candidate_limit),
+            )
+            events = route_bundle["events"]
         rows = []
         for event in events:
             row = self._score_event_for_retrieval(
@@ -518,17 +553,87 @@ class DynamicEvolutionEngine:
             enriched.append(merged)
         return enriched
 
+    def retrieve_candidate_events_for_query(
+        self,
+        query: str,
+        query_entities: Optional[list[str]] = None,
+        limit: Optional[int] = None,
+    ) -> dict[str, Any]:
+        query_entities = query_entities or []
+        route_limit = int(limit or self.config.retrieval_default_candidate_limit)
+
+        # Entity remains an indexing/compatibility route, not the semantic core.
+        entity_events = self.store.get_events_by_entities(query_entities) if query_entities else []
+
+        contexts = self.store.retrieve_candidate_contexts_for_query(
+            query=query,
+            query_entities=query_entities,
+            limit=self.config.context_query_candidate_limit,
+        )
+        patterns = self.store.retrieve_candidate_patterns_for_query(
+            query=query,
+            query_entities=query_entities,
+            limit=self.config.pattern_query_candidate_limit,
+        )
+        context_events = self.store.retrieve_events_by_contexts(
+            [context.id for context in contexts],
+            limit=route_limit,
+        )
+        pattern_events = self.store.retrieve_events_by_patterns(
+            [pattern.id for pattern in patterns],
+            limit=route_limit,
+        )
+
+        merged: dict[str, Event] = {}
+        for route_events in (entity_events, context_events, pattern_events):
+            for event in route_events:
+                merged[event.id] = event
+
+        return {
+            "events": list(merged.values()),
+            "entity_events": entity_events,
+            "context_events": context_events,
+            "pattern_events": pattern_events,
+            "contexts": contexts,
+            "patterns": patterns,
+        }
+
     # -------------------------------------------------------------------------
     # Algorithm 6: Consolidation and Forgetting
     # -------------------------------------------------------------------------
-    def run_consolidation(self, current_time: Optional[int] = None) -> dict[str, int]:
+    def run_consolidation(
+        self,
+        current_time: Optional[int] = None,
+        dry_run: bool = False,
+    ) -> dict[str, int]:
         now = int(current_time or time.time())
+        event_report = self.consolidate_events(now, dry_run=dry_run)
+        if dry_run:
+            report = {
+                "dry_run": 1,
+                "scanned_events": event_report["scanned_events"],
+                "candidate_pairs": event_report["candidate_pairs"],
+                "merged_events": event_report["merged_events"],
+                "skipped_events": event_report["skipped_events"],
+                "merged_contexts": 0,
+                "merged_patterns": 0,
+                "decayed_nodes": 0,
+                "pruned_edges": 0,
+                "archived_events": event_report["archived_events"] + self._count_archivable_events(now),
+            }
+            self._append_consolidation_log(now, report)
+            return report
         report = {
+            "dry_run": 0,
+            "scanned_events": event_report["scanned_events"],
+            "candidate_pairs": event_report["candidate_pairs"],
+            "merged_events": event_report["merged_events"],
+            "skipped_events": event_report["skipped_events"],
             "merged_contexts": self.consolidate_contexts(now),
             "merged_patterns": self.consolidate_patterns(now),
             "decayed_nodes": self.decay_stale_nodes(now),
             "pruned_edges": self.prune_weak_edges(now),
-            "archived_events": self._archive_stale_events(now),
+            "archived_events": event_report["archived_events"] + self._archive_stale_events(now),
         }
         self._last_consolidation_at = now
         self._append_consolidation_log(now, report)
@@ -569,6 +674,61 @@ class DynamicEvolutionEngine:
                 if self.maybe_merge_patterns(patterns[i], patterns[j]):
                     merged += 1
         return merged
+
+    def consolidate_events(self, now: int, dry_run: bool = False) -> dict[str, int]:
+        events = self.store.get_recent_events(
+            current_time=now,
+            window_seconds=self.config.event_consolidation_window_seconds,
+            limit=300,
+        )
+        report = {
+            "scanned_events": len(events),
+            "candidate_pairs": 0,
+            "merged_events": 0,
+            "archived_events": 0,
+            "skipped_events": 0,
+        }
+        if not events:
+            return report
+
+        event_map = {event.id: event for event in events}
+        merged_sources: set[str] = set()
+        visited_pairs: set[tuple[str, str]] = set()
+
+        for event in events:
+            if event.id in merged_sources or event.status in {"merged", "archived"}:
+                report["skipped_events"] += 1
+                continue
+
+            candidates = self._retrieve_event_consolidation_candidates(event, event_map, now)
+            for candidate in candidates:
+                if candidate.id == event.id or candidate.id in merged_sources:
+                    continue
+                pair_key = tuple(sorted([event.id, candidate.id]))
+                if pair_key in visited_pairs:
+                    continue
+                visited_pairs.add(pair_key)
+                report["candidate_pairs"] += 1
+
+                score, reason = self._event_merge_similarity(event, candidate, now)
+                if score < self.config.event_consolidation_threshold:
+                    continue
+
+                canonical, merged = self._pick_canonical_event(event, candidate)
+                if not dry_run:
+                    self._merge_event_pair(
+                        canonical=canonical,
+                        merged=merged,
+                        similarity_score=score,
+                        merge_reason=reason,
+                        merged_at=now,
+                    )
+                merged_sources.add(merged.id)
+                report["merged_events"] += 1
+                report["archived_events"] += 1
+                break
+
+        return report
 
     def decay_stale_nodes(self, now: int) -> int:
         changed = 0
@@ -651,29 +811,160 @@ class DynamicEvolutionEngine:
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+    def _retrieve_event_consolidation_candidates(
+        self,
+        event: Event,
+        event_map: dict[str, Event],
+        now: int,
+    ) -> list[Event]:
+        candidates: dict[str, Event] = {}
+
+        def add_candidate(candidate: Optional[Event]) -> None:
+            if not candidate or candidate.id == event.id:
+                return
+            if candidate.status in {"merged", "archived"}:
+                return
+            candidates[candidate.id] = candidate
+
+        event_time = event.last_active or event.timestamp or now
+        recent = self.store.get_recent_events(
+            current_time=event_time,
+            window_seconds=self.config.event_consolidation_window_seconds,
+            limit=self.config.event_consolidation_candidate_limit,
+        )
+        for candidate in recent:
+            add_candidate(event_map.get(candidate.id, candidate))
+
+        for context in self.store.get_event_contexts(event.id)[:2]:
+            for candidate in self.store.retrieve_events_by_contexts(
+                [context.id],
+                limit=self.config.event_consolidation_candidate_limit,
+            ):
+                add_candidate(event_map.get(candidate.id, candidate))
+
+        for pattern in self.store.get_event_patterns(event.id)[:2]:
+            for candidate in self.store.retrieve_events_by_patterns(
+                [pattern.id],
+                limit=self.config.event_consolidation_candidate_limit,
+            ):
+                add_candidate(event_map.get(candidate.id, candidate))
+
+        ordered = sorted(
+            candidates.values(),
+            key=lambda item: abs((item.last_active or item.timestamp or 0) - event_time),
+        )
+        return ordered[: self.config.event_consolidation_candidate_limit]
+
+    def _event_merge_similarity(
+        self,
+        event_a: Event,
+        event_b: Event,
+        now: int,
+    ) -> tuple[float, str]:
+        text_similarity = self._lexical_similarity(event_a.summary, event_b.summary)
+        context_similarity = self._context_overlap_for_events(event_a.id, event_b.id)
+        pattern_similarity = self._pattern_overlap_for_events(event_a.id, event_b.id)
+        payload_similarity = self._payload_similarity(event_a, event_b)
+        time_similarity = self._time_similarity(event_a, event_b, now)
+        score = (
+            self.config.event_consolidation_text_weight * text_similarity
+            + self.config.event_consolidation_context_weight * context_similarity
+            + self.config.event_consolidation_pattern_weight * pattern_similarity
+            + self.config.event_consolidation_payload_weight * payload_similarity
+            + self.config.event_consolidation_time_weight * time_similarity
+        )
+        reasons = []
+        if context_similarity > 0.0:
+            reasons.append("shared_context")
+        if pattern_similarity > 0.0:
+            reasons.append("shared_pattern")
+        if payload_similarity >= 0.5:
+            reasons.append("payload_similarity")
+        if text_similarity >= 0.5:
+            reasons.append("summary_similarity")
+        if time_similarity >= 0.5:
+            reasons.append("time_window")
+        return score, ",".join(reasons) or "local_similarity"
+
+    def _pick_canonical_event(self, event_a: Event, event_b: Event) -> tuple[Event, Event]:
+        def rank_key(event: Event) -> tuple[int, float, int]:
+            return (
+                int(event.support_count or 1),
+                float(event.confidence or 0.0),
+                int(event.created_at or event.timestamp or 0),
+            )
+
+        if rank_key(event_a) >= rank_key(event_b):
+            return event_a, event_b
+        return event_b, event_a
+
+    def _merge_event_pair(
+        self,
+        canonical: Event,
+        merged: Event,
+        similarity_score: float,
+        merge_reason: str,
+        merged_at: int,
+    ) -> None:
+        canonical.support_count += max(1, merged.support_count)
+        canonical.confidence = min(1.0, max(canonical.confidence, merged.confidence) + 0.03)
+        canonical.last_active = max(canonical.last_active, merged.last_active, merged_at)
+        canonical.updated_at = merged_at
+        canonical.evidence = canonical.evidence + merged.evidence
+        canonical.payload = self._merge_event_payload(canonical.payload, merged.payload, merged.id, merged_at)
+        self.store.update_event(canonical)
+
+        merged.status = "merged"
+        merged.valid_to = merged_at
+        merged.updated_at = merged_at
+        merged.payload = self._merge_event_payload(merged.payload, {}, canonical.id, merged_at, source_event_id=merged.id)
+        self.store.update_event(merged)
+
+        self.store.save_event_merge_trace(
+            source_event_id=merged.id,
+            target_event_id=canonical.id,
+            merge_reason=merge_reason,
+            similarity_score=similarity_score,
+            merged_at=merged_at,
+            strategy_version=self.config.event_merge_trace_strategy_version,
+        )
+        self._append_event_merge_trace_log(
+            merged_at=merged_at,
+            source_event_id=merged.id,
+            target_event_id=canonical.id,
+            merge_reason=merge_reason,
+            similarity_score=similarity_score,
+        )
+
+    def _merge_event_payload(
+        self,
+        payload: dict[str, Any],
+        incoming_payload: dict[str, Any],
+        target_event_id: str,
+        merged_at: int,
+        source_event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        base = dict(payload or {})
+        if incoming_payload:
+            base.setdefault("merge_inputs", []).append(incoming_payload)
+        merge_trace = base.setdefault("merge_trace", [])
+        trace_entry = {
+            "target_event_id": target_event_id,
+            # `merged_at` records when offline consolidation decided the merge.
+            "merged_at": merged_at,
+        }
+        source_id = source_event_id or base.get("source_event_id")
+        if source_id:
+            # `source_event_id` keeps the archived source event directly traceable.
+            trace_entry["source_event_id"] = source_id
+        merge_trace.append(trace_entry)
+        return base
+
     def _build_context_draft(self, event: Event) -> Context:
         timestamp = event.last_active or event.timestamp or int(time.time())
-        geo_context = ""
-        digital_context = ""
-        if isinstance(event.location, dict):
-            geo_context = str(event.location.get("geo_context", "") or "")
-            digital_context = str(event.location.get("digital_context", "") or "")
-        time_bucket = ""
-        if isinstance(event.time_range, dict):
-            time_bucket = str(event.time_range.get("display_time_bucket", "") or "")
-        participants = []
-        if isinstance(event.participants, list):
-            participants = [str(p.get("role", "")) for p in event.participants if isinstance(p, dict)]
-        slots = {
-            "geo_context": geo_context,
-            "digital_context": digital_context,
-            "time_bucket": time_bucket,
-            "action": event.action,
-            "event_type": event.event_type,
-            "participants": [p for p in participants if p],
-        }
-        subtype = event.action or event.event_type or "generic"
-        summary = event.summary[:180] if event.summary else f"{subtype} context"
+        slots = self._extract_context_slots(event)
+        subtype = self._infer_context_subtype(event, slots)
+        summary = self._build_context_summary(subtype, slots)
         return Context(
             id="",
             context_type="situation",
@@ -692,24 +983,23 @@ class DynamicEvolutionEngine:
     def _context_similarity(self, a: Context, b: Context) -> float:
         slots_a = a.structured_slots if isinstance(a.structured_slots, dict) else {}
         slots_b = b.structured_slots if isinstance(b.structured_slots, dict) else {}
-        keys = set(slots_a.keys()) | set(slots_b.keys())
-        if not keys:
-            slot_sim = 0.0
-        else:
-            same = 0
-            total = 0
-            for key in keys:
-                va = slots_a.get(key)
-                vb = slots_b.get(key)
-                if va in (None, "", [], {}) and vb in (None, "", [], {}):
-                    continue
-                total += 1
-                if self._value_overlap(va, vb):
-                    same += 1
-            slot_sim = (same / total) if total else 0.0
+        core_slot_sim = self._slot_group_similarity(
+            slots_a,
+            slots_b,
+            self._core_context_slot_keys(),
+        )
+        aux_slot_sim = self._slot_group_similarity(
+            slots_a,
+            slots_b,
+            self._aux_context_slot_keys(),
+        )
+        slot_sim = (
+            self.config.context_core_slot_weight * core_slot_sim
+            + self.config.context_aux_slot_weight * aux_slot_sim
+        )
         type_sim = 1.0 if a.context_type == b.context_type else 0.0
         subtype_sim = 1.0 if a.subtype == b.subtype else 0.0
-        return 0.25 * type_sim + 0.35 * subtype_sim + 0.40 * slot_sim
+        return 0.20 * type_sim + 0.25 * subtype_sim + 0.55 * slot_sim
 
     def _context_conflict_ratio(self, a: Context, b: Context) -> float:
         slots_a = a.structured_slots if isinstance(a.structured_slots, dict) else {}
@@ -726,6 +1016,206 @@ class DynamicEvolutionEngine:
             if not self._value_overlap(va, vb):
                 conflicts += 1
         return (conflicts / overlap) if overlap else 0.0
+
+    def _infer_context_subtype(self, event: Event, slots: dict[str, Any]) -> str:
+        for key in ("scene", "task_stage", "goal_hint", "constraint_hint", "geo_context", "digital_context"):
+            value = str(slots.get(key, "") or "").strip()
+            if value:
+                return value[:48]
+        return event.event_type or "generic"
+
+    def _extract_context_slots(self, event: Event) -> dict[str, Any]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        location = event.location if isinstance(event.location, dict) else {}
+        time_range = event.time_range if isinstance(event.time_range, dict) else {}
+        payload_context = payload.get("context", {}) if isinstance(payload.get("context", {}), dict) else {}
+        participants = self._participant_labels(event.participants)
+        scene_hint = self._infer_scene_hint(event)
+        scene = str(
+            payload.get("scene")
+            or location.get("scene")
+            or payload_context.get("scene", "")
+            or payload_context.get("geo_context", "")
+            or payload_context.get("digital_context", "")
+            or scene_hint
+            or event.event_type
+            or "generic"
+        )
+        slots = {
+            "scene": scene,
+            "geo_context": str(location.get("geo_context") or payload_context.get("geo_context", "") or ""),
+            "digital_context": str(location.get("digital_context") or payload_context.get("digital_context", "") or ""),
+            "time_bucket": str(time_range.get("display_time_bucket") or payload.get("time_bucket", "") or ""),
+            "task_stage": str(payload.get("task_stage", "") or ""),
+            "goal_hint": str(payload.get("goal_hint") or payload.get("goal") or scene_hint),
+            "constraint_hint": str(payload.get("constraint_hint") or payload.get("constraint") or ""),
+            "participants": participants,
+            "device": self._collect_slot_values(payload, location, key="device"),
+            "app": self._collect_slot_values(payload, location, key="app"),
+            "place": self._collect_slot_values(payload, location, key="place"),
+            # Action is kept only as low-weight metadata for compatibility, not as subtype driver.
+            "action_hint": str(event.action or payload.get("action", "") or ""),
+            "event_type": str(event.event_type or ""),
+        }
+        return {key: value for key, value in slots.items() if value not in (None, "", [], {})}
+
+    def _build_context_summary(self, subtype: str, slots: dict[str, Any]) -> str:
+        summary_parts = [
+            str(slots.get("scene", "") or ""),
+            str(slots.get("geo_context", "") or ""),
+            str(slots.get("digital_context", "") or ""),
+            str(slots.get("time_bucket", "") or ""),
+            str(slots.get("task_stage", "") or ""),
+        ]
+        summary = " / ".join(part for part in summary_parts if part)
+        if not summary:
+            summary = subtype or "generic situation"
+        return f"context:{summary}"[:180]
+
+    def _infer_scene_hint(self, event: Event) -> str:
+        text = f"{event.summary} {event.action} {safe_json_dumps(event.payload)}".lower()
+        keyword_map = {
+            "会议": "会议场景",
+            "开会": "会议场景",
+            "导航": "导航场景",
+            "停车": "停车场景",
+            "充电": "充电场景",
+            "健身": "健身出行",
+            "影院": "观影场景",
+            "勿扰": "勿扰场景",
+            "离车": "离车场景",
+            "疲劳": "疲劳干预",
+            "儿童": "儿童安抚",
+        }
+        for keyword, label in keyword_map.items():
+            if keyword in text:
+                return label
+        return ""
+
+    def _core_context_slot_keys(self) -> list[str]:
+        return [
+            "scene",
+            "geo_context",
+            "digital_context",
+            "time_bucket",
+            "task_stage",
+            "goal_hint",
+            "constraint_hint",
+        ]
+
+    def _aux_context_slot_keys(self) -> list[str]:
+        return ["participants", "device", "app", "place", "action_hint", "event_type"]
+
+    def _slot_group_similarity(
+        self,
+        slots_a: dict[str, Any],
+        slots_b: dict[str, Any],
+        keys: list[str],
+    ) -> float:
+        same = 0
+        total = 0
+        for key in keys:
+            va = slots_a.get(key)
+            vb = slots_b.get(key)
+            if va in (None, "", [], {}) and vb in (None, "", [], {}):
+                continue
+            total += 1
+            if self._value_overlap(va, vb):
+                same += 1
+        return (same / total) if total else 0.0
+
+    def _participant_labels(self, participants: list[Any]) -> list[str]:
+        if not isinstance(participants, list):
+            return []
+        labels = []
+        for item in participants:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "") or "").strip()
+            seat = str(item.get("seat", "") or "").strip()
+            label = "/".join([part for part in [role, seat] if part])
+            if label:
+                labels.append(label)
+        return sorted(set(labels))
+
+    def _collect_slot_values(self, *sources: dict[str, Any], key: str) -> list[str]:
+        values: list[str] = []
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            raw = source.get(key)
+            if isinstance(raw, list):
+                values.extend(str(item).strip() for item in raw if str(item).strip())
+            elif raw not in (None, ""):
+                values.append(str(raw).strip())
+        return sorted(set(value for value in values if value))
+
+    def _lexical_similarity(self, left: str, right: str) -> float:
+        left_tokens = self._tokenize_text(left)
+        right_tokens = self._tokenize_text(right)
+        if not left_tokens and not right_tokens:
+            return 0.0
+        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+    def _tokenize_text(self, text: str) -> set[str]:
+        raw = str(text or "").lower()
+        tokens = set(re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9_]+", raw))
+        compact = re.sub(r"\s+", "", raw)
+        if len(compact) >= 2:
+            tokens.update(compact[idx: idx + 2] for idx in range(len(compact) - 1))
+        elif compact:
+            tokens.add(compact)
+        return {token for token in tokens if token}
+
+    def _context_overlap_for_events(self, event_a_id: str, event_b_id: str) -> float:
+        left = {context.id for context in self.store.get_event_contexts(event_a_id)}
+        right = {context.id for context in self.store.get_event_contexts(event_b_id)}
+        if not left and not right:
+            return 0.0
+        return len(left & right) / len(left | right)
+
+    def _pattern_overlap_for_events(self, event_a_id: str, event_b_id: str) -> float:
+        left = {pattern.id for pattern in self.store.get_event_patterns(event_a_id)}
+        right = {pattern.id for pattern in self.store.get_event_patterns(event_b_id)}
+        if not left and not right:
+            return 0.0
+        return len(left & right) / len(left | right)
+
+    def _payload_similarity(self, event_a: Event, event_b: Event) -> float:
+        participant_similarity = self._value_similarity(
+            self._participant_labels(event_a.participants),
+            self._participant_labels(event_b.participants),
+        )
+        location_similarity = self._value_similarity(
+            self._extract_context_slots(event_a).get("place", []),
+            self._extract_context_slots(event_b).get("place", []),
+        )
+        action_similarity = 1.0 if event_a.action and event_a.action == event_b.action else 0.0
+        causality_similarity = 1.0 if event_a.causality and event_a.causality == event_b.causality else 0.0
+        return 0.35 * participant_similarity + 0.30 * location_similarity + 0.20 * action_similarity + 0.15 * causality_similarity
+
+    def _time_similarity(self, event_a: Event, event_b: Event, now: int) -> float:
+        ts_a = event_a.last_active or event_a.timestamp or now
+        ts_b = event_b.last_active or event_b.timestamp or now
+        diff = abs(ts_a - ts_b)
+        window = max(1, self.config.event_consolidation_window_seconds)
+        return math.exp(-diff / window)
+
+    def _value_similarity(self, left: Any, right: Any) -> float:
+        left_set = self._as_value_set(left)
+        right_set = self._as_value_set(right)
+        if not left_set and not right_set:
+            return 0.0
+        return len(left_set & right_set) / len(left_set | right_set)
+
+    def _as_value_set(self, value: Any) -> set[str]:
+        if isinstance(value, list):
+            return {str(item).strip() for item in value if str(item).strip()}
+        if isinstance(value, dict):
+            return {f"{key}:{item}".strip() for key, item in value.items() if str(item).strip()}
+        if value in (None, ""):
+            return set()
+        return {str(value).strip()}
 
     def _value_overlap(self, va: Any, vb: Any) -> bool:
         if isinstance(va, list) or isinstance(vb, list):
@@ -838,9 +1328,10 @@ class DynamicEvolutionEngine:
         support_count = int(event_data.get("support_count", event_data.get("c_valid", 1)) or 1)
 
         # Event similarity via lexical overlap (low-cost endpoint-safe).
-        q_tokens = {t.strip().lower() for t in query.split() if t.strip()}
-        s_tokens = {t.strip().lower() for t in summary.split() if t.strip()}
-        event_similarity = (len(q_tokens & s_tokens) / len(q_tokens | s_tokens)) if (q_tokens or s_tokens) else 0.0
+        event_similarity = max(
+            self._lexical_similarity(query, summary),
+            1.0 if query and query.lower() in summary.lower() else 0.0,
+        )
 
         contexts = self.store.get_event_contexts(event_id) if event_id else []
         patterns = self.store.get_event_patterns(event_id) if event_id else []
@@ -985,11 +1476,46 @@ class DynamicEvolutionEngine:
             self.store.archive_event(event_id, now)
         return len(ids)
 
+    def _count_archivable_events(self, now: int) -> int:
+        stale_before = now - self.config.archive_event_seconds
+        resp = self.store.conn.execute(
+            """
+            MATCH (e:Event)
+            WHERE e.last_active < $stale_before AND (e.support_count IS NULL OR e.support_count <= 1)
+            RETURN count(e)
+            """,
+            {"stale_before": stale_before},
+        )
+        return int(resp.get_next()[0]) if resp.has_next() else 0
+
     def _append_consolidation_log(self, now: int, report: dict[str, int]) -> None:
         path = self.config.consolidation_log_path
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         payload = {"timestamp": now, "report": report}
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    def _append_event_merge_trace_log(
+        self,
+        merged_at: int,
+        source_event_id: str,
+        target_event_id: str,
+        merge_reason: str,
+        similarity_score: float,
+    ) -> None:
+        path = self.config.event_merge_trace_log_path
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        payload = {
+            "merged_at": merged_at,
+            "source_event_id": source_event_id,
+            "target_event_id": target_event_id,
+            "merge_reason": merge_reason,
+            "similarity_score": similarity_score,
+            "strategy_version": self.config.event_merge_trace_strategy_version,
+        }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")

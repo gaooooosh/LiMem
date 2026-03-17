@@ -2,7 +2,7 @@
 """Event - 结构化事件模型
 
 Event 是从 Episode 提取的语义记忆单元，表示经过LLM处理的、结构化的语义事件。
-特点：可合并、可衰减、可验证。
+当前主路径中，Event 是 append-first 的原子记忆单元；事件归并只在离线 consolidation 中执行。
 """
 
 from dataclasses import dataclass, field
@@ -27,7 +27,7 @@ class Event:
 
     职责：表示经过LLM处理的、结构化的语义事件。
     特点：
-    - 可合并（相似事件可融合）
+    - append-first（在线写入不覆盖旧事件）
     - 可衰减（时间权重递减）
     - 可验证（c_valid计数）
 
@@ -172,6 +172,8 @@ class Event:
 
     def merge_with(self, other: "Event", current_time: int) -> "Event":
         """合并两个相似事件
+
+        Compatibility helper. Canonical event merge now happens in offline consolidation.
 
         Args:
             other: 要合并的另一个事件

@@ -336,6 +336,50 @@ class GraphStore(ABC):
     def get_event_patterns(self, event_id: str) -> list[Any]:
         raise NotImplementedError("get_event_patterns is not implemented")
 
+    def retrieve_candidate_contexts_for_query(
+        self,
+        query: str,
+        query_entities: list[str],
+        limit: int = 20,
+    ) -> list[Any]:
+        raise NotImplementedError("retrieve_candidate_contexts_for_query is not implemented")
+
+    def retrieve_candidate_patterns_for_query(
+        self,
+        query: str,
+        query_entities: list[str],
+        limit: int = 20,
+    ) -> list[Any]:
+        raise NotImplementedError("retrieve_candidate_patterns_for_query is not implemented")
+
+    def retrieve_events_by_contexts(
+        self,
+        context_ids: list[str],
+        limit: int = 50,
+    ) -> list[Event]:
+        raise NotImplementedError("retrieve_events_by_contexts is not implemented")
+
+    def retrieve_events_by_patterns(
+        self,
+        pattern_ids: list[str],
+        limit: int = 50,
+    ) -> list[Event]:
+        raise NotImplementedError("retrieve_events_by_patterns is not implemented")
+
+    def save_event_merge_trace(
+        self,
+        source_event_id: str,
+        target_event_id: str,
+        merge_reason: str,
+        similarity_score: float,
+        merged_at: int,
+        strategy_version: str,
+    ) -> None:
+        raise NotImplementedError("save_event_merge_trace is not implemented")
+
+    def list_event_merge_traces(self, event_id: str) -> list[dict[str, Any]]:
+        raise NotImplementedError("list_event_merge_traces is not implemented")
+
     def prune_weak_next_edges(self, min_score: float, stale_before: int) -> int:
         raise NotImplementedError("prune_weak_next_edges is not implemented")
 

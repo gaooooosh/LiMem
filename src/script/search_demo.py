@@ -1,460 +1,191 @@
 # -*- coding: utf-8 -*-
-"""Demo script for LTM Search functionality.
+"""Manual search demo for dynamic evolution LTM."""
 
-This script demonstrates complete retrieval pipeline:
-1. Entity Extraction (LLM)
-2. Graph Path Search (Kuzu Cypher)
-3. Weight-based Reranking
-4. LLM Summarization
+from __future__ import annotations
 
-Usage:
-    python -m limem.search_demo
-"""
-
+import argparse
 import os
 import sys
 from datetime import datetime
-from io import StringIO
-from contextlib import redirect_stdout
+from typing import Any
 
-# Add src to path if needed
-PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from limem.config import DB_PATH
-from limem.db import init_db, open_connection
-from limem.ltm import ResearchLTM
-from limem.search import LTMSearcher, RetrievalConfig
+from limem import create_ltm
 
 
-class SearchLogger:
-    """Logger class to capture all search interactions and output to file."""
-
-    def __init__(self, output_dir="outputs"):
-        self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Generate timestamped filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = os.path.join(output_dir, f"search_log_{timestamp}.txt")
-        self.log_buffer = StringIO()
-
-        # Write header
-        self._write_header()
-
-    def _write_header(self):
-        """Write log file header."""
-        header = f"""{'=' * 80}
-LiMem LTM Search Log
-{'=' * 80}
-Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Log File: {self.log_file}
-{'=' * 80}
-
-"""
-        self.log_buffer.write(header)
-
-    def log(self, text: str):
-        """Write text to both console and log buffer."""
-        print(text)  # Output to console
-        self.log_buffer.write(text + "\n")  # Save to buffer
-
-    def log_section(self, title: str, char="=", width=80):
-        """Log a section divider."""
-        self.log("\n" + char * width)
-        self.log(title)
-        self.log(char * width)
-
-    def log_db_stats(self, stats: dict):
-        """Log database statistics."""
-        self.log_section("📊 Database Statistics")
-
-        self.log("\n📦 Nodes:")
-        self.log(f"  • Events:   {stats.get('Event', 0):>6}")
-        self.log(f"  • Entities: {stats.get('Entity', 0):>6}")
-        self.log(f"  • Episodes: {stats.get('Episode', 0):>6}")
-        self.log(f"  • Users:    {stats.get('User', 0):>6}")
-        self.log(f"  ──────────────────────")
-        self.log(f"  • Total:    {sum(stats.get(k, 0) for k in ['Event', 'Entity', 'Episode', 'User']):>6}")
-
-        self.log("\n🔗 Relationships:")
-        self.log(f"  • INVOLVES:        {stats.get('INVOLVES', 0):>6}")
-        self.log(f"  • EXTRACTED_FROM:  {stats.get('EXTRACTED_FROM', 0):>6}")
-        self.log(f"  • PERMANENT_TRAIT: {stats.get('PERMANENT_TRAIT', 0):>6}")
-        self.log(f"  ──────────────────────")
-        self.log(f"  • Total:            {sum(stats.get(k, 0) for k in ['INVOLVES', 'EXTRACTED_FROM', 'PERMANENT_TRAIT']):>6}")
-
-    def log_search_result(self, query: str, result: dict):
-        """Log detailed search result."""
-        self.log(f"\n🔍 Query: {query}")
-        self.log("=" * 80)
-
-        # 1. Extracted entities
-        self.log("\n📝 Stage 1: Extracted Entities")
-        self.log("-" * 80)
-        entities = result.get('entities', [])
-        if entities:
-            cols = 4
-            for i in range(0, len(entities), cols):
-                row_entities = entities[i:i+cols]
-                row_str = "  ".join(f"{e:<18}" for e in row_entities)
-                self.log(f"  {row_str}")
-        else:
-            self.log("  (No entities extracted)")
-
-        # 2. Ranked events with full details
-        self.log("\n📊 Stage 2: Weight-based Reranking (All Ranked Events)")
-        self.log("-" * 80)
-        ranked_events = result.get('ranked_events', [])
-        if ranked_events:
-            for i, event in enumerate(ranked_events, 1):
-                self.log(f"\n  [{i}] Event ID: {event.event_id}")
-                self.log(f"      Summary:       {event.summary}")
-                self.log(f"      Weight:        {event.weight:.6f}")
-                self.log(f"      c_valid:       {event.c_valid}")
-                self.log(f"      t_valid:       {event.t_valid}")
-                self.log(f"      t_expired:     {event.t_expired}")
-                self.log(f"      t_invalid:     {event.t_invalid}")
-                if event.action:
-                    self.log(f"      Action:        {event.action}")
-                if event.causality:
-                    self.log(f"      Causality:     {event.causality}")
-                if event.participants:
-                    self.log(f"      Participants:  {event.participants}")
-                if event.location:
-                    self.log(f"      Location:      {event.location}")
-                if event.time_range:
-                    self.log(f"      Time Range:    {event.time_range}")
-        else:
-            self.log("  (No ranked events)")
-
-        # 2.1 Weight calculation details
-        debug_info = result.get('debug', {})
-        weight_details = debug_info.get('weight_calculation_details', [])
-        if weight_details:
-            self.log("\n🔧 Weight Calculation Details (Full Debug)")
-            self.log("-" * 80)
-            for i, detail in enumerate(weight_details, 1):
-                self.log(f"\n  [{i}] Event: {detail['event_id']}")
-                self.log(f"      Summary:            {detail['summary']}")
-                self.log(f"      Final Weight:       {detail['weight']:.6f}")
-                self.log(f"      c_valid:           {detail['c_valid']}")
-                self.log(f"      t_valid:           {detail['t_valid']}")
-                self.log(f"      t_now:             {detail['t_now']}")
-                self.log(f"      time_diff:         {detail['time_diff']}")
-                self.log(f"      t_expired:         {detail['t_expired']}")
-                self.log(f"      t_invalid:         {detail['t_invalid']}")
-                self.log(f"      match_type:        {detail['match_type']}")
-                entity_weights = detail.get('entity_match_weights', {})
-                if entity_weights:
-                    self.log(f"      entity_match_weights:")
-                    for entity_id, weight in entity_weights.items():
-                        self.log(f"        - {entity_id}: {weight:.4f}")
-                else:
-                    self.log(f"      entity_match_weights: (none)")
-
-        # 3. Top-K events
-        self.log("\n🏆 Stage 3: Top-K Selected Events")
-        self.log("-" * 80)
-        top_k_events = result.get('top_k_events', [])
-        if top_k_events:
-            for i, event in enumerate(top_k_events, 1):
-                self.log(f"\n  [{i}] Event ID: {event.event_id}")
-                self.log(f"      Summary:       {event.summary}")
-                self.log(f"      Weight:        {event.weight:.6f}")
-                self.log(f"      c_valid:       {event.c_valid}")
-        else:
-            self.log("  (No top-k events)")
-
-        # 4. Debug summary
-        debug_info = result.get('debug', {})
-        if debug_info:
-            self.log("\n🔧 Debug Summary")
-            self.log("-" * 80)
-            self.log(f"  Entity count:         {debug_info.get('entity_count', 0)}")
-            self.log(f"  Raw event count:     {debug_info.get('raw_event_count', 0)}")
-            self.log(f"  Ranked event count:   {debug_info.get('ranked_event_count', 0)}")
-            self.log(f"  Top-K count:         {debug_info.get('top_k_count', 0)}")
-
-        # 5. Generated answer
-        self.log("\n💬 Generated Answer")
-        self.log("-" * 80)
-        self.log(result.get('answer', '(No answer generated)'))
-        self.log("-" * 80)
-        self.log(f"【查询Query】\"{query}\"")
-
-        self.log("\n" + "=" * 80)
-
-    def save(self):
-        """Save log buffer to file."""
-        with open(self.log_file, 'w', encoding='utf-8') as f:
-            f.write(self.log_buffer.getvalue())
-        return self.log_file
-
-
-def get_db_stats(conn):
-    """Get database statistics including node and event counts."""
-    stats = {}
-
-    # Count node types
-    node_types = ["Event", "Entity", "Episode", "User"]
-    for node_type in node_types:
-        resp = conn.execute(f"MATCH (n:{node_type}) RETURN count(*)")
-        if resp.has_next():
-            stats[node_type] = resp.get_next()[0]
-        else:
-            stats[node_type] = 0
-
-    # Count relationships
-    rel_types = ["INVOLVES", "EXTRACTED_FROM", "PERMANENT_TRAIT"]
-    for rel_type in rel_types:
-        resp = conn.execute(f"MATCH ()-[r:{rel_type}]->() RETURN count(*)")
-        if resp.has_next():
-            stats[rel_type] = resp.get_next()[0]
-        else:
-            stats[rel_type] = 0
-
-    return stats
-
-
-def print_db_stats(stats):
-    """Print database statistics in a formatted way."""
-    print("\n" + "=" * 80)
-    print("📊 Database Statistics")
-    print("=" * 80)
-
-    print("\n📦 Nodes:")
-    print(f"  • Events:   {stats.get('Event', 0):>6}")
-    print(f"  • Entities: {stats.get('Entity', 0):>6}")
-    print(f"  • Episodes: {stats.get('Episode', 0):>6}")
-    print(f"  • Users:    {stats.get('User', 0):>6}")
-    print(f"  ──────────────────────")
-    print(f"  • Total:    {sum(stats.get(k, 0) for k in ['Event', 'Entity', 'Episode', 'User']):>6}")
-
-    print("\n🔗 Relationships:")
-    print(f"  • INVOLVES:        {stats.get('INVOLVES', 0):>6}")
-    print(f"  • EXTRACTED_FROM:  {stats.get('EXTRACTED_FROM', 0):>6}")
-    print(f"  • PERMANENT_TRAIT: {stats.get('PERMANENT_TRAIT', 0):>6}")
-    print(f"  ──────────────────────")
-    print(f"  • Total:            {sum(stats.get(k, 0) for k in ['INVOLVES', 'EXTRACTED_FROM', 'PERMANENT_TRAIT']):>6}")
-
-    print("\n" + "=" * 80 + "\n")
-
-
-def print_detailed_search_result(query: str, result: dict, conn):
-    """Print detailed search result for debugging."""
-    print(f"\n🔍 Query: {query}")
-    print("=" * 80)
-
-    # 1. Extracted entities
-    print("\n📝 Stage 1: Extracted Entities")
-    print("-" * 80)
-    entities = result.get('entities', [])
-    if entities:
-        # Display in matrix format (4 columns)
-        cols = 4
-        for i in range(0, len(entities), cols):
-            row_entities = entities[i:i+cols]
-            row_str = "  ".join(f"{e:<18}" for e in row_entities)
-            print(f"  {row_str}")
-    else:
-        print("  (No entities extracted)")
-
-    # 2. Ranked events with full details
-    print("\n📊 Stage 2: Weight-based Reranking (All Ranked Events)")
-    print("-" * 80)
-    ranked_events = result.get('ranked_events', [])
-    if ranked_events:
-        for i, event in enumerate(ranked_events, 1):
-            print(f"\n  [{i}] Event ID: {event.event_id}")
-            print(f"      Summary:       {event.summary}")
-            print(f"      Weight:        {event.weight:.6f}")
-            print(f"      c_valid:       {event.c_valid}")
-            print(f"      t_valid:       {event.t_valid}")
-            print(f"      t_expired:     {event.t_expired}")
-            print(f"      t_invalid:     {event.t_invalid}")
-            if event.action:
-                print(f"      Action:        {event.action}")
-            if event.causality:
-                print(f"      Causality:     {event.causality}")
-            if event.participants:
-                print(f"      Participants:  {event.participants}")
-            if event.location:
-                print(f"      Location:      {event.location}")
-            if event.time_range:
-                print(f"      Time Range:    {event.time_range}")
-    else:
-        print("  (No ranked events)")
-
-    # 2.1 Weight calculation details
-    debug_info = result.get('debug', {})
-    weight_details = debug_info.get('weight_calculation_details', [])
-    if weight_details:
-        print("\n🔧 Weight Calculation Details (Full Debug)")
-        print("-" * 80)
-        for i, detail in enumerate(weight_details, 1):
-            print(f"\n  [{i}] Event: {detail['event_id']}")
-            print(f"      Summary:            {detail['summary']}")
-            print(f"      Final Weight:       {detail['weight']:.6f}")
-            print(f"      c_valid:           {detail['c_valid']}")
-            print(f"      t_valid:           {detail['t_valid']}")
-            print(f"      t_now:             {detail['t_now']}")
-            print(f"      time_diff:         {detail['time_diff']}")
-            print(f"      t_expired:         {detail['t_expired']}")
-            print(f"      t_invalid:         {detail['t_invalid']}")
-            print(f"      match_type:        {detail['match_type']}")
-            entity_weights = detail.get('entity_match_weights', {})
-            if entity_weights:
-                print(f"      entity_match_weights:")
-                for entity_id, weight in entity_weights.items():
-                    print(f"        - {entity_id}: {weight:.4f}")
-            else:
-                print(f"      entity_match_weights: (none)")
-
-    # 3. Top-K events
-    print("\n🏆 Stage 3: Top-K Selected Events")
-    print("-" * 80)
-    top_k_events = result.get('top_k_events', [])
-    if top_k_events:
-        for i, event in enumerate(top_k_events, 1):
-            print(f"\n  [{i}] Event ID: {event.event_id}")
-            print(f"      Summary:       {event.summary}")
-            print(f"      Weight:        {event.weight:.6f}")
-            print(f"      c_valid:       {event.c_valid}")
-    else:
-        print("  (No top-k events)")
-
-    # 4. Debug summary
-    debug_info = result.get('debug', {})
-    if debug_info:
-        print("\n🔧 Debug Summary")
-        print("-" * 80)
-        print(f"  Entity count:         {debug_info.get('entity_count', 0)}")
-        print(f"  Raw event count:     {debug_info.get('raw_event_count', 0)}")
-        print(f"  Ranked event count:   {debug_info.get('ranked_event_count', 0)}")
-        print(f"  Top-K count:         {debug_info.get('top_k_count', 0)}")
-
-    # 5. Generated answer
-    print("\n💬 Generated Answer")
-    print("-" * 80)
-    print(result.get('answer', '(No answer generated)'))
-    print("-" * 80)
-    print(f"【查询Query】\"{query}\"")
-    
-    print("\n" + "=" * 80)
-
-
-def search_demo():
-    """Run search demo with sample queries."""
-    # Initialize logger
-    logger = SearchLogger()
-
-    logger.log_section("LiMem LTM Search Demo - Full Debug Mode")
-
-    # Initialize database connection
-    logger.log("\n📁 Connecting to database...")
-    conn = open_connection(DB_PATH)
-    init_db(conn)
-    logger.log("✅ Database connected")
-
-    # Display database statistics
-    stats = get_db_stats(conn)
-    logger.log_db_stats(stats)
-
-    # Initialize LTM system (for reference)
-    ltm = ResearchLTM(conn)
-
-    # Initialize Searcher
-    config = RetrievalConfig(
-        default_top_k=5,
-        lambda_param=0.01,
-        max_entities=10,
-        enable_vector_match=True,
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Search demo for dynamic LTM")
+    parser.add_argument(
+        "--db-path",
+        default=os.path.join(PROJECT_ROOT, "DB", "dynamic_trips.kz"),
+        help="Kuzu DB path",
     )
-    searcher = LTMSearcher(conn, config)
-    logger.log("✅ LTMSearcher initialized\n")
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Top-K for retrieval",
+    )
+    parser.add_argument(
+        "--online",
+        action="store_true",
+        help="Use online extraction/answer mode (default offline)",
+    )
+    parser.add_argument(
+        "--answer",
+        action="store_true",
+        help="Generate answer text",
+    )
+    parser.add_argument(
+        "--query",
+        default="",
+        help="One-shot query. Empty means interactive mode unless --demo is set.",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Run built-in demo queries",
+    )
+    parser.add_argument(
+        "--no-evolution",
+        action="store_true",
+        help="Skip evolution-aware compressed retrieval output",
+    )
+    return parser.parse_args()
 
-    # Sample queries for testing
-    test_queries = [
-        "放孩子最喜欢的那个动画片",
-        "我通常早上听什么音乐？",
-        "回家时一般会怎么走？",
+
+def _demo_queries() -> list[str]:
+    return [
+        "用户在开会场景下通常会怎么设置车机？",
+        "用户和导航相关的行为模式是什么？",
+        "播放媒体和勿扰模式有什么共同情景？",
+        "用户困了时系统通常怎么响应？",
+        "与儿童安抚相关的记忆有哪些？",
     ]
 
-    logger.log("-" * 80)
-    logger.log("Running Search Tests")
-    logger.log("-" * 80)
 
-    for query in test_queries:
-        # Execute search with debug info
-        result = searcher.search_debug(query, top_k=5)
-        logger.log_search_result(query, result)
-
-    logger.log("\n✅ Demo complete!")
-
-    # Save log to file
-    log_file = logger.save()
-    print(f"\n📄 Log saved to: {log_file}")
+def _print_stats(ltm) -> None:
+    stats = ltm.get_stats()
+    print("\n=== DB Stats ===")
+    for key in sorted(stats.keys()):
+        print(f"{key:>20}: {stats[key]}")
 
 
-def interactive_search():
-    """Interactive search mode for manual testing."""
-    # Initialize logger
-    logger = SearchLogger()
+def _print_classic_result(result: Any, top_k: int) -> None:
+    print(f"Entities: {result.entities}")
+    print(f"Ranked events: {len(result.ranked_events)}")
+    print(f"Top-{top_k}:")
+    for idx, ev in enumerate(result.top_k_events[:top_k], 1):
+        print(
+            f"  [{idx}] {ev.event_id[:20]}.."
+            f" w={ev.weight:.4f}"
+            f" c_valid={ev.c_valid}"
+            f" summary={ev.summary[:80]}"
+        )
+    if result.answer:
+        print("Answer:")
+        print(result.answer)
 
-    logger.log_section("LiMem LTM Interactive Search - Full Debug Mode")
-    logger.log("Type 'quit' to exit\n")
 
-    # Initialize database connection
-    conn = open_connection(DB_PATH)
-    init_db(conn)
+def _print_evolution_rows(rows: list[dict[str, Any]], top_k: int) -> None:
+    print(f"Evolution-aware Top-{top_k}:")
+    for idx, row in enumerate(rows[:top_k], 1):
+        print(
+            f"  [{idx}] {str(row.get('event_id', ''))[:20]}.."
+            f" score={float(row.get('evolution_score', 0.0)):.4f}"
+            f" sim={float(row.get('event_similarity', 0.0)):.3f}"
+            f" ctx={float(row.get('context_match', 0.0)):.3f}"
+            f" ptn={float(row.get('pattern_similarity', 0.0)):.3f}"
+        )
+        summary = str(row.get("summary", "") or "")
+        if summary:
+            print(f"       summary={summary[:100]}")
+        ctx = row.get("compressed_contexts") or []
+        ptn = row.get("compressed_patterns") or []
+        if ctx:
+            print(f"       contexts={ctx[:2]}")
+        if ptn:
+            print(f"       patterns={ptn[:2]}")
 
-    # Display database statistics
-    stats = get_db_stats(conn)
-    logger.log_db_stats(stats)
 
-    # Initialize Searcher
-    config = RetrievalConfig(
-        default_top_k=5,
-        lambda_param=0.01,
-        enable_vector_match=True,
+def run_query(ltm, query: str, top_k: int, gen_answer: bool, show_evolution: bool) -> None:
+    print("\n" + "=" * 90)
+    print(f"Query: {query}")
+    print("=" * 90)
+    result = ltm.search(query=query, top_k=top_k, generate_answer=gen_answer)
+    _print_classic_result(result, top_k=top_k)
+    if show_evolution:
+        rows = ltm.retrieve_memories(query=query, top_k=top_k)
+        _print_evolution_rows(rows, top_k=top_k)
+
+
+def interactive_loop(ltm, top_k: int, gen_answer: bool, show_evolution: bool) -> None:
+    print("\nEnter query (type 'exit' to quit)")
+    while True:
+        try:
+            q = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExit.")
+            break
+        if not q:
+            continue
+        if q.lower() in {"exit", "quit", "q"}:
+            break
+        run_query(ltm, q, top_k=top_k, gen_answer=gen_answer, show_evolution=show_evolution)
+
+
+def main() -> None:
+    args = _parse_args()
+    if not os.path.exists(args.db_path):
+        raise FileNotFoundError(f"DB not found: {args.db_path}. Build first with build_ltm_from_trips.py")
+
+    ltm = create_ltm(
+        db_path=args.db_path,
+        config={
+            "offline_mode": not args.online,
+            "enable_dynamic_evolution": True,
+            "append_first_mode": True,
+            "generate_answer": args.answer,
+            "search_top_k": args.top_k,
+        },
     )
-    searcher = LTMSearcher(conn, config)
+    print(f"Connected DB: {args.db_path}")
+    print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    _print_stats(ltm)
 
-    try:
-        while True:
-            query = input("\n🔍 Enter your query: ").strip()
-            if not query:
-                continue
-            if query.lower() in {"quit", "exit", "q"}:
-                logger.log("\n👋 Goodbye!")
-                break
+    show_evolution = not args.no_evolution
+    if args.query:
+        run_query(
+            ltm=ltm,
+            query=args.query,
+            top_k=args.top_k,
+            gen_answer=args.answer,
+            show_evolution=show_evolution,
+        )
+        return
 
-            result = searcher.search_debug(query, top_k=5)
-            logger.log_search_result(query, result)
-    except KeyboardInterrupt:
-        logger.log("\n\n⚠️  Interrupted by user")
-    finally:
-        # Save log to file
-        log_file = logger.save()
-        print(f"\n📄 Log saved to: {log_file}")
+    if args.demo:
+        for q in _demo_queries():
+            run_query(
+                ltm=ltm,
+                query=q,
+                top_k=args.top_k,
+                gen_answer=args.answer,
+                show_evolution=show_evolution,
+            )
+        return
+
+    interactive_loop(
+        ltm=ltm,
+        top_k=args.top_k,
+        gen_answer=args.answer,
+        show_evolution=show_evolution,
+    )
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="LiMem LTM Search Demo")
-    parser.add_argument(
-        "--demo",
-        "-d",
-        action="store_true",
-        help="Run in demo",
-    )
-    args = parser.parse_args()
-
-    if args.demo:
-        search_demo()
-
-    interactive_search()
+    main()

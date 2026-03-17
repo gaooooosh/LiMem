@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Consolidator - 记忆合并器
 
+Compatibility-only helper for legacy online event merging.
 决定新事件是创建还是合并到现有事件。
 算法：多维度相似度计算（语义 + 实体 + 时间 + 动作）。
 """
@@ -39,7 +40,8 @@ class ConsolidationResult:
 class Consolidator:
     """记忆合并器
 
-    职责：决定新事件是创建还是合并到现有事件。
+    职责：为兼容模式决定新事件是否在线合并到现有事件。
+    主写入路径已经切换为 append-first；离线 consolidation 才是规范归并路径。
     算法：多维度相似度计算。
 
     四个维度：

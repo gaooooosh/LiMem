@@ -3,8 +3,8 @@
 
 编排四阶段检索管道：
 1. 实体提取（LLM）
-2. 实体匹配（精确 + 模糊）
-3. 图路径搜索 → 获取候选事件
+2. 实体匹配（精确 + 模糊，索引兼容层）
+3. 双路图路径搜索 → 获取候选事件（Entity + Context/Pattern）
 4. 加权重排序
 5. LLM总结（可选）
 """
@@ -142,36 +142,16 @@ class MemorySearcher:
         entities = self._extract_entities(query)
         print(f"🧩 Extracted entities: {entities}")
 
-        if not entities:
-            return SearchResult(
-                query=query,
-                entities=[],
-                ranked_events=[],
-                top_k_events=[],
-                answer="抱歉，我无法从问题中提取到关键信息。",
-            )
-
-        # Stage 2: 实体匹配
-        match_results = self.entity_matcher.match(entities)
-
-        if not match_results:
-            return SearchResult(
-                query=query,
-                entities=entities,
-                ranked_events=[],
-                top_k_events=[],
-                answer="抱歉，没有找到匹配的记忆。",
-            )
-
-        # Stage 3: 图路径搜索
-        raw_events = self._fetch_events(match_results)
-        if self.dynamic_engine:
-            raw_events = self.dynamic_engine.enrich_raw_events_for_retrieval(
-                query=query,
-                raw_events=raw_events,
-                query_entities=entities,
-            )
-        print(f"🔍 Found {len(raw_events)} events from graph")
+        # Stage 2/3: 实体索引路 + Context/Pattern 语义路
+        candidate_bundle = self._collect_candidates(query, entities)
+        raw_events = candidate_bundle["raw_events"]
+        print(
+            "🔍 Found "
+            f"{candidate_bundle['debug']['merged_candidate_count']} merged candidates "
+            f"(entity={candidate_bundle['debug']['entity_route_hit_count']}, "
+            f"context={candidate_bundle['debug']['context_route_hit_count']}, "
+            f"pattern={candidate_bundle['debug']['pattern_route_hit_count']})"
+        )
 
         if not raw_events:
             return SearchResult(
@@ -221,47 +201,15 @@ class MemorySearcher:
         # Stage 1: 实体提取
         entities = self._extract_entities(query)
         print(f"🧩 Extracted entities: {entities}")
-
-        if not entities:
-            return {
-                "query": query,
-                "entities": [],
-                "ranked_events": [],
-                "top_k_events": [],
-                "answer": "抱歉，我无法从问题中提取到关键信息。",
-                "debug": {
-                    "entity_count": 0,
-                    "raw_event_count": 0,
-                    "ranked_event_count": 0,
-                },
-            }
-
-        # Stage 2: 实体匹配
-        match_results = self.entity_matcher.match(entities)
-
-        if not match_results:
-            return {
-                "query": query,
-                "entities": entities,
-                "ranked_events": [],
-                "top_k_events": [],
-                "answer": "抱歉，没有找到匹配的记忆。",
-                "debug": {
-                    "entity_count": len(entities),
-                    "raw_event_count": 0,
-                    "ranked_event_count": 0,
-                },
-            }
-
-        # Stage 3: 图路径搜索
-        raw_events = self._fetch_events(match_results)
-        if self.dynamic_engine:
-            raw_events = self.dynamic_engine.enrich_raw_events_for_retrieval(
-                query=query,
-                raw_events=raw_events,
-                query_entities=entities,
-            )
-        print(f"🔍 Found {len(raw_events)} events from graph")
+        candidate_bundle = self._collect_candidates(query, entities)
+        raw_events = candidate_bundle["raw_events"]
+        print(
+            "🔍 Found "
+            f"{candidate_bundle['debug']['merged_candidate_count']} merged candidates "
+            f"(entity={candidate_bundle['debug']['entity_route_hit_count']}, "
+            f"context={candidate_bundle['debug']['context_route_hit_count']}, "
+            f"pattern={candidate_bundle['debug']['pattern_route_hit_count']})"
+        )
 
         # Stage 4: 重排序
         ranked_events, debug_details = self.ranker.rank(
@@ -283,8 +231,14 @@ class MemorySearcher:
             "answer": answer,
             "debug": {
                 "entity_count": len(entities),
-                "match_results": {k: {"matched": v.matched_entities, "type": v.match_type}
-                                  for k, v in match_results.items()},
+                "match_results": {
+                    key: {"matched": value.matched_entities, "type": value.match_type}
+                    for key, value in candidate_bundle["match_results"].items()
+                },
+                "entity_route_hit_count": candidate_bundle["debug"]["entity_route_hit_count"],
+                "context_route_hit_count": candidate_bundle["debug"]["context_route_hit_count"],
+                "pattern_route_hit_count": candidate_bundle["debug"]["pattern_route_hit_count"],
+                "merged_candidate_count": candidate_bundle["debug"]["merged_candidate_count"],
                 "raw_event_count": len(raw_events),
                 "ranked_event_count": len(ranked_events),
                 "weight_details": [
@@ -299,6 +253,97 @@ class MemorySearcher:
                 ],
             },
         }
+
+    def _collect_candidates(self, query: str, entities: list[str]) -> dict[str, Any]:
+        match_results = self.entity_matcher.match(entities) if entities else {}
+        entity_raw_events = self._fetch_events(match_results) if match_results else []
+
+        if self.dynamic_engine:
+            route_bundle = self.dynamic_engine.retrieve_candidate_events_for_query(
+                query=query,
+                query_entities=entities,
+                limit=max(self.config.default_top_k * 4, 24),
+            )
+            context_pattern_raw_events = self._events_to_raw_rows(
+                route_bundle["context_events"] + route_bundle["pattern_events"]
+            )
+        else:
+            route_bundle = {
+                "entity_events": [],
+                "context_events": [],
+                "pattern_events": [],
+                "events": [],
+            }
+            context_pattern_raw_events = []
+
+        merged_rows: dict[str, dict[str, Any]] = {}
+        for row in entity_raw_events + context_pattern_raw_events:
+            event_id = row.get("event_id", row.get("id", ""))
+            if not event_id:
+                continue
+            if event_id not in merged_rows:
+                merged_rows[event_id] = dict(row)
+                continue
+            existing = merged_rows[event_id]
+            existing["entity_match_weights"] = {
+                **existing.get("entity_match_weights", {}),
+                **row.get("entity_match_weights", {}),
+            }
+            existing["c_valid"] = max(existing.get("c_valid", 1), row.get("c_valid", 1))
+            existing["t_valid"] = max(existing.get("t_valid", 0), row.get("t_valid", 0))
+            if existing.get("match_type") and row.get("match_type"):
+                existing["match_type"] = "+".join(
+                    sorted(set(existing["match_type"].split("+")) | set(row["match_type"].split("+")))
+                )
+            elif row.get("match_type"):
+                existing["match_type"] = row["match_type"]
+
+        raw_events = list(merged_rows.values())
+        if self.dynamic_engine:
+            raw_events = self.dynamic_engine.enrich_raw_events_for_retrieval(
+                query=query,
+                raw_events=raw_events,
+                query_entities=entities,
+            )
+
+        return {
+            "raw_events": raw_events,
+            "match_results": match_results,
+            "debug": {
+                "entity_route_hit_count": len(entity_raw_events),
+                "context_route_hit_count": len(route_bundle.get("context_events", [])),
+                "pattern_route_hit_count": len(route_bundle.get("pattern_events", [])),
+                "merged_candidate_count": len(raw_events),
+            },
+        }
+
+    def _events_to_raw_rows(self, events: list[Any]) -> list[dict[str, Any]]:
+        rows = []
+        for event in events:
+            rows.append(
+                {
+                    "event_id": event.id,
+                    "id": event.id,
+                    "summary": event.summary,
+                    "action": event.action,
+                    "causality": event.causality,
+                    "participants": event.participants,
+                    "location": event.location,
+                    "time_range": event.time_range,
+                    "last_active": event.last_active,
+                    "t_valid": event.last_active,
+                    "c_valid": event.support_count,
+                    "t_expired": None,
+                    "t_invalid": None,
+                    "status": event.status,
+                    "support_count": event.support_count,
+                    "confidence": event.confidence,
+                    "salience": event.salience,
+                    "entity_match_weights": {},
+                    "match_type": "context_or_pattern",
+                }
+            )
+        return rows
 
     def _extract_entities(self, query: str) -> list[str]:
         """从查询中提取实体（LLM）

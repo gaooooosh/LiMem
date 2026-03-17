@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 from typing import Any, Optional
 
 import kuzu
@@ -205,6 +206,15 @@ class KuzuStore(GraphStore):
                 last_reinforced_at INT64
             )
         """)
+        self.conn.execute("""
+            CREATE REL TABLE IF NOT EXISTS EVENT_MERGE_TRACE(
+                FROM Event TO Event,
+                merge_reason STRING,
+                similarity_score DOUBLE,
+                merged_at INT64,
+                strategy_version STRING
+            )
+        """)
 
         # Best-effort 迁移
         self._run_migrations()
@@ -277,6 +287,10 @@ class KuzuStore(GraphStore):
             "ALTER TABLE ABSTRACT_TO ADD created_at INT64",
             "ALTER TABLE ABSTRACT_TO ADD updated_at INT64",
             "ALTER TABLE ABSTRACT_TO ADD last_reinforced_at INT64",
+            "ALTER TABLE EVENT_MERGE_TRACE ADD merge_reason STRING",
+            "ALTER TABLE EVENT_MERGE_TRACE ADD similarity_score DOUBLE",
+            "ALTER TABLE EVENT_MERGE_TRACE ADD merged_at INT64",
+            "ALTER TABLE EVENT_MERGE_TRACE ADD strategy_version STRING",
         ]
 
         for stmt in migrations:
@@ -284,6 +298,80 @@ class KuzuStore(GraphStore):
                 self.conn.execute(stmt)
             except Exception:
                 continue
+
+    def _event_columns(self) -> list[str]:
+        return [
+            "id", "summary", "action", "causality", "time_range",
+            "last_active", "participants", "location", "evidence",
+            "consistency", "embedding", "event_type", "timestamp",
+            "created_at", "updated_at", "valid_from", "valid_to",
+            "salience", "confidence", "source", "status",
+            "support_count", "payload",
+        ]
+
+    def _event_select_clause(self, alias: str = "e") -> str:
+        return f"""
+            {alias}.id, {alias}.summary, {alias}.action, {alias}.causality, {alias}.time_range,
+            {alias}.last_active, {alias}.participants, {alias}.location, {alias}.evidence,
+            {alias}.consistency, {alias}.embedding, {alias}.event_type, {alias}.timestamp,
+            {alias}.created_at, {alias}.updated_at, {alias}.valid_from, {alias}.valid_to,
+            {alias}.salience, {alias}.confidence, {alias}.source, {alias}.status,
+            {alias}.support_count, {alias}.payload
+        """
+
+    def _row_to_event(self, row: list[Any]) -> Event:
+        return Event(
+            id=row[0],
+            summary=row[1],
+            action=row[2] or "",
+            causality=row[3] or "",
+            time_range=safe_json_loads(row[4], {}),
+            last_active=row[5] or 0,
+            participants=safe_json_loads(row[6], []),
+            location=safe_json_loads(row[7], {}),
+            evidence=safe_json_loads(row[8], []),
+            consistency=row[9] or "uncertain",
+            embedding=list(row[10]) if row[10] else None,
+            event_type=row[11] or "generic",
+            timestamp=row[12] or 0,
+            created_at=row[13] or 0,
+            updated_at=row[14] or 0,
+            valid_from=row[15] or 0,
+            valid_to=row[16],
+            salience=float(row[17] or 0.5),
+            confidence=float(row[18] or 0.7),
+            source=row[19] or "llm_extraction",
+            status=row[20] or "active",
+            support_count=int(row[21] or 1),
+            payload=safe_json_loads(row[22], {}),
+        )
+
+    def _tokenize_text(self, text: str) -> set[str]:
+        raw = str(text or "").lower()
+        tokens = set(re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9_]+", raw))
+        compact = re.sub(r"\s+", "", raw)
+        if len(compact) >= 2:
+            tokens.update(compact[idx: idx + 2] for idx in range(len(compact) - 1))
+        elif compact:
+            tokens.add(compact)
+        return {token for token in tokens if token}
+
+    def _text_similarity_score(
+        self,
+        text: str,
+        query: str,
+        query_entities: list[str],
+    ) -> float:
+        text_tokens = self._tokenize_text(text)
+        query_tokens = self._tokenize_text(query)
+        entity_tokens = set()
+        for entity in query_entities:
+            entity_tokens.update(self._tokenize_text(entity))
+        lexical = 0.0
+        if text_tokens and query_tokens:
+            lexical = len(text_tokens & query_tokens) / len(text_tokens | query_tokens)
+        entity_hits = len(text_tokens & entity_tokens) if entity_tokens else 0
+        return lexical + 0.25 * entity_hits
 
     # ==================== Episode 操作 ====================
 
@@ -380,32 +468,7 @@ class KuzuStore(GraphStore):
             {"id": event_id},
         )
         if resp.has_next():
-            row = resp.get_next()
-            return Event(
-                id=row[0],
-                summary=row[1],
-                action=row[2] or "",
-                causality=row[3] or "",
-                time_range=safe_json_loads(row[4], {}),
-                last_active=row[5] or 0,
-                participants=safe_json_loads(row[6], []),
-                location=safe_json_loads(row[7], {}),
-                evidence=safe_json_loads(row[8], []),
-                consistency=row[9] or "uncertain",
-                embedding=list(row[10]) if row[10] else None,
-                event_type=row[11] or "generic",
-                timestamp=row[12] or 0,
-                created_at=row[13] or 0,
-                updated_at=row[14] or 0,
-                valid_from=row[15] or 0,
-                valid_to=row[16],
-                salience=float(row[17] or 0.5),
-                confidence=float(row[18] or 0.7),
-                source=row[19] or "llm_extraction",
-                status=row[20] or "active",
-                support_count=int(row[21] or 1),
-                payload=safe_json_loads(row[22], {}),
-            )
+            return self._row_to_event(list(resp.get_next()))
         return None
 
     def update_event(self, event: Event) -> None:
@@ -456,32 +519,7 @@ class KuzuStore(GraphStore):
 
         events = []
         while resp.has_next():
-            row = resp.get_next()
-            events.append(Event(
-                id=row[0],
-                summary=row[1],
-                action=row[2] or "",
-                causality=row[3] or "",
-                time_range=safe_json_loads(row[4], {}),
-                last_active=row[5] or 0,
-                participants=safe_json_loads(row[6], []),
-                location=safe_json_loads(row[7], {}),
-                evidence=safe_json_loads(row[8], []),
-                consistency=row[9] or "uncertain",
-                embedding=list(row[10]) if row[10] else None,
-                event_type=row[11] or "generic",
-                timestamp=row[12] or 0,
-                created_at=row[13] or 0,
-                updated_at=row[14] or 0,
-                valid_from=row[15] or 0,
-                valid_to=row[16],
-                salience=float(row[17] or 0.5),
-                confidence=float(row[18] or 0.7),
-                source=row[19] or "llm_extraction",
-                status=row[20] or "active",
-                support_count=int(row[21] or 1),
-                payload=safe_json_loads(row[22], {}),
-            ))
+            events.append(self._row_to_event(list(resp.get_next())))
         return events
 
     def get_all_events_with_entities(self) -> list[dict[str, Any]]:
@@ -1158,34 +1196,7 @@ class KuzuStore(GraphStore):
         )
         events = []
         while resp.has_next():
-            row = resp.get_next()
-            events.append(
-                Event(
-                    id=row[0],
-                    summary=row[1],
-                    action=row[2] or "",
-                    causality=row[3] or "",
-                    time_range=safe_json_loads(row[4], {}),
-                    last_active=row[5] or 0,
-                    participants=safe_json_loads(row[6], []),
-                    location=safe_json_loads(row[7], {}),
-                    evidence=safe_json_loads(row[8], []),
-                    consistency=row[9] or "uncertain",
-                    embedding=list(row[10]) if row[10] else None,
-                    event_type=row[11] or "generic",
-                    timestamp=row[12] or 0,
-                    created_at=row[13] or 0,
-                    updated_at=row[14] or 0,
-                    valid_from=row[15] or 0,
-                    valid_to=row[16],
-                    salience=float(row[17] or 0.5),
-                    confidence=float(row[18] or 0.7),
-                    source=row[19] or "llm_extraction",
-                    status=row[20] or "active",
-                    support_count=int(row[21] or 1),
-                    payload=safe_json_loads(row[22], {}),
-                )
-            )
+            events.append(self._row_to_event(list(resp.get_next())))
         return events
 
     def get_event_contexts(self, event_id: str) -> list[Context]:
@@ -1231,6 +1242,176 @@ class KuzuStore(GraphStore):
         while resp.has_next():
             result.append(Pattern.from_db_row(list(resp.get_next()), cols))
         return result
+
+    def retrieve_candidate_contexts_for_query(
+        self,
+        query: str,
+        query_entities: list[str],
+        limit: int = 20,
+    ) -> list[Context]:
+        resp = self.conn.execute(
+            """
+            MATCH (c:Context)
+            WHERE c.status = 'active'
+            RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
+                   c.confidence, c.support_count, c.created_at, c.updated_at,
+                   c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
+            ORDER BY c.last_seen_at DESC
+            LIMIT $limit
+            """,
+            {"limit": int(max(limit * 4, limit))},
+        )
+        cols = [
+            "id", "context_type", "subtype", "summary", "structured_slots",
+            "confidence", "support_count", "created_at", "updated_at",
+            "valid_from", "valid_to", "last_seen_at", "status", "embedding",
+        ]
+        scored: list[tuple[float, Context]] = []
+        while resp.has_next():
+            context = Context.from_db_row(list(resp.get_next()), cols)
+            haystack = f"{context.summary} {safe_json_dumps(context.structured_slots)}".lower()
+            score = self._text_similarity_score(haystack, query, query_entities)
+            if score <= 0.0 and (query or query_entities):
+                continue
+            score += 0.15 * context.confidence
+            scored.append((score, context))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [context for _, context in scored[:limit]]
+
+    def retrieve_candidate_patterns_for_query(
+        self,
+        query: str,
+        query_entities: list[str],
+        limit: int = 20,
+    ) -> list[Pattern]:
+        resp = self.conn.execute(
+            """
+            MATCH (p:Pattern)
+            WHERE p.status = 'active'
+            RETURN p.id, p.pattern_type, p.summary, p.prototype_features,
+                   p.support_count, p.confidence, p.stability_score, p.drift_score,
+                   p.created_at, p.updated_at, p.valid_from, p.valid_to,
+                   p.last_seen_at, p.status, p.embedding
+            ORDER BY p.last_seen_at DESC
+            LIMIT $limit
+            """,
+            {"limit": int(max(limit * 4, limit))},
+        )
+        cols = [
+            "id", "pattern_type", "summary", "prototype_features",
+            "support_count", "confidence", "stability_score", "drift_score",
+            "created_at", "updated_at", "valid_from", "valid_to",
+            "last_seen_at", "status", "embedding",
+        ]
+        scored: list[tuple[float, Pattern]] = []
+        while resp.has_next():
+            pattern = Pattern.from_db_row(list(resp.get_next()), cols)
+            haystack = f"{pattern.summary} {safe_json_dumps(pattern.prototype_features)}".lower()
+            score = self._text_similarity_score(haystack, query, query_entities)
+            if score <= 0.0 and (query or query_entities):
+                continue
+            score += 0.15 * pattern.confidence
+            scored.append((score, pattern))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [pattern for _, pattern in scored[:limit]]
+
+    def retrieve_events_by_contexts(
+        self,
+        context_ids: list[str],
+        limit: int = 50,
+    ) -> list[Event]:
+        if not context_ids:
+            return []
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Event)-[r:IN_REL]->(c:Context)
+            WHERE c.id IN $context_ids
+            RETURN DISTINCT {self._event_select_clause('e')}
+            ORDER BY e.last_active DESC
+            LIMIT $limit
+            """,
+            {"context_ids": context_ids, "limit": int(limit)},
+        )
+        result = []
+        while resp.has_next():
+            result.append(self._row_to_event(list(resp.get_next())))
+        return result
+
+    def retrieve_events_by_patterns(
+        self,
+        pattern_ids: list[str],
+        limit: int = 50,
+    ) -> list[Event]:
+        if not pattern_ids:
+            return []
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Event)-[r:ABSTRACT_TO]->(p:Pattern)
+            WHERE p.id IN $pattern_ids
+            RETURN DISTINCT {self._event_select_clause('e')}
+            ORDER BY e.last_active DESC
+            LIMIT $limit
+            """,
+            {"pattern_ids": pattern_ids, "limit": int(limit)},
+        )
+        result = []
+        while resp.has_next():
+            result.append(self._row_to_event(list(resp.get_next())))
+        return result
+
+    def save_event_merge_trace(
+        self,
+        source_event_id: str,
+        target_event_id: str,
+        merge_reason: str,
+        similarity_score: float,
+        merged_at: int,
+        strategy_version: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            MATCH (src:Event {id: $source_event_id}), (dst:Event {id: $target_event_id})
+            CREATE (src)-[:EVENT_MERGE_TRACE {
+                merge_reason: $merge_reason,
+                similarity_score: $similarity_score,
+                merged_at: $merged_at,
+                strategy_version: $strategy_version
+            }]->(dst)
+            """,
+            {
+                "source_event_id": source_event_id,
+                "target_event_id": target_event_id,
+                "merge_reason": merge_reason,
+                "similarity_score": float(similarity_score),
+                "merged_at": int(merged_at),
+                "strategy_version": strategy_version,
+            },
+        )
+
+    def list_event_merge_traces(self, event_id: str) -> list[dict[str, Any]]:
+        resp = self.conn.execute(
+            """
+            MATCH (src:Event)-[r:EVENT_MERGE_TRACE]->(dst:Event)
+            WHERE src.id = $event_id OR dst.id = $event_id
+            RETURN src.id, dst.id, r.merge_reason, r.similarity_score, r.merged_at, r.strategy_version
+            ORDER BY r.merged_at DESC
+            """,
+            {"event_id": event_id},
+        )
+        rows: list[dict[str, Any]] = []
+        while resp.has_next():
+            row = resp.get_next()
+            rows.append(
+                {
+                    "source_event_id": row[0],
+                    "target_event_id": row[1],
+                    "merge_reason": row[2] or "",
+                    "similarity_score": float(row[3] or 0.0),
+                    "merged_at": int(row[4] or 0),
+                    "strategy_version": row[5] or "",
+                }
+            )
+        return rows
 
     def prune_weak_next_edges(self, min_score: float, stale_before: int) -> int:
         count_resp = self.conn.execute(
@@ -1301,5 +1482,8 @@ class KuzuStore(GraphStore):
 
         resp = self.conn.execute("MATCH ()-[r:ABSTRACT_TO]->() RETURN count(r)")
         stats["abstract_to_count"] = resp.get_next()[0] if resp.has_next() else 0
+
+        resp = self.conn.execute("MATCH ()-[r:EVENT_MERGE_TRACE]->() RETURN count(r)")
+        stats["event_merge_trace_count"] = resp.get_next()[0] if resp.has_next() else 0
 
         return stats

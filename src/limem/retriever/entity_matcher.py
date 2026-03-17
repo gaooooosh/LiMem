@@ -37,6 +37,7 @@ class EntityMatcher:
     """实体匹配器
 
     职责：实现三级匹配策略，将查询实体匹配到数据库实体。
+    Entity 是检索索引层（indexing layer），不是动态图语义主干。
 
     匹配策略：
     1. 精确匹配（exact）: query == db_entity, weight = 1.0

@@ -10,12 +10,17 @@ from ..utils import safe_json_loads
 
 @dataclass
 class Context:
-    """Context node that evolves over time."""
+    """Context node that evolves over time.
+
+    Context stores stable situation slots. It is not action-led and should not
+    compete with Entity for semantic ownership.
+    """
 
     id: str
     context_type: str = "situation"
     subtype: str = "generic"
     summary: str = ""
+    # `structured_slots` keeps scene/environment/stage/constraint style slots.
     structured_slots: dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.6
     support_count: int = 1

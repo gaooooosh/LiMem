@@ -10,7 +10,7 @@ import math
 import time
 
 from ..core.event import RankedEvent, EventRelation
-from ..config import DECAY_RATE
+from ..config import DECAY_RATE, RANKER_ENTITY_SIGNAL_WEIGHT
 
 
 @dataclass
@@ -26,6 +26,7 @@ class RankerConfig:
     decay_rate: float = DECAY_RATE
     precise_boost: float = 0.5
     fuzzy_discount: float = 0.5
+    entity_signal_weight: float = RANKER_ENTITY_SIGNAL_WEIGHT
 
 
 @dataclass
@@ -239,7 +240,11 @@ class MemoryRanker:
         )
 
         # 综合权重
-        weight = base_weight * temporal_factor * entity_factor * evolution_factor
+        blended_entity_factor = (
+            (1.0 - self.config.entity_signal_weight)
+            + self.config.entity_signal_weight * entity_factor
+        )
+        weight = base_weight * temporal_factor * blended_entity_factor * evolution_factor
 
         debug = WeightDebugInfo(
             event_id=event_id,
@@ -255,7 +260,7 @@ class MemoryRanker:
             time_diff=time_diff,
             base_weight=base_weight,
             temporal_factor=temporal_factor,
-            entity_factor=entity_factor,
+            entity_factor=blended_entity_factor,
             evolution_factor=evolution_factor,
         )
 

@@ -28,7 +28,11 @@ class MigrationReport:
 
 
 class LegacyEdgeAdapter:
-    """Compatibility adapter for old edge semantics."""
+    """Compatibility adapter for old edge semantics.
+
+    Entity/INVOLVES remains available as an indexing layer for legacy queries.
+    It is not the semantic core of the dynamic graph.
+    """
 
     def __init__(self, store: Any):
         self.store = store
@@ -96,7 +100,8 @@ def migrate_to_dynamic_graph(
     - `INVOLVES` -> `IN_REL` with Context nodes (entity context)
     - `PERMANENT_TRAIT` -> `ABSTRACT_TO` with Pattern nodes
 
-    Existing tables are preserved to keep old queries working.
+    Existing Entity/INVOLVES tables are preserved to keep old queries working.
+    They remain compatibility/indexing layer, not semantic core.
     """
 
     report = MigrationReport(dry_run=dry_run)

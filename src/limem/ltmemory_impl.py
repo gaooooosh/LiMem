@@ -170,10 +170,10 @@ class LTMemoryImpl(LTMemory):
             ]
         return self.dynamic_engine.retrieve_memories(query=query, top_k=top_k)
 
-    def run_consolidation(self) -> dict[str, int]:
+    def run_consolidation(self, dry_run: bool = False) -> dict[str, int]:
         if not self.dynamic_engine:
             return {}
-        return self.dynamic_engine.run_consolidation()
+        return self.dynamic_engine.run_consolidation(dry_run=dry_run)
 
     # ==================== 便捷方法 ====================
 

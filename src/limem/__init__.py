@@ -1,21 +1,14 @@
 # -*- coding: utf-8 -*-
 """LiMem - 长时记忆系统
 
-提供两种使用方式：
+推荐使用新版抽象 API：
 
-1. 新版抽象API（推荐）:
-   ```python
-   from limem import create_ltm, Episode, Event, LTMemory
-   ltm = create_ltm(db_path="./memory.kz")
-   result = ltm.ingest_text("用户喜欢听周杰伦的歌")
-   search_result = ltm.search("用户喜欢什么音乐？")
-   ```
-
-2. 兼容旧版API:
-   ```python
-   from limem import ResearchLTM, LTMSearcher
-   # 旧代码保持兼容
-   ```
+```python
+from limem import create_ltm, Episode, Event, LTMemory
+ltm = create_ltm(db_path="./memory.kz")
+result = ltm.ingest_text("用户喜欢听周杰伦的歌")
+search_result = ltm.search("用户喜欢什么音乐？")
+```
 """
 
 # ==================== 新版核心抽象 ====================
@@ -66,23 +59,6 @@ from .retriever import (
 from .ltmemory_impl import LTMemoryImpl
 from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
 from .migration import migrate_to_dynamic_graph, MigrationReport, LegacyEdgeAdapter
-
-# ==================== 兼容旧版API ====================
-try:
-    from .ltm import ResearchLTM
-    from .search import LTMSearcher, RetrievalConfig
-    from .models import (
-        EpisodicEventFrame,
-        ContextSnapshot,
-        ProactiveProposal,
-    )
-except Exception:  # pragma: no cover - optional legacy dependencies
-    ResearchLTM = None
-    LTMSearcher = None
-    RetrievalConfig = None
-    EpisodicEventFrame = None
-    ContextSnapshot = None
-    ProactiveProposal = None
 
 # ==================== 数据库和工具 ====================
 from .db import open_connection, init_db
@@ -196,13 +172,6 @@ __all__ = [
     "migrate_to_dynamic_graph",
     "MigrationReport",
     "LegacyEdgeAdapter",
-    # ===== 兼容旧版 =====
-    "ResearchLTM",
-    "LTMSearcher",
-    "RetrievalConfig",
-    "EpisodicEventFrame",
-    "ContextSnapshot",
-    "ProactiveProposal",
     # ===== 数据库和工具 =====
     "open_connection",
     "init_db",

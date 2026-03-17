@@ -28,6 +28,7 @@ from ..config import (
     EMBEDDING_MODEL,
     DEFAULT_USER_ID,
     APPEND_FIRST_MODE,
+    ENABLE_LEGACY_ONLINE_EVENT_MERGE,
     PRUNE_C_VALID_THRESHOLD,
     PRUNE_EVIDENCE_TOP_K,
 )
@@ -56,6 +57,7 @@ class BuilderConfig:
     prune_top_k: int = PRUNE_EVIDENCE_TOP_K
     default_user_id: str = DEFAULT_USER_ID
     append_first_mode: bool = APPEND_FIRST_MODE
+    enable_legacy_online_event_merge: bool = ENABLE_LEGACY_ONLINE_EVENT_MERGE
 
 
 class MemoryBuilder:
@@ -139,8 +141,9 @@ class MemoryBuilder:
         # Step 3: 生成嵌入向量
         embedding = self._get_embedding(event.summary)
 
-        # Step 4/5: append-first or legacy consolidation.
-        if self.config.append_first_mode:
+        # Event is the append-first atomic memory unit.
+        # Online overwrite/merge remains compatibility-only and is disabled by default.
+        if self.config.append_first_mode or not self.config.enable_legacy_online_event_merge:
             event.id = self._append_first_event_id(event)
             event.embedding = embedding
             event.timestamp = event.timestamp or current_time
@@ -153,6 +156,7 @@ class MemoryBuilder:
             consolidation = ConsolidationResult(should_merge=False)
             print(f"🆕 Append-first event created: {event.id[:12]}...")
         else:
+            print("⚠️ Legacy online event merge compatibility mode enabled")
             consolidation = self.consolidator.find_similar_event(
                 embedding=embedding,
                 entities=entities,
