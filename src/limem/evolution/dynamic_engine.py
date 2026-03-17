@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Dynamic evolution engine for long-term memory graph.
-
-This module implements incremental, local, and evolution-aware algorithms:
-1) Incremental Event Ingestion
-2) Dynamic Context Resolution
-3) Local NEXT Evolution
-4) Incremental Pattern Induction
-5) Evolution-aware Retrieval
-6) Consolidation and Forgetting
-7) Conflict and Drift Management
-"""
+"""Dynamic evolution engine for long-term memory graph."""
 
 from __future__ import annotations
 
@@ -45,38 +35,20 @@ from ..config import (
     DECAY_RATE,
     DECAY_STEP,
     ENABLE_AUTO_CONSOLIDATION,
-    ENABLE_EVENT_RELATIONS,
     EVENT_CONSOLIDATION_CANDIDATE_LIMIT,
     EVENT_CONSOLIDATION_PAYLOAD_WEIGHT,
-    EVENT_CONSOLIDATION_PATTERN_WEIGHT,
     EVENT_CONSOLIDATION_TEXT_WEIGHT,
     EVENT_CONSOLIDATION_CONTEXT_WEIGHT,
     EVENT_CONSOLIDATION_THRESHOLD,
     EVENT_CONSOLIDATION_TIME_WEIGHT,
     EVENT_CONSOLIDATION_WINDOW_SECONDS,
-    EVENT_RELATION_CANDIDATE_LIMIT,
-    EVENT_RELATION_CONFIDENCE_THRESHOLD,
-    EVENT_RELATION_MAX_LINKS_PER_EVENT,
-    EVENT_RELATION_PRUNE_THRESHOLD,
-    EVENT_RELATION_WINDOW_SECONDS,
     EVENT_MERGE_TRACE_LOG_PATH,
     EVENT_MERGE_TRACE_STRATEGY_VERSION,
     GENERATION_MODEL,
-    NEXT_MAX_PREDECESSORS,
-    NEXT_MIN_SCORE,
-    NEXT_RECENT_WINDOW_SECONDS,
-    OFFLINE_MODE,
-    PATTERN_ASSIGN_THRESHOLD,
-    PATTERN_CANDIDATE_LIMIT,
-    PATTERN_DRIFT_THRESHOLD,
-    PATTERN_MERGE_THRESHOLD,
-    PATTERN_QUERY_CANDIDATE_LIMIT,
-    PATTERN_SPLIT_DRIFT_THRESHOLD,
     REINFORCEMENT_STEP,
     RETRIEVAL_DEFAULT_CANDIDATE_LIMIT,
     RETRIEVAL_WEIGHT_CONTEXT,
     RETRIEVAL_WEIGHT_EVENT_SIM,
-    RETRIEVAL_WEIGHT_PATTERN,
     RETRIEVAL_WEIGHT_RECENCY,
     RETRIEVAL_WEIGHT_SUPPORT,
     RETRIEVAL_WEIGHT_VALIDITY,
@@ -86,14 +58,12 @@ from ..config import (
 from ..builder.context_extractor import ContextExtractionPipeline
 from ..core.context import Context, ContextDraft
 from ..core.event import Event
-from ..core.pattern import Pattern
 from ..utils import hash_summary, robust_json_loads, safe_json_dumps, safe_json_loads
 
 
 @dataclass
 class DynamicEvolutionConfig:
     append_first_mode: bool = APPEND_FIRST_MODE
-    offline_mode: bool = OFFLINE_MODE
     merge_decision_strategy: str = "auto"
     llm_api_key: str = DASHSCOPE_API_KEY
     llm_base_url: str = DASHSCOPE_BASE_URL
@@ -105,17 +75,6 @@ class DynamicEvolutionConfig:
     context_core_slot_weight: float = CONTEXT_CORE_SLOT_WEIGHT
     context_aux_slot_weight: float = CONTEXT_AUX_SLOT_WEIGHT
 
-    next_recent_window_seconds: int = NEXT_RECENT_WINDOW_SECONDS
-    next_max_predecessors: int = NEXT_MAX_PREDECESSORS
-    next_min_score: float = NEXT_MIN_SCORE
-
-    pattern_assign_threshold: float = PATTERN_ASSIGN_THRESHOLD
-    pattern_drift_threshold: float = PATTERN_DRIFT_THRESHOLD
-    pattern_split_drift_threshold: float = PATTERN_SPLIT_DRIFT_THRESHOLD
-    pattern_merge_threshold: float = PATTERN_MERGE_THRESHOLD
-    pattern_candidate_limit: int = PATTERN_CANDIDATE_LIMIT
-    pattern_query_candidate_limit: int = PATTERN_QUERY_CANDIDATE_LIMIT
-
     reinforcement_step: float = REINFORCEMENT_STEP
     decay_step: float = DECAY_STEP
     stale_seconds: int = STALE_SECONDS
@@ -123,14 +82,12 @@ class DynamicEvolutionConfig:
 
     retrieval_weight_event_sim: float = RETRIEVAL_WEIGHT_EVENT_SIM
     retrieval_weight_context: float = RETRIEVAL_WEIGHT_CONTEXT
-    retrieval_weight_pattern: float = RETRIEVAL_WEIGHT_PATTERN
     retrieval_weight_recency: float = RETRIEVAL_WEIGHT_RECENCY
     retrieval_weight_validity: float = RETRIEVAL_WEIGHT_VALIDITY
     retrieval_weight_support: float = RETRIEVAL_WEIGHT_SUPPORT
     retrieval_default_candidate_limit: int = RETRIEVAL_DEFAULT_CANDIDATE_LIMIT
 
     enable_auto_consolidation: bool = ENABLE_AUTO_CONSOLIDATION
-    enable_event_relations: bool = ENABLE_EVENT_RELATIONS
     consolidation_min_interval_seconds: int = CONSOLIDATION_MIN_INTERVAL_SECONDS
     weak_edge_prune_threshold: float = WEAK_EDGE_PRUNE_THRESHOLD
     consolidation_log_path: str = CONSOLIDATION_LOG_PATH
@@ -139,14 +96,8 @@ class DynamicEvolutionConfig:
     event_consolidation_threshold: float = EVENT_CONSOLIDATION_THRESHOLD
     event_consolidation_text_weight: float = EVENT_CONSOLIDATION_TEXT_WEIGHT
     event_consolidation_context_weight: float = EVENT_CONSOLIDATION_CONTEXT_WEIGHT
-    event_consolidation_pattern_weight: float = EVENT_CONSOLIDATION_PATTERN_WEIGHT
     event_consolidation_payload_weight: float = EVENT_CONSOLIDATION_PAYLOAD_WEIGHT
     event_consolidation_time_weight: float = EVENT_CONSOLIDATION_TIME_WEIGHT
-    event_relation_window_seconds: int = EVENT_RELATION_WINDOW_SECONDS
-    event_relation_candidate_limit: int = EVENT_RELATION_CANDIDATE_LIMIT
-    event_relation_max_links_per_event: int = EVENT_RELATION_MAX_LINKS_PER_EVENT
-    event_relation_confidence_threshold: float = EVENT_RELATION_CONFIDENCE_THRESHOLD
-    event_relation_prune_threshold: float = EVENT_RELATION_PRUNE_THRESHOLD
     event_merge_trace_strategy_version: str = EVENT_MERGE_TRACE_STRATEGY_VERSION
     event_merge_trace_log_path: str = EVENT_MERGE_TRACE_LOG_PATH
 
@@ -162,7 +113,7 @@ class DynamicEvolutionEngine:
             api_key=self.config.llm_api_key,
             base_url=self.config.llm_base_url,
             generation_model=self.config.llm_model,
-            offline_mode=self.config.offline_mode,
+            offline_mode=False,
         )
 
     # -------------------------------------------------------------------------
@@ -202,14 +153,11 @@ class DynamicEvolutionEngine:
             return {
                 "event_count": 0,
                 "context_links": 0,
-                "event_relation_links": 0,
                 "next_links": 0,
-                "pattern_links": 0,
             }
 
         new_events: list[Event] = []
         in_links = 0
-        pattern_links = 0
         now = int(time.time())
 
         # Append-first: create event nodes without global rescoring.
@@ -226,13 +174,6 @@ class DynamicEvolutionEngine:
         for event in new_events:
             resolved_contexts = self.resolve_context_pairs(event, record=record)
             in_links += self.attach_contexts_to_event(event, resolved_contexts)
-
-            pattern_id = self.update_patterns_for_event(event)
-            if pattern_id:
-                pattern_links += 1
-
-        event_relation_links = self.extract_event_relations_for_new_events(new_events, recent_candidates=None)
-
         if self.config.enable_auto_consolidation:
             ts = int(time.time())
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
@@ -241,27 +182,18 @@ class DynamicEvolutionEngine:
         return {
             "event_count": len(new_events),
             "context_links": in_links,
-            "event_relation_links": event_relation_links,
             "next_links": 0,
-            "pattern_links": pattern_links,
         }
 
     def evolve_existing_events(self, events: list[Event]) -> dict[str, int]:
         """Apply local dynamic updates for already-persisted events."""
         if not events:
-            return {"context_links": 0, "event_relation_links": 0, "next_links": 0, "pattern_links": 0}
+            return {"context_links": 0, "next_links": 0}
 
         context_links = 0
-        pattern_links = 0
         for event in events:
             resolved_contexts = self.resolve_context_pairs(event, record=None)
             context_links += self.attach_contexts_to_event(event, resolved_contexts)
-
-            pattern_id = self.update_patterns_for_event(event)
-            if pattern_id:
-                pattern_links += 1
-
-        event_relation_links = self.extract_event_relations_for_new_events(events, recent_candidates=None)
         if self.config.enable_auto_consolidation:
             ts = int(time.time())
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
@@ -269,9 +201,7 @@ class DynamicEvolutionEngine:
 
         return {
             "context_links": context_links,
-            "event_relation_links": event_relation_links,
             "next_links": 0,
-            "pattern_links": pattern_links,
         }
 
     # -------------------------------------------------------------------------
@@ -426,227 +356,7 @@ class DynamicEvolutionEngine:
         return count
 
     # -------------------------------------------------------------------------
-    # Algorithm 3: Explicit Event-Event Semantic Relations
-    # -------------------------------------------------------------------------
-    def extract_event_relations_for_new_events(
-        self,
-        new_events: list[Event],
-        recent_candidates: Optional[list[Event]],
-    ) -> int:
-        if (
-            not new_events
-            or not self.config.enable_event_relations
-            or not self._llm_relation_available()
-        ):
-            return 0
-
-        count = 0
-        visited_pairs: set[tuple[str, str]] = set()
-        ordered = sorted(new_events, key=lambda e: e.last_active or e.timestamp or 0)
-        history = recent_candidates
-        if history is None:
-            now = max(e.last_active or e.timestamp or 0 for e in new_events)
-            history = self.store.get_recent_events(
-                current_time=now,
-                window_seconds=self.config.event_relation_window_seconds,
-                limit=200,
-            )
-
-        new_ids = {event.id for event in ordered}
-        for event in ordered:
-            candidates: dict[str, tuple[float, Event]] = {}
-            accepted = 0
-            for candidate in ordered + list(history or []):
-                if candidate.id == event.id:
-                    continue
-                if candidate.id in new_ids and (candidate.last_active or candidate.timestamp or 0) > (event.last_active or event.timestamp or 0):
-                    continue
-                pair_key = tuple(sorted([event.id, candidate.id]))
-                if pair_key in visited_pairs:
-                    continue
-                score = self._event_relation_candidate_score(event, candidate)
-                if score <= 0.0:
-                    continue
-                existing = candidates.get(candidate.id)
-                if existing is None or score > existing[0]:
-                    candidates[candidate.id] = (score, candidate)
-
-            ranked_candidates = sorted(candidates.values(), key=lambda item: item[0], reverse=True)
-            for _, candidate in ranked_candidates[: self.config.event_relation_candidate_limit]:
-                pair_key = tuple(sorted([event.id, candidate.id]))
-                visited_pairs.add(pair_key)
-                decision = self._llm_event_relation_decision(event, candidate)
-                if decision is None or not decision.get("should_link", False):
-                    continue
-                confidence = float(decision.get("confidence", 0.0) or 0.0)
-                if confidence < self.config.event_relation_confidence_threshold:
-                    continue
-                from_id = str(decision.get("from_id", "") or "").strip()
-                to_id = str(decision.get("to_id", "") or "").strip()
-                valid_ids = {event.id, candidate.id}
-                if from_id not in valid_ids or to_id not in valid_ids or from_id == to_id:
-                    ordered_pair = sorted(
-                        [event, candidate],
-                        key=lambda item: (item.last_active or item.timestamp or 0, item.id),
-                    )
-                    from_id, to_id = ordered_pair[0].id, ordered_pair[1].id
-                self.store.link_event_relation(
-                    from_event_id=from_id,
-                    to_event_id=to_id,
-                    relation_type=str(decision.get("relation_type", "") or "related_to"),
-                    confidence=confidence,
-                    reason=str(decision.get("reason", "") or ""),
-                    source="llm_event_relation",
-                    timestamp=max(
-                        event.last_active or event.timestamp or 0,
-                        candidate.last_active or candidate.timestamp or 0,
-                        int(time.time()),
-                    ),
-                )
-                accepted += 1
-                count += 1
-                if accepted >= self.config.event_relation_max_links_per_event:
-                    break
-        return count
-
-    # -------------------------------------------------------------------------
-    # Algorithm 4: Incremental Pattern Induction
-    # -------------------------------------------------------------------------
-    def update_patterns_for_event(self, event: Event) -> Optional[str]:
-        candidates = self.retrieve_candidate_patterns(event)
-        event_features = self._event_features(event)
-        best: Optional[Pattern] = None
-        best_score = -1.0
-        for pattern in candidates:
-            score = self._pattern_similarity(event_features, pattern.prototype_features)
-            if score > best_score:
-                best = pattern
-                best_score = score
-
-        now = event.last_active or event.timestamp or int(time.time())
-        if best and best_score >= self.config.pattern_assign_threshold:
-            self.assign_event_to_pattern(event, best)
-            best.support_count += 1
-            best.updated_at = now
-            best.last_seen_at = now
-            best.confidence = min(1.0, best.confidence + self.config.reinforcement_step)
-            best.stability_score = min(1.0, best.stability_score + self.config.reinforcement_step * 0.5)
-            best.drift_score = max(0.0, best.drift_score - self.config.reinforcement_step * 0.3)
-            best.prototype_features = self._merge_pattern_features(best.prototype_features, event_features)
-            self.store.update_pattern(best)
-            self.maybe_split_pattern(best)
-            return best.id
-
-        if best and best_score < self.config.pattern_drift_threshold:
-            self.handle_pattern_drift(best, event)
-
-        pattern = self.create_pattern_from_event(event)
-        self.assign_event_to_pattern(event, pattern)
-        return pattern.id
-
-    def retrieve_candidate_patterns(self, event: Event) -> list[Pattern]:
-        pattern_type = self._infer_pattern_type(event)
-        return self.store.find_pattern_candidates(
-            pattern_type=pattern_type,
-            limit=self.config.pattern_candidate_limit,
-            only_active=True,
-        )
-
-    def assign_event_to_pattern(self, event: Event, pattern: Pattern) -> None:
-        timestamp = event.last_active or event.timestamp or int(time.time())
-        confidence = min(1.0, max(0.1, event.confidence))
-        contribution = min(2.0, max(0.1, 1.0 + math.log1p(event.support_count)))
-        self.store.link_event_to_pattern(
-            event_id=event.id,
-            pattern_id=pattern.id,
-            confidence=confidence,
-            contribution_weight=contribution,
-            timestamp=timestamp,
-        )
-
-    def create_pattern_from_event(self, event: Event) -> Pattern:
-        now = event.last_active or event.timestamp or int(time.time())
-        pattern_type = self._infer_pattern_type(event)
-        features = self._event_features(event)
-        signature = f"{pattern_type}:{event.summary}:{features.get('action', '')}"
-        pattern = Pattern(
-            id=f"ptn_{hash_summary(signature)[:16]}_{uuid.uuid4().hex[:6]}",
-            pattern_type=pattern_type,
-            summary=event.summary[:160],
-            prototype_features=features,
-            support_count=1,
-            confidence=max(0.45, event.confidence),
-            stability_score=0.45,
-            drift_score=0.0,
-            created_at=now,
-            updated_at=now,
-            valid_from=now,
-            last_seen_at=now,
-            status="active",
-        )
-        self.store.save_pattern(pattern)
-        return pattern
-
-    def maybe_split_pattern(self, pattern: Pattern) -> Optional[str]:
-        if (
-            pattern.drift_score < self.config.pattern_split_drift_threshold
-            or pattern.support_count < 3
-        ):
-            return None
-        now = int(time.time())
-        pattern.status = "weakened"
-        pattern.valid_to = now
-        pattern.updated_at = now
-        self.store.update_pattern(pattern)
-
-        new_pattern = Pattern(
-            id=f"{pattern.id}_split_{uuid.uuid4().hex[:6]}",
-            pattern_type=pattern.pattern_type,
-            summary=pattern.summary,
-            prototype_features=pattern.prototype_features,
-            support_count=1,
-            confidence=max(0.4, pattern.confidence * 0.8),
-            stability_score=max(0.3, pattern.stability_score * 0.7),
-            drift_score=0.0,
-            created_at=now,
-            updated_at=now,
-            valid_from=now,
-            last_seen_at=now,
-            status="active",
-        )
-        self.store.save_pattern(new_pattern)
-        return new_pattern.id
-
-    def maybe_merge_patterns(self, pattern_a: Pattern, pattern_b: Pattern) -> bool:
-        if pattern_a.id == pattern_b.id or pattern_a.pattern_type != pattern_b.pattern_type:
-            return False
-        score = self._pattern_similarity(pattern_a.prototype_features, pattern_b.prototype_features)
-        if score < self.config.pattern_merge_threshold:
-            return False
-        now = int(time.time())
-        pattern_a.support_count += pattern_b.support_count
-        pattern_a.confidence = min(1.0, (pattern_a.confidence + pattern_b.confidence) / 2.0 + 0.05)
-        pattern_a.stability_score = min(1.0, (pattern_a.stability_score + pattern_b.stability_score) / 2.0)
-        pattern_a.updated_at = now
-        pattern_a.last_seen_at = now
-        pattern_a.prototype_features = self._merge_pattern_features(
-            pattern_a.prototype_features, pattern_b.prototype_features
-        )
-        self.store.update_pattern(pattern_a)
-        self.store.relink_pattern_edges(
-            source_pattern_id=pattern_b.id,
-            target_pattern_id=pattern_a.id,
-            timestamp=now,
-        )
-
-        pattern_b.status = "merged"
-        pattern_b.valid_to = now
-        pattern_b.updated_at = now
-        self.store.update_pattern(pattern_b)
-        return True
-
-    # -------------------------------------------------------------------------
-    # Algorithm 5: Evolution-aware Retrieval
+    # Algorithm 3: Evolution-aware Retrieval
     # -------------------------------------------------------------------------
     def retrieve_memories(
         self,
@@ -674,7 +384,7 @@ class DynamicEvolutionEngine:
                     "last_active": event.last_active,
                     "status": event.status,
                     "support_count": event.support_count,
-                    "confidence": event.confidence,
+                    "confidence": 0.7,
                 },
             )
             rows.append(row)
@@ -712,22 +422,13 @@ class DynamicEvolutionEngine:
             query_entities=query_entities,
             limit=self.config.context_query_candidate_limit,
         )
-        patterns = self.store.retrieve_candidate_patterns_for_query(
-            query=query,
-            query_entities=query_entities,
-            limit=self.config.pattern_query_candidate_limit,
-        )
         context_events = self.store.retrieve_events_by_contexts(
             [context.id for context in contexts],
             limit=route_limit,
         )
-        pattern_events = self.store.retrieve_events_by_patterns(
-            [pattern.id for pattern in patterns],
-            limit=route_limit,
-        )
 
         merged: dict[str, Event] = {}
-        for route_events in (entity_events, context_events, pattern_events):
+        for route_events in (entity_events, context_events):
             for event in route_events:
                 merged[event.id] = event
 
@@ -735,13 +436,11 @@ class DynamicEvolutionEngine:
             "events": list(merged.values()),
             "entity_events": entity_events,
             "context_events": context_events,
-            "pattern_events": pattern_events,
             "contexts": contexts,
-            "patterns": patterns,
         }
 
     # -------------------------------------------------------------------------
-    # Algorithm 6: Consolidation and Forgetting
+    # Algorithm 4: Consolidation and Forgetting
     # -------------------------------------------------------------------------
     def run_consolidation(
         self,
@@ -759,7 +458,6 @@ class DynamicEvolutionEngine:
                 "merged_events": event_report["merged_events"],
                 "skipped_events": event_report["skipped_events"],
                 "merged_contexts": 0,
-                "merged_patterns": 0,
                 "decayed_nodes": 0,
                 "pruned_edges": 0,
                 "archived_events": event_report["archived_events"] + self._count_archivable_events(now),
@@ -773,7 +471,6 @@ class DynamicEvolutionEngine:
             "merged_events": event_report["merged_events"],
             "skipped_events": event_report["skipped_events"],
             "merged_contexts": self.consolidate_contexts(now, strategy=strategy),
-            "merged_patterns": self.consolidate_patterns(now),
             "decayed_nodes": self.decay_stale_nodes(now),
             "pruned_edges": self.prune_weak_edges(now),
             "archived_events": event_report["archived_events"] + self._archive_stale_events(now),
@@ -839,6 +536,8 @@ class DynamicEvolutionEngine:
     ) -> list[dict[str, Any]]:
         now = int(current_time or time.time())
         resolved_strategy = self._resolve_merge_strategy(strategy)
+        if resolved_strategy == "disabled":
+            return []
         events = self.store.get_recent_events(
             current_time=now,
             window_seconds=self.config.event_consolidation_window_seconds,
@@ -867,11 +566,7 @@ class DynamicEvolutionEngine:
                 visited_pairs.add(pair_key)
 
                 score, reason = self._event_merge_similarity(event, candidate, now)
-                gate = (
-                    self.config.event_consolidation_threshold
-                    if resolved_strategy == "heuristic"
-                    else llm_gate
-                )
+                gate = llm_gate
                 if score < gate:
                     continue
 
@@ -884,22 +579,19 @@ class DynamicEvolutionEngine:
                     decision = self._llm_event_merge_decision(
                         left=event,
                         right=candidate,
-                        heuristic_score=score,
-                        heuristic_reason=reason,
+                        similarity_score=score,
+                        local_reason=reason,
                     )
-                    if decision is None:
-                        strategy_used = "heuristic"
-                    else:
-                        strategy_used = "llm"
-                        if not decision.get("should_merge", False):
-                            continue
-                        canonical_id = str(decision.get("canonical_id", "") or "").strip()
-                        if canonical_id == event.id:
-                            canonical, merged = event, candidate
-                        elif canonical_id == candidate.id:
-                            canonical, merged = candidate, event
-                        plan_reason = str(decision.get("reason", "") or reason or "llm_merge")
-                        confidence = max(score, float(decision.get("confidence", score) or score))
+                    if decision is None or not decision.get("should_merge", False):
+                        continue
+                    strategy_used = "llm"
+                    canonical_id = str(decision.get("canonical_id", "") or "").strip()
+                    if canonical_id == event.id:
+                        canonical, merged = event, candidate
+                    elif canonical_id == candidate.id:
+                        canonical, merged = candidate, event
+                    plan_reason = str(decision.get("reason", "") or reason or "llm_merge")
+                    confidence = max(score, float(decision.get("confidence", score) or score))
 
                 plans.append(
                     {
@@ -928,11 +620,13 @@ class DynamicEvolutionEngine:
     ) -> list[dict[str, Any]]:
         _ = int(current_time or time.time())
         resolved_strategy = self._resolve_merge_strategy(strategy)
+        if resolved_strategy == "disabled":
+            return []
         contexts = self._list_all_contexts(only_active=True)
         if not contexts:
             return []
 
-        threshold = 0.72 if resolved_strategy == "heuristic" else 0.56
+        threshold = 0.56
         candidates: list[tuple[float, dict[str, Any]]] = []
         for i in range(len(contexts)):
             for j in range(i + 1, len(contexts)):
@@ -956,21 +650,18 @@ class DynamicEvolutionEngine:
                     decision = self._llm_context_merge_decision(
                         left=left,
                         right=right,
-                        heuristic_score=score,
+                        similarity_score=score,
                     )
-                    if decision is None:
-                        strategy_used = "heuristic"
-                    else:
-                        strategy_used = "llm"
-                        if not decision.get("should_merge", False):
-                            continue
-                        canonical_id = str(decision.get("canonical_id", "") or "").strip()
-                        if canonical_id == left.id:
-                            canonical, merged = left, right
-                        elif canonical_id == right.id:
-                            canonical, merged = right, left
-                        reason = str(decision.get("reason", "") or reason or "llm_merge")
-                        confidence = max(score, float(decision.get("confidence", score) or score))
+                    if decision is None or not decision.get("should_merge", False):
+                        continue
+                    strategy_used = "llm"
+                    canonical_id = str(decision.get("canonical_id", "") or "").strip()
+                    if canonical_id == left.id:
+                        canonical, merged = left, right
+                    elif canonical_id == right.id:
+                        canonical, merged = right, left
+                    reason = str(decision.get("reason", "") or reason or "llm_merge")
+                    confidence = max(score, float(decision.get("confidence", score) or score))
 
                 candidates.append(
                     (
@@ -1005,6 +696,8 @@ class DynamicEvolutionEngine:
     def consolidate_contexts(self, now: int, strategy: str = "auto") -> int:
         contexts = self._list_all_contexts(only_active=True)
         resolved_strategy = self._resolve_merge_strategy(strategy)
+        if resolved_strategy == "disabled":
+            return 0
         llm_gate = 0.56
         merged = 0
         for i in range(len(contexts)):
@@ -1016,10 +709,7 @@ class DynamicEvolutionEngine:
                 if a.context_type != b.context_type:
                     continue
                 score = self._context_similarity(a, b)
-                gate = max(
-                    self.config.context_reuse_threshold,
-                    0.82 if resolved_strategy == "heuristic" else llm_gate,
-                )
+                gate = max(self.config.context_reuse_threshold, llm_gate)
                 if score < gate:
                     continue
 
@@ -1028,16 +718,15 @@ class DynamicEvolutionEngine:
                     decision = self._llm_context_merge_decision(
                         left=a,
                         right=b,
-                        heuristic_score=score,
+                        similarity_score=score,
                     )
-                    if decision is not None:
-                        if not decision.get("should_merge", False):
-                            continue
-                        canonical_id = str(decision.get("canonical_id", "") or "").strip()
-                        if canonical_id == a.id:
-                            canonical, merged_context = a, b
-                        elif canonical_id == b.id:
-                            canonical, merged_context = b, a
+                    if decision is None or not decision.get("should_merge", False):
+                        continue
+                    canonical_id = str(decision.get("canonical_id", "") or "").strip()
+                    if canonical_id == a.id:
+                        canonical, merged_context = a, b
+                    elif canonical_id == b.id:
+                        canonical, merged_context = b, a
 
                 self.merge_contexts(
                     canonical_context_id=canonical.id,
@@ -1047,15 +736,6 @@ class DynamicEvolutionEngine:
                 merged += 1
         return merged
 
-    def consolidate_patterns(self, now: int) -> int:
-        patterns = self._list_all_patterns(only_active=True)
-        merged = 0
-        for i in range(len(patterns)):
-            for j in range(i + 1, len(patterns)):
-                if self.maybe_merge_patterns(patterns[i], patterns[j]):
-                    merged += 1
-        return merged
-
     def consolidate_events(
         self,
         now: int,
@@ -1063,6 +743,8 @@ class DynamicEvolutionEngine:
         strategy: str = "auto",
     ) -> dict[str, int]:
         resolved_strategy = self._resolve_merge_strategy(strategy)
+        if resolved_strategy == "disabled":
+            return report
         llm_gate = self.config.event_consolidation_threshold * 0.72
         events = self.store.get_recent_events(
             current_time=now,
@@ -1099,11 +781,7 @@ class DynamicEvolutionEngine:
                 report["candidate_pairs"] += 1
 
                 score, reason = self._event_merge_similarity(event, candidate, now)
-                gate = (
-                    self.config.event_consolidation_threshold
-                    if resolved_strategy == "heuristic"
-                    else llm_gate
-                )
+                gate = llm_gate
                 if score < gate:
                     continue
 
@@ -1112,19 +790,18 @@ class DynamicEvolutionEngine:
                     decision = self._llm_event_merge_decision(
                         left=event,
                         right=candidate,
-                        heuristic_score=score,
-                        heuristic_reason=reason,
+                        similarity_score=score,
+                        local_reason=reason,
                     )
-                    if decision is not None:
-                        if not decision.get("should_merge", False):
-                            continue
-                        canonical_id = str(decision.get("canonical_id", "") or "").strip()
-                        if canonical_id == event.id:
-                            canonical, merged = event, candidate
-                        elif canonical_id == candidate.id:
-                            canonical, merged = candidate, event
-                        reason = str(decision.get("reason", "") or reason or "llm_merge")
-                        score = max(score, float(decision.get("confidence", score) or score))
+                    if decision is None or not decision.get("should_merge", False):
+                        continue
+                    canonical_id = str(decision.get("canonical_id", "") or "").strip()
+                    if canonical_id == event.id:
+                        canonical, merged = event, candidate
+                    elif canonical_id == candidate.id:
+                        canonical, merged = candidate, event
+                    reason = str(decision.get("reason", "") or reason or "llm_merge")
+                    score = max(score, float(decision.get("confidence", score) or score))
                 if not dry_run:
                     self._merge_event_pair(
                         canonical=canonical,
@@ -1156,30 +833,14 @@ class DynamicEvolutionEngine:
                 self.store.update_context(context)
                 changed += 1
 
-        for pattern in self._list_all_patterns(only_active=False):
-            if pattern.last_seen_at and pattern.last_seen_at >= stale_before:
-                continue
-            old_conf = pattern.confidence
-            pattern.confidence = max(0.0, pattern.confidence - self.config.decay_step)
-            pattern.stability_score = max(0.0, pattern.stability_score - self.config.decay_step * 0.8)
-            pattern.updated_at = now
-            if pattern.confidence < 0.2:
-                pattern.status = "deprecated"
-                pattern.valid_to = pattern.valid_to or now
-            if abs(old_conf - pattern.confidence) > 1e-6:
-                self.store.update_pattern(pattern)
-                changed += 1
         return changed
 
     def prune_weak_edges(self, now: int) -> int:
         stale_before = now - self.config.stale_seconds
-        return self.store.prune_weak_event_relation_edges(
-            min_confidence=self.config.event_relation_prune_threshold,
-            stale_before=stale_before,
-        )
+        return 0
 
     # -------------------------------------------------------------------------
-    # Algorithm 7: Conflict and Drift Management
+    # Algorithm 5: Conflict and Drift Management
     # -------------------------------------------------------------------------
     def detect_conflict(self, node: Context, new_evidence: ContextDraft) -> bool:
         return self._context_conflict_ratio(node, new_evidence) >= self.config.context_conflict_threshold
@@ -1201,17 +862,6 @@ class DynamicEvolutionEngine:
         context_node.updated_at = now
         self.store.update_context(context_node)
         return sibling
-
-    def handle_pattern_drift(self, pattern: Pattern, event: Event) -> None:
-        now = event.last_active or event.timestamp or int(time.time())
-        pattern.drift_score = min(1.0, pattern.drift_score + self.config.reinforcement_step)
-        pattern.confidence = max(0.0, pattern.confidence - self.config.decay_step * 0.5)
-        pattern.updated_at = now
-        pattern.last_seen_at = now
-        if pattern.drift_score >= self.config.pattern_split_drift_threshold:
-            self.maybe_split_pattern(pattern)
-        else:
-            self.store.update_pattern(pattern)
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -1247,13 +897,6 @@ class DynamicEvolutionEngine:
             ):
                 add_candidate(event_map.get(candidate.id, candidate))
 
-        for pattern in self.store.get_event_patterns(event.id)[:2]:
-            for candidate in self.store.retrieve_events_by_patterns(
-                [pattern.id],
-                limit=self.config.event_consolidation_candidate_limit,
-            ):
-                add_candidate(event_map.get(candidate.id, candidate))
-
         ordered = sorted(
             candidates.values(),
             key=lambda item: abs((item.last_active or item.timestamp or 0) - event_time),
@@ -1268,21 +911,17 @@ class DynamicEvolutionEngine:
     ) -> tuple[float, str]:
         text_similarity = self._lexical_similarity(event_a.summary, event_b.summary)
         context_similarity = self._context_overlap_for_events(event_a.id, event_b.id)
-        pattern_similarity = self._pattern_overlap_for_events(event_a.id, event_b.id)
         payload_similarity = self._payload_similarity(event_a, event_b)
         time_similarity = self._time_similarity(event_a, event_b, now)
         score = (
             self.config.event_consolidation_text_weight * text_similarity
             + self.config.event_consolidation_context_weight * context_similarity
-            + self.config.event_consolidation_pattern_weight * pattern_similarity
             + self.config.event_consolidation_payload_weight * payload_similarity
             + self.config.event_consolidation_time_weight * time_similarity
         )
         reasons = []
         if context_similarity > 0.0:
             reasons.append("shared_context")
-        if pattern_similarity > 0.0:
-            reasons.append("shared_pattern")
         if payload_similarity >= 0.5:
             reasons.append("payload_similarity")
         if text_similarity >= 0.5:
@@ -1291,69 +930,11 @@ class DynamicEvolutionEngine:
             reasons.append("time_window")
         return score, ",".join(reasons) or "local_similarity"
 
-    def _event_relation_candidate_score(self, event_a: Event, event_b: Event) -> float:
-        if event_a.id == event_b.id:
-            return 0.0
-        if event_a.status in {"merged", "archived"} or event_b.status in {"merged", "archived"}:
-            return 0.0
-
-        session_a = self._event_session_key(event_a)
-        session_b = self._event_session_key(event_b)
-        if session_a and session_b and session_a != session_b:
-            return 0.0
-
-        ts_a = event_a.last_active or event_a.timestamp or 0
-        ts_b = event_b.last_active or event_b.timestamp or 0
-        if (
-            abs(ts_a - ts_b) > self.config.event_relation_window_seconds
-            and not (session_a and session_a == session_b)
-        ):
-            return 0.0
-
-        session_bonus = 1.0 if session_a and session_a == session_b else 0.0
-        context_overlap = self._value_similarity(
-            self._extract_context_slots(event_a),
-            self._extract_context_slots(event_b),
-        )
-        participant_similarity = self._value_similarity(
-            self._participant_labels(event_a.participants),
-            self._participant_labels(event_b.participants),
-        )
-        lexical_similarity = self._lexical_similarity(event_a.summary, event_b.summary)
-        action_similarity = 1.0 if event_a.action and event_a.action == event_b.action else 0.0
-        time_similarity = self._time_similarity(event_a, event_b, max(ts_a, ts_b, int(time.time())))
-        score = (
-            0.30 * session_bonus
-            + 0.22 * context_overlap
-            + 0.18 * participant_similarity
-            + 0.15 * lexical_similarity
-            + 0.10 * action_similarity
-            + 0.05 * time_similarity
-        )
-        return score if score >= 0.12 or session_bonus > 0.0 else 0.0
-
-    def _event_session_key(self, event: Event) -> str:
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        episode_metadata = payload.get("episode_metadata", {}) if isinstance(payload.get("episode_metadata"), dict) else {}
-        for key in (
-            "session_id",
-            "session",
-            "conversation_id",
-            "trip_id",
-        ):
-            value = payload.get(key) or episode_metadata.get(key)
-            if value not in (None, ""):
-                return f"{key}:{value}"
-        trip_index = episode_metadata.get("trip_index", payload.get("trip_index"))
-        if trip_index not in (None, ""):
-            return f"trip_index:{trip_index}"
-        return ""
-
     def _pick_canonical_event(self, event_a: Event, event_b: Event) -> tuple[Event, Event]:
         def rank_key(event: Event) -> tuple[int, float, int]:
             return (
                 int(event.support_count or 1),
-                float(event.confidence or 0.0),
+                float(0.7 or 0.0),
                 int(event.created_at or event.timestamp or 0),
             )
 
@@ -1370,7 +951,6 @@ class DynamicEvolutionEngine:
         merged_at: int,
     ) -> None:
         canonical.support_count += max(1, merged.support_count)
-        canonical.confidence = min(1.0, max(canonical.confidence, merged.confidence) + 0.03)
         canonical.last_active = max(canonical.last_active, merged.last_active, merged_at)
         canonical.updated_at = merged_at
         canonical.evidence = canonical.evidence + merged.evidence
@@ -1437,7 +1017,7 @@ class DynamicEvolutionEngine:
             subtype=subtype,
             summary=summary,
             structured_slots=slots,
-            confidence=max(0.4, event.confidence),
+            confidence=max(0.4, 0.7),
             evidence_span=summary,
             source_refs=[{"source": "event_payload", "event_id": event.id, "signal": "event_payload"}],
             valid_from=timestamp,
@@ -1536,36 +1116,33 @@ class DynamicEvolutionEngine:
 
     def _extract_context_slots(self, event: Event) -> dict[str, Any]:
         payload = event.payload if isinstance(event.payload, dict) else {}
-        location = event.location if isinstance(event.location, dict) else {}
         time_range = event.time_range if isinstance(event.time_range, dict) else {}
         payload_context = payload.get("context", {}) if isinstance(payload.get("context", {}), dict) else {}
         participants = self._participant_labels(event.participants)
         scene_hint = self._infer_scene_hint(event)
         scene = str(
             payload.get("scene")
-            or location.get("scene")
             or payload_context.get("scene", "")
             or payload_context.get("geo_context", "")
             or payload_context.get("digital_context", "")
             or scene_hint
-            or event.event_type
+            or ""
             or "generic"
         )
         slots = {
             "scene": scene,
-            "geo_context": str(location.get("geo_context") or payload_context.get("geo_context", "") or ""),
-            "digital_context": str(location.get("digital_context") or payload_context.get("digital_context", "") or ""),
+            "geo_context": str(payload_context.get("geo_context", "") or ""),
+            "digital_context": str(payload_context.get("digital_context", "") or ""),
             "time_bucket": str(time_range.get("display_time_bucket") or payload.get("time_bucket", "") or ""),
             "task_stage": str(payload.get("task_stage", "") or ""),
             "goal_hint": str(payload.get("goal_hint") or payload.get("goal") or scene_hint),
             "constraint_hint": str(payload.get("constraint_hint") or payload.get("constraint") or ""),
             "participants": participants,
-            "device": self._collect_slot_values(payload, location, key="device"),
-            "app": self._collect_slot_values(payload, location, key="app"),
-            "place": self._collect_slot_values(payload, location, key="place"),
+            "device": self._collect_slot_values(payload, payload_context, key="device"),
+            "app": self._collect_slot_values(payload, payload_context, key="app"),
+            "place": self._collect_slot_values(payload, payload_context, key="place"),
             # Action is kept only as low-weight metadata for compatibility, not as subtype driver.
             "action_hint": str(event.action or payload.get("action", "") or ""),
-            "event_type": str(event.event_type or ""),
         }
         return {key: value for key, value in slots.items() if value not in (None, "", [], {})}
 
@@ -1698,7 +1275,7 @@ class DynamicEvolutionEngine:
         ]
 
     def _aux_context_slot_keys(self) -> list[str]:
-        return ["participants", "device", "app", "place", "action_hint", "event_type"]
+        return ["participants", "device", "app", "place", "action_hint"]
 
     def _slot_group_similarity(
         self,
@@ -1764,13 +1341,6 @@ class DynamicEvolutionEngine:
     def _context_overlap_for_events(self, event_a_id: str, event_b_id: str) -> float:
         left = {context.id for context in self.store.get_event_contexts(event_a_id)}
         right = {context.id for context in self.store.get_event_contexts(event_b_id)}
-        if not left and not right:
-            return 0.0
-        return len(left & right) / len(left | right)
-
-    def _pattern_overlap_for_events(self, event_a_id: str, event_b_id: str) -> float:
-        left = {pattern.id for pattern in self.store.get_event_patterns(event_a_id)}
-        right = {pattern.id for pattern in self.store.get_event_patterns(event_b_id)}
         if not left and not right:
             return 0.0
         return len(left & right) / len(left | right)
@@ -1942,33 +1512,27 @@ class DynamicEvolutionEngine:
 
     def _resolve_merge_strategy(self, strategy: str) -> str:
         requested = (strategy or self.config.merge_decision_strategy or "auto").strip().lower()
-        if requested not in {"auto", "heuristic", "llm"}:
-            return "heuristic"
-        if requested == "heuristic":
-            return "heuristic"
+        if requested not in {"auto", "llm"}:
+            requested = "auto"
         if requested == "llm":
-            return "llm" if self._llm_merge_available() else "heuristic"
-        return "llm" if self._llm_merge_available() else "heuristic"
+            return "llm" if self._llm_merge_available() else "disabled"
+        return "llm" if self._llm_merge_available() else "disabled"
 
     def _llm_merge_available(self) -> bool:
         api_key = str(self.config.llm_api_key or "").strip()
         return bool(
-            not self.config.offline_mode
-            and dashscope is not None
+            dashscope is not None
             and Generation is not None
             and api_key
             and api_key not in {"YOUR_API_KEY", "sk-xxx"}
         )
 
-    def _llm_relation_available(self) -> bool:
-        return self._llm_merge_available()
-
     def _llm_event_merge_decision(
         self,
         left: Event,
         right: Event,
-        heuristic_score: float,
-        heuristic_reason: str,
+        similarity_score: float,
+        local_reason: str,
     ) -> Optional[dict[str, Any]]:
         prompt = {
             "task": "Decide whether two memory events should be merged into one canonical event.",
@@ -1977,8 +1541,8 @@ class DynamicEvolutionEngine:
                 "If one event is more complete or has stronger support, choose it as canonical.",
                 "Return strict JSON only.",
             ],
-            "heuristic_score": round(float(heuristic_score), 4),
-            "heuristic_reason": heuristic_reason,
+            "similarity_score": round(float(similarity_score), 4),
+            "local_reason": local_reason,
             "left": self._event_prompt_payload(left),
             "right": self._event_prompt_payload(right),
             "output_schema": {
@@ -1994,7 +1558,7 @@ class DynamicEvolutionEngine:
         self,
         left: Context,
         right: Context,
-        heuristic_score: float,
+        similarity_score: float,
     ) -> Optional[dict[str, Any]]:
         prompt = {
             "task": "Decide whether two context nodes should be merged into one canonical context.",
@@ -2003,7 +1567,7 @@ class DynamicEvolutionEngine:
                 "Prefer the more informative or more supported context as canonical.",
                 "Return strict JSON only.",
             ],
-            "heuristic_score": round(float(heuristic_score), 4),
+            "similarity_score": round(float(similarity_score), 4),
             "left": self._context_prompt_payload(left),
             "right": self._context_prompt_payload(right),
             "output_schema": {
@@ -2014,35 +1578,6 @@ class DynamicEvolutionEngine:
             },
         }
         return self._call_merge_llm(prompt)
-
-    def _llm_event_relation_decision(
-        self,
-        left: Event,
-        right: Event,
-    ) -> Optional[dict[str, Any]]:
-        if not self._llm_relation_available():
-            return None
-        prompt = {
-            "task": "Decide whether two memory events have an explicit semantic relation worth storing as a graph edge.",
-            "rules": [
-                "Only link if there is a meaningful semantic relation beyond generic temporal adjacency.",
-                "Good relation types include causes, enables, blocks, follows_from, refines, contradicts, co_occurs_with, same_goal, same_topic.",
-                "Use direction when the relation is directional. Neutral relations can point from earlier event to later event.",
-                "Return strict JSON only.",
-            ],
-            "left": self._event_prompt_payload(left),
-            "right": self._event_prompt_payload(right),
-            "shared_session_key": self._event_session_key(left) if self._event_session_key(left) == self._event_session_key(right) else "",
-            "output_schema": {
-                "should_link": True,
-                "relation_type": "same_topic",
-                "from_id": left.id,
-                "to_id": right.id,
-                "reason": "short_reason",
-                "confidence": 0.0,
-            },
-        }
-        return self._call_relation_llm(prompt)
 
     def _call_merge_llm(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
         if not self._llm_merge_available():
@@ -2078,55 +1613,17 @@ class DynamicEvolutionEngine:
         except Exception:
             return None
 
-    def _call_relation_llm(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
-        if not self._llm_relation_available():
-            return None
-        try:
-            dashscope.base_http_api_url = self.config.llm_base_url
-            dashscope.api_key = self.config.llm_api_key
-            resp = Generation.call(
-                api_key=self.config.llm_api_key,
-                model=self.config.llm_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a semantic event-relation judge for a memory graph. "
-                            "Return a compact JSON object only with keys: "
-                            "should_link, relation_type, from_id, to_id, reason, confidence."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(payload, ensure_ascii=False),
-                    },
-                ],
-                result_format="message",
-                enable_thinking=False,
-            )
-            if getattr(resp, "status_code", None) != 200:
-                return None
-            content = resp.output.choices[0].message.content
-            data = robust_json_loads(content, None)
-            return data if isinstance(data, dict) else None
-        except Exception:
-            return None
-
     def _event_prompt_payload(self, event: Event) -> dict[str, Any]:
         return {
             "id": event.id,
             "summary": event.summary,
-            "event_type": event.event_type,
             "action": event.action,
             "timestamp": event.timestamp,
             "last_active": event.last_active,
             "participants": event.participants,
-            "location": event.location,
             "payload": event.payload,
-            "confidence": event.confidence,
             "support_count": event.support_count,
             "context_ids": [context.id for context in self.store.get_event_contexts(event.id)],
-            "pattern_ids": [pattern.id for pattern in self.store.get_event_patterns(event.id)],
         }
 
     def _context_prompt_payload(self, context: Context) -> dict[str, Any]:
@@ -2157,78 +1654,6 @@ class DynamicEvolutionEngine:
         timestamp = event.timestamp or event.last_active or int(time.time())
         return f"{base[:20]}_{timestamp}_{uuid.uuid4().hex[:6]}"
 
-    def _next_score(self, prev: Event, cur: Event) -> float:
-        prev_ts = prev.last_active or prev.timestamp or 0
-        cur_ts = cur.last_active or cur.timestamp or 0
-        dt = max(0, cur_ts - prev_ts)
-        time_factor = math.exp(-dt / max(1, self.config.next_recent_window_seconds))
-        action_factor = 1.0 if prev.action and cur.action and prev.action == cur.action else 0.4
-        prev_roles = {str(p.get("role", "")) for p in prev.participants if isinstance(p, dict)}
-        cur_roles = {str(p.get("role", "")) for p in cur.participants if isinstance(p, dict)}
-        role_overlap = (len(prev_roles & cur_roles) / len(prev_roles | cur_roles)) if (prev_roles or cur_roles) else 0.5
-        return 0.5 * time_factor + 0.2 * action_factor + 0.3 * role_overlap
-
-    def _infer_pattern_type(self, event: Event) -> str:
-        if event.action:
-            text = event.action.lower()
-            if "喜欢" in text or "偏好" in text or "like" in text or "prefer" in text:
-                return "preference"
-            if "失败" in text or "error" in text or "故障" in text:
-                return "failure_mode"
-            if "成功" in text or "完成" in text:
-                return "success_mode"
-        return "experience"
-
-    def _event_features(self, event: Event) -> dict[str, Any]:
-        geo = ""
-        digital = ""
-        if isinstance(event.location, dict):
-            geo = str(event.location.get("geo_context", "") or "")
-            digital = str(event.location.get("digital_context", "") or "")
-        bucket = ""
-        if isinstance(event.time_range, dict):
-            bucket = str(event.time_range.get("display_time_bucket", "") or "")
-        participants = []
-        if isinstance(event.participants, list):
-            participants = [str(p.get("role", "")) for p in event.participants if isinstance(p, dict)]
-        return {
-            "action": event.action or "",
-            "event_type": event.event_type or "generic",
-            "geo_context": geo,
-            "digital_context": digital,
-            "time_bucket": bucket,
-            "participants": sorted([p for p in participants if p]),
-        }
-
-    def _merge_pattern_features(self, base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(base or {})
-        for key, value in (incoming or {}).items():
-            if isinstance(value, list):
-                existing = merged.get(key, [])
-                if not isinstance(existing, list):
-                    existing = [existing] if existing else []
-                merged[key] = sorted(set(str(x) for x in existing + value if str(x)))
-            else:
-                if value not in (None, ""):
-                    merged[key] = value
-        return merged
-
-    def _pattern_similarity(self, a: dict[str, Any], b: dict[str, Any]) -> float:
-        if not a and not b:
-            return 0.0
-        keys = set(a.keys()) | set(b.keys())
-        if not keys:
-            return 0.0
-        score = 0.0
-        for key in keys:
-            va = a.get(key)
-            vb = b.get(key)
-            if va in (None, "", [], {}) and vb in (None, "", [], {}):
-                continue
-            if self._value_overlap(va, vb):
-                score += 1.0
-        return score / len(keys)
-
     def _score_event_for_retrieval(
         self,
         query: str,
@@ -2249,11 +1674,8 @@ class DynamicEvolutionEngine:
         )
 
         contexts = self.store.get_event_contexts(event_id) if event_id else []
-        patterns = self.store.get_event_patterns(event_id) if event_id else []
 
         context_match = self._context_query_match(contexts, query_entities, query)
-        pattern_similarity = self._pattern_query_match(patterns, query_entities, query)
-
         age = max(0, now - last_active)
         recency = math.exp(-DECAY_RATE * age)
 
@@ -2265,14 +1687,11 @@ class DynamicEvolutionEngine:
 
         support_norm = min(1.0, math.log1p(support_count) / math.log1p(20))
         drift_penalty = 0.0
-        if patterns:
-            drift_penalty = max(p.drift_score for p in patterns if hasattr(p, "drift_score"))
         decay_penalty = 1.0 - recency
 
         evolution_score = (
             self.config.retrieval_weight_event_sim * event_similarity
             + self.config.retrieval_weight_context * context_match
-            + self.config.retrieval_weight_pattern * pattern_similarity
             + self.config.retrieval_weight_recency * recency
             + self.config.retrieval_weight_validity * validity
             + self.config.retrieval_weight_support * support_norm
@@ -2286,14 +1705,12 @@ class DynamicEvolutionEngine:
             "evolution_score": evolution_score,
             "event_similarity": event_similarity,
             "context_match": context_match,
-            "pattern_similarity": pattern_similarity,
             "recency_factor": recency,
             "validity": validity,
             "support_norm": support_norm,
             "decay_penalty": decay_penalty,
             "drift_penalty": drift_penalty,
             "compressed_contexts": [c.summary for c in contexts[:2]],
-            "compressed_patterns": [p.summary for p in patterns[:2]],
         }
 
     def _context_query_match(self, contexts: list[Context], query_entities: list[str], query: str) -> float:
@@ -2309,24 +1726,6 @@ class DynamicEvolutionEngine:
             score = min(1.0, 0.2 * hits + 0.5 * lexical + 0.3 * c.confidence)
             if c.status != "active":
                 score *= 0.5
-            best = max(best, score)
-        return best
-
-    def _pattern_query_match(self, patterns: list[Pattern], query_entities: list[str], query: str) -> float:
-        if not patterns:
-            return 0.0
-        q = query.lower()
-        entity_set = {e.lower() for e in query_entities}
-        best = 0.0
-        for p in patterns:
-            text = (p.summary + " " + safe_json_dumps(p.prototype_features)).lower()
-            hits = sum(1 for e in entity_set if e and e in text)
-            lexical = 1.0 if q and q in text else 0.0
-            score = min(1.0, 0.15 * hits + 0.55 * lexical + 0.30 * p.confidence)
-            if p.status in {"deprecated", "merged"}:
-                score *= 0.4
-            if p.status == "weakened":
-                score *= 0.7
             best = max(best, score)
         return best
 
@@ -2349,29 +1748,6 @@ class DynamicEvolutionEngine:
         result = []
         while resp.has_next():
             result.append(Context.from_db_row(list(resp.get_next()), cols))
-        return result
-
-    def _list_all_patterns(self, only_active: bool) -> list[Pattern]:
-        where = "WHERE p.status = 'active'" if only_active else ""
-        resp = self.store.conn.execute(
-            f"""
-            MATCH (p:Pattern)
-            {where}
-            RETURN p.id, p.pattern_type, p.summary, p.prototype_features,
-                   p.support_count, p.confidence, p.stability_score, p.drift_score,
-                   p.created_at, p.updated_at, p.valid_from, p.valid_to,
-                   p.last_seen_at, p.status, p.embedding
-            """
-        )
-        cols = [
-            "id", "pattern_type", "summary", "prototype_features",
-            "support_count", "confidence", "stability_score", "drift_score",
-            "created_at", "updated_at", "valid_from", "valid_to",
-            "last_seen_at", "status", "embedding",
-        ]
-        result = []
-        while resp.has_next():
-            result.append(Pattern.from_db_row(list(resp.get_next()), cols))
         return result
 
     def _archive_stale_events(self, now: int) -> int:

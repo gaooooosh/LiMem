@@ -632,7 +632,7 @@
                     <div>
                         <div class="eyebrow">Visual Memory Evolution</div>
                         <h1>LiMem Trips 调试台</h1>
-                        <p>从 0 开始按条选择 `trips.json` 数据写入记忆库，实时查看 Event / Context / Pattern 图谱如何演进。融合操作改为自动探测，你只需要决定是否预览、是否执行，以及采用 `heuristic` 还是配置好的 `llm` 判定策略。</p>
+                        <p>从 0 开始按条选择 `trips.json` 数据写入记忆库，实时查看 Event / Context 图谱如何演进。融合操作改为自动探测，你只需要决定是否预览、是否执行，以及采用 `auto` 或配置好的 `llm` 判定策略。</p>
                     </div>
                     <div class="hero-actions">
                         <button class="ghost-btn" id="refreshBtn">刷新状态</button>
@@ -744,7 +744,6 @@
                     <div class="graph-legend">
                         <span class="legend-chip"><span class="legend-dot" style="background: var(--event);"></span> Event</span>
                         <span class="legend-chip"><span class="legend-dot" style="background: var(--context);"></span> Context</span>
-                        <span class="legend-chip"><span class="legend-dot" style="background: var(--pattern);"></span> Pattern</span>
                         <span class="legend-chip"><span class="legend-dot" style="background: var(--merged);"></span> Merged / Archived</span>
                     </div>
                     <div class="panel-subtitle" id="graphMeta">等待图快照</div>
@@ -759,7 +758,7 @@
                     </div>
                 </div>
                 <div class="graph-footnote">
-                    左泳道是 Event，中间是 Context，右泳道是 Pattern。`IN_REL` 与 `ABSTRACT_TO` 走横向连边，`EVENT_REL` 使用虚线弧线表示事件之间的显式语义关系。高亮边框表示当前选中的节点。
+                    左泳道是 Event，右泳道是 Context。`IN_REL` 使用横向连边。高亮边框表示当前选中的节点。
                 </div>
             </section>
 
@@ -778,7 +777,6 @@
                                 <label for="mergeStrategy">融合策略</label>
                                 <select id="mergeStrategy">
                                     <option value="auto">auto</option>
-                                    <option value="heuristic">heuristic</option>
                                     <option value="llm">llm</option>
                                 </select>
                             </div>
@@ -851,12 +849,10 @@
         const templates = {
             event: {
                 summary: "用户在会议场景手工开启静音模式",
-                event_type: "meeting_mode",
                 action: "开启静音",
                 timestamp: 1773326409,
                 last_active: 1773326409,
                 participants: [{ role: "用户" }],
-                location: { digital_context: "会议模式", place: ["车内"] },
                 payload: { context: { scene: "会议场景", digital_context: "会议模式" } }
             },
             context: {
@@ -1170,8 +1166,6 @@
                 ["待写入", progress.pending_count || 0],
                 ["Events", stats.event_count || 0],
                 ["Contexts", stats.context_count || 0],
-                ["Patterns", stats.pattern_count || 0],
-                ["EventRel", stats.event_relation_count || 0],
                 ["IN_REL", stats.in_count || 0],
             ];
             document.getElementById("metrics").innerHTML = metrics.map(([label, value]) => `
@@ -1275,12 +1269,11 @@
             const snapshot = state.appState?.snapshot || {};
             const events = [...(snapshot.events || [])];
             const contexts = [...(snapshot.contexts || [])];
-            const patterns = [...(snapshot.patterns || [])];
             const svg = document.getElementById("graphSvg");
             const graphEmpty = document.getElementById("graphEmpty");
             const graphMeta = document.getElementById("graphMeta");
 
-            if (!events.length && !contexts.length && !patterns.length) {
+            if (!events.length && !contexts.length) {
                 svg.innerHTML = "";
                 graphEmpty.style.display = "flex";
                 graphMeta.textContent = "当前数据库没有节点";
@@ -1288,20 +1281,19 @@
             }
 
             graphEmpty.style.display = "none";
-            graphMeta.textContent = `events=${events.length}, contexts=${contexts.length}, patterns=${patterns.length}`;
+            graphMeta.textContent = `events=${events.length}, contexts=${contexts.length}`;
 
             events.sort((a, b) => (b.last_active || b.timestamp || 0) - (a.last_active || a.timestamp || 0));
             contexts.sort((a, b) => (b.last_seen_at || 0) - (a.last_seen_at || 0));
-            patterns.sort((a, b) => (b.last_seen_at || 0) - (a.last_seen_at || 0));
 
             const width = 1200;
             const rowGap = 84;
             const baseHeight = 150;
-            const maxRows = Math.max(events.length, contexts.length, patterns.length, 1);
+            const maxRows = Math.max(events.length, contexts.length, 1);
             const height = Math.max(760, baseHeight + maxRows * rowGap);
             svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-            const laneX = { event: 200, context: 610, pattern: 1000 };
+            const laneX = { event: 300, context: 900 };
             const positions = {};
             events.forEach((item, index) => {
                 positions[item.id] = { x: laneX.event, y: 120 + index * rowGap, type: "event", item };
@@ -1309,13 +1301,8 @@
             contexts.forEach((item, index) => {
                 positions[item.id] = { x: laneX.context, y: 120 + index * rowGap, type: "context", item };
             });
-            patterns.forEach((item, index) => {
-                positions[item.id] = { x: laneX.pattern, y: 120 + index * rowGap, type: "pattern", item };
-            });
 
             const eventContextEdges = snapshot.edges?.event_context || [];
-            const eventPatternEdges = snapshot.edges?.event_pattern || [];
-            const eventRelationEdges = snapshot.edges?.event_event || [];
             const edgeSegments = [];
 
             eventContextEdges.forEach(edge => {
@@ -1331,45 +1318,14 @@
                 `);
             });
 
-            eventPatternEdges.forEach(edge => {
-                const from = positions[edge.event_id];
-                const to = positions[edge.pattern_id];
-                if (!from || !to) return;
-                edgeSegments.push(`
-                    <path d="M ${from.x + 104} ${from.y} C ${from.x + 240} ${from.y - 16}, ${to.x - 240} ${to.y - 16}, ${to.x - 104} ${to.y}"
-                        fill="none"
-                        stroke="rgba(91,120,64,0.34)"
-                        stroke-width="${Math.max(1.2, Math.min(3.8, edge.contribution_weight || 1.4))}"
-                        stroke-linecap="round" />
-                `);
-            });
-
-            eventRelationEdges.forEach(edge => {
-                const from = positions[edge.from_event_id];
-                const to = positions[edge.to_event_id];
-                if (!from || !to) return;
-                const midX = from.x - 70;
-                const lift = Math.max(30, Math.abs(to.y - from.y) * 0.32);
-                edgeSegments.push(`
-                    <path d="M ${from.x - 104} ${from.y} C ${midX} ${from.y - lift}, ${midX} ${to.y - lift}, ${to.x - 104} ${to.y}"
-                        fill="none"
-                        stroke="rgba(185,93,45,0.24)"
-                        stroke-width="${Math.max(1.2, Math.min(3.6, edge.confidence || 1.2))}"
-                        stroke-dasharray="4 5"
-                        stroke-linecap="round" />
-                `);
-            });
-
             const laneTitles = `
                 <text x="${laneX.event}" y="52" text-anchor="middle" class="lane-title">Event Lane</text>
                 <text x="${laneX.context}" y="52" text-anchor="middle" class="lane-title">Context Lane</text>
-                <text x="${laneX.pattern}" y="52" text-anchor="middle" class="lane-title">Pattern Lane</text>
             `;
 
             const nodeSegments = [
                 ...events.map(item => renderNodeSvg(item, positions[item.id], 220, 60, "event")),
                 ...contexts.map(item => renderNodeSvg(item, positions[item.id], 220, 60, "context")),
-                ...patterns.map(item => renderNodeSvg(item, positions[item.id], 220, 60, "pattern")),
             ];
 
             svg.innerHTML = `

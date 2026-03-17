@@ -11,7 +11,7 @@ from .ltmemory_impl import LTMemoryImpl
 from .storage.kuzu_store import KuzuStore
 from .storage.graph_store import GraphStore
 from .builder.memory_builder import MemoryBuilder, BuilderConfig
-from .builder.extractor import TwoStageExtractor, HeuristicExtractor
+from .builder.extractor import TwoStageExtractor
 from .builder.consolidator import Consolidator
 from .retriever.memory_searcher import MemorySearcher, SearcherConfig
 from .retriever.entity_matcher import EntityMatcher
@@ -23,10 +23,8 @@ from .config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     ENABLE_DYNAMIC_EVOLUTION,
-    ENABLE_EVENT_RELATIONS,
     GENERATION_MODEL,
     EMBEDDING_MODEL,
-    OFFLINE_MODE,
     SIMILARITY_THRESHOLD,
     MERGE_WEIGHT_SEMANTIC,
     MERGE_WEIGHT_ENTITY,
@@ -37,10 +35,6 @@ from .config import (
     PRUNE_C_VALID_THRESHOLD,
     PRUNE_EVIDENCE_TOP_K,
     DEFAULT_USER_ID,
-    EVENT_RELATION_WINDOW_SECONDS,
-    EVENT_RELATION_CANDIDATE_LIMIT,
-    EVENT_RELATION_MAX_LINKS_PER_EVENT,
-    EVENT_RELATION_CONFIDENCE_THRESHOLD,
     EPISODE_TTL,
     SEARCH_TOP_K,
     SEARCH_MAX_TOKENS,
@@ -86,25 +80,6 @@ class EmbeddingClient:
         return output.embeddings[0].embedding
 
 
-class HashEmbeddingClient:
-    """Deterministic local embedding fallback for offline mode."""
-
-    def __init__(self, dim: int = 1536):
-        self.dim = dim
-
-    def get_embedding(self, text: str) -> list[float]:
-        import hashlib
-        digest = hashlib.sha256(text.encode("utf-8")).digest()
-        vec = [0.0] * self.dim
-        for i, b in enumerate(digest):
-            idx = i % self.dim
-            vec[idx] += (b / 255.0) * 2.0 - 1.0
-        norm = sum(x * x for x in vec) ** 0.5
-        if norm == 0:
-            return vec
-        return [x / norm for x in vec]
-
-
 def create_ltm_system(
     db_path: str = DB_PATH,
     config: Optional[dict[str, Any]] = None,
@@ -133,17 +108,12 @@ def create_ltm_system(
     config = config or {}
     api_key = api_key or DASHSCOPE_API_KEY
     base_url = base_url or DASHSCOPE_BASE_URL
-    offline_mode = bool(config.get("offline_mode", OFFLINE_MODE))
-
     # 1. 创建嵌入客户端
-    if offline_mode:
-        embedding_client = HashEmbeddingClient()
-    else:
-        embedding_client = EmbeddingClient(
-            api_key=api_key,
-            base_url=base_url,
-            embedding_model=config.get("embedding_model", EMBEDDING_MODEL),
-        )
+    embedding_client = EmbeddingClient(
+        api_key=api_key,
+        base_url=base_url,
+        embedding_model=config.get("embedding_model", EMBEDDING_MODEL),
+    )
 
     # 2. 创建存储层
     store = KuzuStore(
@@ -151,16 +121,13 @@ def create_ltm_system(
         embedding_client=embedding_client,
     )
 
-    # 3. 创建提取器
-    if offline_mode:
-        extractor = HeuristicExtractor()
-    else:
-        extractor = TwoStageExtractor(
-            api_key=api_key,
-            base_url=base_url,
-            generation_model=config.get("generation_model", GENERATION_MODEL),
-            enable_thinking=config.get("enable_thinking", False),
-        )
+    # 3. 创建提取器（仅 LLM 抽取）
+    extractor = TwoStageExtractor(
+        api_key=api_key,
+        base_url=base_url,
+        generation_model=config.get("generation_model", GENERATION_MODEL),
+        enable_thinking=config.get("enable_thinking", False),
+    )
 
     # 4. 创建合并器
     consolidator = Consolidator(
@@ -189,17 +156,11 @@ def create_ltm_system(
             store=store,
             config=DynamicEvolutionConfig(
                 append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
-                offline_mode=offline_mode,
                 merge_decision_strategy=config.get("merge_decision_strategy", "auto"),
                 llm_api_key=api_key,
                 llm_base_url=base_url,
                 llm_model=config.get("generation_model", GENERATION_MODEL),
                 enable_auto_consolidation=config.get("enable_auto_consolidation", True),
-                enable_event_relations=config.get("enable_event_relations", ENABLE_EVENT_RELATIONS),
-                event_relation_window_seconds=config.get("event_relation_window_seconds", EVENT_RELATION_WINDOW_SECONDS),
-                event_relation_candidate_limit=config.get("event_relation_candidate_limit", EVENT_RELATION_CANDIDATE_LIMIT),
-                event_relation_max_links_per_event=config.get("event_relation_max_links_per_event", EVENT_RELATION_MAX_LINKS_PER_EVENT),
-                event_relation_confidence_threshold=config.get("event_relation_confidence_threshold", EVENT_RELATION_CONFIDENCE_THRESHOLD),
             ),
         )
 
@@ -247,7 +208,7 @@ def create_ltm_system(
         base_url=base_url,
         generation_model=config.get("generation_model", GENERATION_MODEL),
         dynamic_engine=dynamic_engine,
-        offline_mode=offline_mode,
+        offline_mode=False,
     )
 
     # 7. 组装系统

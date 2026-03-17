@@ -1190,7 +1190,6 @@
                                             <strong>${event.c_valid}</strong>
                                         </div>
                                         ${event.action ? `<div class="event-meta-item"><span>动作:</span><strong>${escapeHtml(event.action)}</strong></div>` : ''}
-                                        ${event.location ? `<div class="event-meta-item"><span>位置:</span><strong>${escapeHtml(typeof event.location === 'string' ? event.location : JSON.stringify(event.location))}</strong></div>` : ''}
                                     </div>
                                     <div class="event-click-hint">
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1420,7 +1419,6 @@
 
             // 参与者与位置
             const participants = safeParseObj(event.participants);
-            const location = safeParseObj(event.location);
             const timeRange = safeParseObj(event.time_range);
 
             bodyHtml += `
@@ -1436,10 +1434,6 @@
                         <div class="field-item">
                             <div class="field-label">参与者 (Participants)</div>
                             <div class="field-value">${formatJsonDisplay(participants)}</div>
-                        </div>
-                        <div class="field-item">
-                            <div class="field-label">位置 (Location)</div>
-                            <div class="field-value">${formatJsonDisplay(location)}</div>
                         </div>
                         <div class="field-item full-width">
                             <div class="field-label">时间范围 (Time Range)</div>

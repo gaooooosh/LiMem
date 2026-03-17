@@ -5,11 +5,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 import time
-import uuid
 
 from .core.context import Context
 from .core.event import Event
-from .core.pattern import Pattern
 from .storage.graph_store import GraphStore
 
 
@@ -68,23 +66,6 @@ class MemoryGraphOps:
                 "kind": "context",
                 "action": action,
                 "item": self._serialize_context(stored),
-            }
-
-        if memory_kind == "pattern":
-            pattern = self._coerce_pattern(item)
-            existing = self.store.get_pattern(pattern.id) if pattern.id else None
-            action = "updated" if existing else "created"
-            if existing:
-                pattern.created_at = pattern.created_at or existing.created_at
-                pattern.embedding = pattern.embedding or existing.embedding
-                self.store.update_pattern(pattern)
-            else:
-                self.store.save_pattern(pattern)
-            stored = self.store.get_pattern(pattern.id) or pattern
-            return {
-                "kind": "pattern",
-                "action": action,
-                "item": self._serialize_pattern(stored),
             }
 
         raise ValueError(f"Unsupported write kind: {memory_kind}")
@@ -184,14 +165,12 @@ class MemoryGraphOps:
         statuses = None if include_inactive else ["active"]
         events = self.store.list_events(limit=limit, query=text, statuses=statuses)
         contexts = self.store.list_contexts(limit=limit, query=text, statuses=statuses)
-        patterns = self.store.list_patterns(limit=limit, query=text, statuses=statuses)
 
         result = {
             "query": text,
             "stats": self.store.get_stats(),
             "events": [self._serialize_event(event) for event in events],
             "contexts": [self._serialize_context(context) for context in contexts],
-            "patterns": [self._serialize_pattern(pattern) for pattern in patterns],
         }
         if include_graph:
             result["edges"] = self._build_edge_bundle(limit=limit * 5, statuses=statuses)
@@ -239,16 +218,6 @@ class MemoryGraphOps:
                 event_statuses=statuses,
                 context_statuses=statuses,
             ),
-            "event_pattern": self.store.list_event_pattern_edges(
-                limit=limit,
-                event_statuses=statuses,
-                pattern_statuses=statuses,
-            ),
-            "event_event": self.store.list_event_relation_edges(
-                limit=limit,
-                event_statuses=statuses,
-            ),
-            "next": [],
         }
 
     def _infer_kind(self, item: Any, kind: str) -> str:
@@ -258,13 +227,9 @@ class MemoryGraphOps:
             return "event"
         if isinstance(item, Context):
             return "context"
-        if isinstance(item, Pattern):
-            return "pattern"
         if isinstance(item, dict):
             if "context_type" in item or "structured_slots" in item:
                 return "context"
-            if "pattern_type" in item or "prototype_features" in item:
-                return "pattern"
             return "event"
         raise ValueError("Unable to infer memory kind")
 
@@ -275,7 +240,6 @@ class MemoryGraphOps:
             event = Event(
                 id=str(item.get("id", "") or ""),
                 summary=str(item.get("summary", "") or ""),
-                event_type=str(item.get("event_type", "generic") or "generic"),
                 action=str(item.get("action", "") or ""),
                 causality=str(item.get("causality", "") or ""),
                 time_range=dict(item.get("time_range", {}) or {}),
@@ -286,13 +250,8 @@ class MemoryGraphOps:
                 valid_from=int(item.get("valid_from", item.get("timestamp", 0)) or 0),
                 valid_to=item.get("valid_to"),
                 participants=list(item.get("participants", []) or []),
-                location=dict(item.get("location", {}) or {}),
                 payload=dict(item.get("payload", {}) or {}),
                 evidence=list(item.get("evidence", []) or []),
-                consistency=str(item.get("consistency", "uncertain") or "uncertain"),
-                salience=float(item.get("salience", 0.5) or 0.5),
-                confidence=float(item.get("confidence", 0.7) or 0.7),
-                source=str(item.get("source", "manual_write") or "manual_write"),
                 status=str(item.get("status", "active") or "active"),
                 support_count=int(item.get("support_count", 1) or 1),
                 embedding=item.get("embedding"),
@@ -312,7 +271,6 @@ class MemoryGraphOps:
         if event.valid_from <= 0:
             event.valid_from = event.timestamp or now
         event.status = event.status or "active"
-        event.source = event.source or "manual_write"
         return event
 
     def _coerce_context(self, item: Any) -> Context:
@@ -353,44 +311,6 @@ class MemoryGraphOps:
             context.last_seen_at = context.updated_at
         context.status = context.status or "active"
         return context
-
-    def _coerce_pattern(self, item: Any) -> Pattern:
-        if isinstance(item, Pattern):
-            pattern = item
-        elif isinstance(item, dict):
-            pattern = Pattern(
-                id=str(item.get("id", "") or ""),
-                pattern_type=str(item.get("pattern_type", "experience") or "experience"),
-                summary=str(item.get("summary", "") or ""),
-                prototype_features=dict(item.get("prototype_features", {}) or {}),
-                support_count=int(item.get("support_count", 1) or 1),
-                confidence=float(item.get("confidence", 0.6) or 0.6),
-                stability_score=float(item.get("stability_score", 0.5) or 0.5),
-                drift_score=float(item.get("drift_score", 0.0) or 0.0),
-                created_at=int(item.get("created_at", 0) or 0),
-                updated_at=int(item.get("updated_at", 0) or 0),
-                valid_from=int(item.get("valid_from", 0) or 0),
-                valid_to=item.get("valid_to"),
-                last_seen_at=int(item.get("last_seen_at", 0) or 0),
-                status=str(item.get("status", "active") or "active"),
-                embedding=item.get("embedding"),
-            )
-        else:
-            raise ValueError("Unsupported pattern payload")
-
-        now = int(time.time())
-        if not pattern.id:
-            pattern.id = f"ptn_manual_{uuid.uuid4().hex[:12]}"
-        if pattern.created_at <= 0:
-            pattern.created_at = now
-        if pattern.updated_at <= 0:
-            pattern.updated_at = pattern.created_at
-        if pattern.valid_from <= 0:
-            pattern.valid_from = pattern.created_at
-        if pattern.last_seen_at <= 0:
-            pattern.last_seen_at = pattern.updated_at
-        pattern.status = pattern.status or "active"
-        return pattern
 
     def _upsert_event_entities(
         self,
@@ -439,7 +359,6 @@ class MemoryGraphOps:
         return {
             "id": event.id,
             "summary": event.summary,
-            "event_type": event.event_type,
             "action": event.action,
             "causality": event.causality,
             "time_range": event.time_range,
@@ -450,18 +369,12 @@ class MemoryGraphOps:
             "valid_from": event.valid_from,
             "valid_to": event.valid_to,
             "participants": event.participants,
-            "location": event.location,
             "payload": event.payload,
             "evidence": event.evidence,
-            "consistency": event.consistency.value if hasattr(event.consistency, "value") else str(event.consistency),
-            "salience": event.salience,
-            "confidence": event.confidence,
-            "source": event.source,
             "status": event.status,
             "support_count": event.support_count,
             "entity_ids": self.store.get_event_entities(event.id),
             "context_ids": [context.id for context in self.store.get_event_contexts(event.id)],
-            "pattern_ids": [pattern.id for pattern in self.store.get_event_patterns(event.id)],
             "merge_traces": self.store.list_event_merge_traces(event.id),
         }
 
@@ -484,24 +397,4 @@ class MemoryGraphOps:
             "status": context.status,
             "source_refs": context.source_refs,
             "merged_from": context.merged_from,
-        }
-
-    def _serialize_pattern(self, pattern: Optional[Pattern]) -> Optional[dict[str, Any]]:
-        if pattern is None:
-            return None
-        return {
-            "id": pattern.id,
-            "pattern_type": pattern.pattern_type,
-            "summary": pattern.summary,
-            "prototype_features": pattern.prototype_features,
-            "support_count": pattern.support_count,
-            "confidence": pattern.confidence,
-            "stability_score": pattern.stability_score,
-            "drift_score": pattern.drift_score,
-            "created_at": pattern.created_at,
-            "updated_at": pattern.updated_at,
-            "valid_from": pattern.valid_from,
-            "valid_to": pattern.valid_to,
-            "last_seen_at": pattern.last_seen_at,
-            "status": pattern.status,
         }

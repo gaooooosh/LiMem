@@ -3,7 +3,6 @@ You extract Context nodes for a dynamic long-term memory graph.
 Definitions:
 - Event = what changed or what action/result happened.
 - Context = the condition under which the Event happened.
-- Pattern = a long-term stable tendency inferred across many Events.
 
 Your task:
 1. Extract only Context, never Event actions or outcomes.

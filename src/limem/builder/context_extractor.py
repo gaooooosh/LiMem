@@ -30,7 +30,7 @@ from ..core.context import (
 from ..core.event import Event
 from ..utils import load_prompt, robust_json_loads, safe_json_dumps
 
-_PATTERN_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯")
+_HABIT_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯")
 _EVENT_LIKE_MARKERS = (
     "打开", "搜索", "开始", "完成", "成功", "失败", "找到", "支付", "导航", "播放", "推荐", "决定",
 )
@@ -126,7 +126,6 @@ class ContextExtractionPipeline:
 
         if event is not None:
             payload = event.payload if isinstance(event.payload, dict) else {}
-            location = event.location if isinstance(event.location, dict) else {}
             for key, subtype in (
                 ("context_note", "situation"),
                 ("state", "state"),
@@ -150,22 +149,6 @@ class ContextExtractionPipeline:
                         text=text_value,
                         signal=f"event_payload:{key}",
                         subtype_hint=subtype,
-                        source="event",
-                    )
-                )
-            for key in ("geo_context", "digital_context"):
-                text_value = str(location.get(key, "") or "").strip()
-                if not text_value:
-                    continue
-                dedupe_key = (text_value, f"event_location:{key}")
-                if dedupe_key in seen:
-                    continue
-                seen.add(dedupe_key)
-                spans.append(
-                    ContextSpan(
-                        text=text_value,
-                        signal=f"event_location:{key}",
-                        subtype_hint="environment",
                         source="event",
                     )
                 )
@@ -269,7 +252,7 @@ class ContextExtractionPipeline:
                 continue
             if self._looks_like_event_or_result(draft.summary, event):
                 continue
-            if self._looks_like_pattern_not_context(evidence_span):
+            if self._looks_like_habit_not_context(evidence_span):
                 continue
 
             cleaned_slots = self._clean_structured_slots(draft.structured_slots)
@@ -329,7 +312,7 @@ class ContextExtractionPipeline:
             normalized_text = self._strip_discourse_prefix(span.text)
             if not normalized_text:
                 continue
-            if self._looks_like_pattern_not_context(normalized_text):
+            if self._looks_like_habit_not_context(normalized_text):
                 continue
             drafts.append(
                 ContextDraft(
@@ -458,11 +441,9 @@ class ContextExtractionPipeline:
         return {
             "id": event.id,
             "summary": event.summary,
-            "event_type": event.event_type,
             "action": event.action,
             "causality": event.causality,
             "participants": event.participants,
-            "location": event.location,
             "payload": event.payload,
             "timestamp": event.timestamp,
             "valid_from": event.valid_from,
@@ -534,9 +515,9 @@ class ContextExtractionPipeline:
                 return True
         return False
 
-    def _looks_like_pattern_not_context(self, text: str) -> bool:
+    def _looks_like_habit_not_context(self, text: str) -> bool:
         normalized = str(text or "").strip()
-        return any(marker in normalized for marker in _PATTERN_LIKE_MARKERS)
+        return any(marker in normalized for marker in _HABIT_LIKE_MARKERS)
 
     def _make_source_refs(
         self,

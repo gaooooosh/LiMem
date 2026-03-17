@@ -8,7 +8,6 @@ from typing import Any, Optional
 import time
 
 from .core.context import Context
-from .core.pattern import Pattern
 from .utils import hash_summary
 
 
@@ -18,9 +17,7 @@ class MigrationReport:
     scanned_involves: int = 0
     migrated_in_to_context: int = 0
     scanned_traits: int = 0
-    migrated_abstract_to_pattern: int = 0
     created_contexts: int = 0
-    created_patterns: int = 0
     skipped: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,7 +95,6 @@ def migrate_to_dynamic_graph(
 
     Mapping strategy (current project schema):
     - `INVOLVES` -> `IN_REL` with Context nodes (entity context)
-    - `PERMANENT_TRAIT` -> `ABSTRACT_TO` with Pattern nodes
 
     Existing Entity/INVOLVES tables are preserved to keep old queries working.
     They remain compatibility/indexing layer, not semantic core.
@@ -155,54 +151,6 @@ def migrate_to_dynamic_graph(
                 timestamp=int(t_valid or now),
             )
             report.migrated_in_to_context += 1
-    except Exception:
-        report.skipped += 1
-
-    # 2) PERMANENT_TRAIT -> ABSTRACT_TO(Event->Pattern)
-    try:
-        resp = store.conn.execute(
-            """
-            MATCH (u:User)-[r:PERMANENT_TRAIT]->(e:Event)
-            RETURN u.id, e.id, e.summary, r.t_created
-            """
-        )
-        rows = []
-        while resp.has_next():
-            rows.append(resp.get_next())
-        report.scanned_traits = len(rows)
-        for user_id, event_id, summary, t_created in rows:
-            ptn_id = f"ptn_trait_{hash_summary(str(user_id) + str(event_id))[:20]}"
-            if dry_run:
-                report.migrated_abstract_to_pattern += 1
-                continue
-            pattern = store.get_pattern(ptn_id)
-            if not pattern:
-                pattern = Pattern(
-                    id=ptn_id,
-                    pattern_type="trait",
-                    summary=summary or f"{user_id} trait",
-                    prototype_features={"user_id": user_id, "original_type": "PERMANENT_TRAIT"},
-                    support_count=1,
-                    confidence=1.0,
-                    stability_score=0.9,
-                    drift_score=0.0,
-                    created_at=t_created or now,
-                    updated_at=t_created or now,
-                    valid_from=t_created or now,
-                    last_seen_at=t_created or now,
-                    status="active",
-                )
-                store.save_pattern(pattern)
-                report.created_patterns += 1
-
-            store.link_event_to_pattern(
-                event_id=event_id,
-                pattern_id=ptn_id,
-                confidence=1.0,
-                contribution_weight=1.0,
-                timestamp=int(t_created or now),
-            )
-            report.migrated_abstract_to_pattern += 1
     except Exception:
         report.skipped += 1
 

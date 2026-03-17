@@ -222,39 +222,6 @@ def _infer_participants_from_text(text: str) -> list[dict[str, str]]:
     return _dedupe_participants(participants)
 
 
-def _normalize_location(context_value: Any) -> dict[str, str]:
-    geo_context = ""
-    digital_context = ""
-
-    if isinstance(context_value, dict):
-        geo_context = _to_text(
-            _pick_first(
-                context_value,
-                ["geo_context", "location", "place", "scene", "physical_context"],
-                "",
-            )
-        )
-        digital_context = _to_text(
-            _pick_first(
-                context_value,
-                ["digital_context", "app", "system", "platform", "device"],
-                "",
-            )
-        )
-
-        if not geo_context and not digital_context:
-            geo_context = _to_text(context_value)
-    elif isinstance(context_value, list):
-        geo_context = ", ".join(_to_text(item) for item in context_value if _to_text(item))
-    else:
-        geo_context = _to_text(context_value)
-
-    return {
-        "geo_context": geo_context,
-        "digital_context": digital_context,
-    }
-
-
 def _guess_bucket_from_text(text: str) -> str:
     import re
 
@@ -314,25 +281,6 @@ def _normalize_time_range(time_value: Any) -> dict[str, Any]:
     }
 
 
-def _normalize_consistency(value: Any) -> str:
-    if isinstance(value, (int, float)):
-        score = float(value)
-        if score >= 0.8:
-            return "consistent"
-        if score <= 0.2:
-            return "inconsistent"
-        return "uncertain"
-
-    text = _to_text(value).lower()
-    if text in {"consistent", "inconsistent", "uncertain"}:
-        return text
-    if text in {"true", "yes"}:
-        return "consistent"
-    if text in {"false", "no"}:
-        return "inconsistent"
-    return "uncertain"
-
-
 def _normalize_evidence(evidence_value: Any) -> list[dict[str, Any]]:
     if not evidence_value:
         return []
@@ -370,58 +318,7 @@ def _normalize_evidence(evidence_value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-_EVENT_TYPE_ALIASES = {
-    "action": "action",
-    "act": "action",
-    "operation": "action",
-    "command": "action",
-    "observation": "observation",
-    "observe": "observation",
-    "observation_event": "observation",
-    "decision": "decision",
-    "intent": "decision",
-    "plan": "decision",
-    "choice": "decision",
-    "outcome": "outcome",
-    "result": "outcome",
-    "response": "outcome",
-    "effect": "outcome",
-    "state_change": "state_change",
-    "statechange": "state_change",
-    "state-change": "state_change",
-    "status_change": "state_change",
-    "status-change": "state_change",
-    "interaction": "interaction",
-    "dialog": "interaction",
-    "dialogue": "interaction",
-    "conversation": "interaction",
-    "request": "interaction",
-}
-
-
-def _normalize_event_type(value: Any, summary: str = "", action: str = "", result: str = "") -> str:
-    raw = _to_text(value).lower().replace(" ", "_")
-    if raw in _EVENT_TYPE_ALIASES:
-        return _EVENT_TYPE_ALIASES[raw]
-
-    text = f"{summary} {action} {result}".lower()
-    if any(token in text for token in ["看到", "发现", "观察", "监测", "检测", "提醒", "告警", "收到通知"]):
-        return "observation"
-    if any(token in text for token in ["决定", "选择", "计划", "打算", "准备", "想要", "偏好", "意图"]):
-        return "decision"
-    if any(token in text for token in ["已", "开始", "完成", "成功", "失败", "结果", "回复", "响应", "达到", "结束"]):
-        return "outcome"
-    if any(token in text for token in ["开启", "关闭", "切换", "设置", "调高", "调低", "进入", "离开", "变成", "打开", "暂停", "恢复"]):
-        return "state_change"
-    if any(token in text for token in ["说", "问", "告诉", "请求", "请", "帮我", "对话", "沟通", "交互"]):
-        return "interaction"
-    return "action"
-
-
-def _looks_like_dynamic_change(summary: str, action: str, event_type: str) -> bool:
-    if event_type in {"interaction", "decision", "state_change", "outcome", "observation"}:
-        return True
-
+def _looks_like_dynamic_change(summary: str, action: str) -> bool:
     text = f"{summary} {action}".strip().lower()
     if not text:
         return False
@@ -436,15 +333,10 @@ def _looks_like_dynamic_change(summary: str, action: str, event_type: str) -> bo
 def _build_event_summary(
     participants: list[dict[str, str]],
     action: str,
-    location: dict[str, str],
     time_range: dict[str, Any],
     result: str,
 ) -> str:
     actor_text = "、".join(item["role"] for item in participants[:3] if item.get("role"))
-    context_text = " / ".join(
-        text for text in [location.get("geo_context", ""), location.get("digital_context", "")]
-        if text
-    )
     time_text = ""
     if time_range.get("start", 0) > 0:
         time_text = datetime.fromtimestamp(time_range["start"]).strftime("%Y-%m-%d %H:%M")
@@ -456,8 +348,6 @@ def _build_event_summary(
         parts.append(f"{actor_text}{action}")
     elif action:
         parts.append(action)
-    if context_text:
-        parts.append(f"情景:{context_text}")
     if time_text:
         parts.append(f"时间:{time_text}")
     if result:
@@ -589,8 +479,8 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
     """Normalize LLM event output to the system's canonical event schema.
 
     Supports both:
-    - Legacy schema fields: summary/participants/time_range/location/action/causality
-    - Tuple-like schema: Actor/Action/Context/Time/Outcome
+    - Legacy schema fields: summary/participants/time_range/action/causality
+    - Tuple-like schema: Actor/Action/Time/Outcome
     """
     if not isinstance(payload, dict):
         payload = {}
@@ -609,11 +499,6 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
         ["action", "Action", "what_happened", "WhatHappened", "event_action"],
         "",
     )
-    context_value = _pick_first(
-        event_payload,
-        ["context", "Context", "location", "scene", "situation"],
-        {},
-    )
     time_value = _pick_first(
         event_payload,
         ["time", "Time", "time_range", "timestamp", "happened_at"],
@@ -624,55 +509,41 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
         ["outcome", "Outcome", "result", "impact", "effect"],
         "",
     )
-    event_type_value = _pick_first(
-        event_payload,
-        ["event_type", "EventType", "type", "change_type", "changeType"],
-        "",
-    )
-
     participants = _normalize_participants(actor_value)
     if not participants:
         participants = _infer_participants_from_text(f"{episode_text} {_to_text(event_payload)}")
     participants = _dedupe_participants(participants)
-    location = _normalize_location(context_value)
     time_range = _normalize_time_range(time_value)
     action = _to_text(action_value)
     result = _to_text(outcome_value)
     summary = _to_text(
         _pick_first(event_payload, ["summary", "Summary", "event_summary"], "")
     )
-    event_type = _normalize_event_type(event_type_value, summary=summary, action=action, result=result)
 
     if summary and _looks_like_episode_text(summary, episode_text):
         summary = ""
 
     if not summary:
-        summary = _build_event_summary(participants, action, location, time_range, result)
+        summary = _build_event_summary(participants, action, time_range, result)
 
     causality = _to_text(_pick_first(event_payload, ["causality", "cause", "reason"], ""))
     if not causality:
         causality = result
 
     if not action:
-        if event_type == "observation":
-            action = result or summary
-        else:
-            action = summary
+        action = result or summary
 
-    if not _looks_like_dynamic_change(summary, action, event_type):
+    if not _looks_like_dynamic_change(summary, action):
         action = ""
         summary = ""
 
     return {
         "summary": summary,
-        "event_type": event_type,
         "participants": participants,
         "time_range": time_range,
-        "location": location,
         "action": action,
         "causality": causality,
         "evidence": _normalize_evidence(event_payload.get("evidence", [])),
-        "consistency": _normalize_consistency(event_payload.get("consistency", "uncertain")),
     }
 
 

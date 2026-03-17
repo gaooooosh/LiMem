@@ -273,23 +273,6 @@ class GraphStore(ABC):
     ) -> list[Any]:
         raise NotImplementedError("find_context_candidates is not implemented")
 
-    def save_pattern(self, pattern: Any) -> None:
-        raise NotImplementedError("save_pattern is not implemented")
-
-    def get_pattern(self, pattern_id: str) -> Optional[Any]:
-        raise NotImplementedError("get_pattern is not implemented")
-
-    def update_pattern(self, pattern: Any) -> None:
-        raise NotImplementedError("update_pattern is not implemented")
-
-    def find_pattern_candidates(
-        self,
-        pattern_type: str,
-        limit: int = 20,
-        only_active: bool = True,
-    ) -> list[Any]:
-        raise NotImplementedError("find_pattern_candidates is not implemented")
-
     def link_event_to_context(
         self,
         event_id: str,
@@ -302,39 +285,6 @@ class GraphStore(ABC):
     ) -> None:
         raise NotImplementedError("link_event_to_context is not implemented")
 
-    def link_next(
-        self,
-        from_event_id: str,
-        to_event_id: str,
-        confidence: float,
-        score: float,
-        relation_hint: str,
-        timestamp: int,
-    ) -> None:
-        raise NotImplementedError("link_next is not implemented")
-
-    def link_event_relation(
-        self,
-        from_event_id: str,
-        to_event_id: str,
-        relation_type: str,
-        confidence: float,
-        reason: str,
-        source: str,
-        timestamp: int,
-    ) -> None:
-        raise NotImplementedError("link_event_relation is not implemented")
-
-    def link_event_to_pattern(
-        self,
-        event_id: str,
-        pattern_id: str,
-        confidence: float,
-        contribution_weight: float,
-        timestamp: int,
-    ) -> None:
-        raise NotImplementedError("link_event_to_pattern is not implemented")
-
     def get_recent_events(
         self,
         current_time: int,
@@ -346,9 +296,6 @@ class GraphStore(ABC):
     def get_event_contexts(self, event_id: str) -> list[Any]:
         raise NotImplementedError("get_event_contexts is not implemented")
 
-    def get_event_patterns(self, event_id: str) -> list[Any]:
-        raise NotImplementedError("get_event_patterns is not implemented")
-
     def retrieve_candidate_contexts_for_query(
         self,
         query: str,
@@ -357,27 +304,12 @@ class GraphStore(ABC):
     ) -> list[Any]:
         raise NotImplementedError("retrieve_candidate_contexts_for_query is not implemented")
 
-    def retrieve_candidate_patterns_for_query(
-        self,
-        query: str,
-        query_entities: list[str],
-        limit: int = 20,
-    ) -> list[Any]:
-        raise NotImplementedError("retrieve_candidate_patterns_for_query is not implemented")
-
     def retrieve_events_by_contexts(
         self,
         context_ids: list[str],
         limit: int = 50,
     ) -> list[Event]:
         raise NotImplementedError("retrieve_events_by_contexts is not implemented")
-
-    def retrieve_events_by_patterns(
-        self,
-        pattern_ids: list[str],
-        limit: int = 50,
-    ) -> list[Event]:
-        raise NotImplementedError("retrieve_events_by_patterns is not implemented")
 
     def save_event_merge_trace(
         self,
@@ -392,12 +324,6 @@ class GraphStore(ABC):
 
     def list_event_merge_traces(self, event_id: str) -> list[dict[str, Any]]:
         raise NotImplementedError("list_event_merge_traces is not implemented")
-
-    def prune_weak_next_edges(self, min_score: float, stale_before: int) -> int:
-        raise NotImplementedError("prune_weak_next_edges is not implemented")
-
-    def prune_weak_event_relation_edges(self, min_confidence: float, stale_before: int) -> int:
-        raise NotImplementedError("prune_weak_event_relation_edges is not implemented")
 
     def archive_event(self, event_id: str, archived_at: int) -> None:
         raise NotImplementedError("archive_event is not implemented")
@@ -427,14 +353,6 @@ class GraphStore(ABC):
     ) -> int:
         raise NotImplementedError("relink_context_edges is not implemented")
 
-    def relink_pattern_edges(
-        self,
-        source_pattern_id: str,
-        target_pattern_id: str,
-        timestamp: int,
-    ) -> int:
-        raise NotImplementedError("relink_pattern_edges is not implemented")
-
     def list_events(
         self,
         limit: int = 50,
@@ -451,14 +369,6 @@ class GraphStore(ABC):
     ) -> list[Any]:
         raise NotImplementedError("list_contexts is not implemented")
 
-    def list_patterns(
-        self,
-        limit: int = 50,
-        query: str = "",
-        statuses: Optional[list[str]] = None,
-    ) -> list[Any]:
-        raise NotImplementedError("list_patterns is not implemented")
-
     def list_event_context_edges(
         self,
         limit: int = 200,
@@ -466,28 +376,6 @@ class GraphStore(ABC):
         context_statuses: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         raise NotImplementedError("list_event_context_edges is not implemented")
-
-    def list_event_pattern_edges(
-        self,
-        limit: int = 200,
-        event_statuses: Optional[list[str]] = None,
-        pattern_statuses: Optional[list[str]] = None,
-    ) -> list[dict[str, Any]]:
-        raise NotImplementedError("list_event_pattern_edges is not implemented")
-
-    def list_next_edges(
-        self,
-        limit: int = 200,
-        event_statuses: Optional[list[str]] = None,
-    ) -> list[dict[str, Any]]:
-        raise NotImplementedError("list_next_edges is not implemented")
-
-    def list_event_relation_edges(
-        self,
-        limit: int = 200,
-        event_statuses: Optional[list[str]] = None,
-    ) -> list[dict[str, Any]]:
-        raise NotImplementedError("list_event_relation_edges is not implemented")
 
     # ==================== 统计 ====================
 

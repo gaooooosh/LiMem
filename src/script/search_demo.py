@@ -99,17 +99,13 @@ def _print_evolution_rows(rows: list[dict[str, Any]], top_k: int) -> None:
             f" score={float(row.get('evolution_score', 0.0)):.4f}"
             f" sim={float(row.get('event_similarity', 0.0)):.3f}"
             f" ctx={float(row.get('context_match', 0.0)):.3f}"
-            f" ptn={float(row.get('pattern_similarity', 0.0)):.3f}"
         )
         summary = str(row.get("summary", "") or "")
         if summary:
             print(f"       summary={summary[:100]}")
         ctx = row.get("compressed_contexts") or []
-        ptn = row.get("compressed_patterns") or []
         if ctx:
             print(f"       contexts={ctx[:2]}")
-        if ptn:
-            print(f"       patterns={ptn[:2]}")
 
 
 def run_query(ltm, query: str, top_k: int, gen_answer: bool, show_evolution: bool) -> None:

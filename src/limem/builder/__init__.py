@@ -11,7 +11,6 @@
 from .extractor import (
     LLMExtractor,
     TwoStageExtractor,
-    HeuristicExtractor,
     ExtractionResult,
 )
 from .context_extractor import ContextExtractionPipeline
@@ -22,7 +21,6 @@ __all__ = [
     # Extractor
     "LLMExtractor",
     "TwoStageExtractor",
-    "HeuristicExtractor",
     "ExtractionResult",
     "ContextExtractionPipeline",
     # Consolidator

@@ -102,7 +102,7 @@ def _parse_args() -> argparse.Namespace:
         "--snapshot-limit",
         type=int,
         default=12,
-        help="How many events/contexts/patterns to include in each snapshot",
+        help="How many events/contexts to include in each snapshot",
     )
     parser.add_argument(
         "--skip-migration",
@@ -357,7 +357,7 @@ def _render_html_report(report: dict[str, Any]) -> str:
   <div class="page">
     <div class="hero">
       <h1>LiMem 两段式 Trips 调试报告</h1>
-      <p>基础段先构建记忆库，增量段随后逐步回放并记录图快照，便于观察事件、上下文、模式和显式事件语义关系边的动态演进。</p>
+      <p>基础段先构建记忆库，增量段随后逐步回放并记录图快照，便于观察事件与上下文图谱的动态演进。</p>
       <div class="grid" id="heroMetrics"></div>
     </div>
 
@@ -394,8 +394,6 @@ def _render_html_report(report: dict[str, Any]) -> str:
       return `
         <div class="tag">events: ${{stats.event_count || 0}}</div>
         <div class="tag">contexts: ${{stats.context_count || 0}}</div>
-        <div class="tag">patterns: ${{stats.pattern_count || 0}}</div>
-        <div class="tag">event_rel: ${{stats.event_relation_count || 0}}</div>
       `;
     }}
 
@@ -455,12 +453,11 @@ def _render_html_report(report: dict[str, Any]) -> str:
       </div>
     `;
 
-    const finalSnapshot = report.final_snapshot || {{ events: [], contexts: [], patterns: [], edges: {{}} }};
+    const finalSnapshot = report.final_snapshot || {{ events: [], contexts: [], edges: {{}} }};
     document.getElementById('finalCards').innerHTML = `
-      <div class="card"><h3>事件 / 上下文 / 模式</h3>${{smallStats(report.final_stats)}}</div>
+      <div class="card"><h3>事件 / 上下文</h3>${{smallStats(report.final_stats)}}</div>
       <div class="card"><h3>边统计</h3>${{tags([
         `event-context: ${{(finalSnapshot.edges?.event_context || []).length}}`,
-        `event-pattern: ${{(finalSnapshot.edges?.event_pattern || []).length}}`,
         `next: ${{(finalSnapshot.edges?.next || []).length}}`,
       ])}}</div>
     `;
@@ -471,18 +468,11 @@ def _render_html_report(report: dict[str, Any]) -> str:
         {{ label: 'Status', render: row => row.status }},
         {{ label: 'Summary', render: row => row.summary }},
         {{ label: 'Contexts', render: row => (row.context_ids || []).join(', ') || '-' }},
-        {{ label: 'Patterns', render: row => (row.pattern_ids || []).join(', ') || '-' }},
       ]),
       renderTable('Contexts', finalSnapshot.contexts || [], [
         {{ label: 'ID', render: row => row.id }},
         {{ label: 'Status', render: row => row.status }},
         {{ label: 'Subtype', render: row => row.subtype }},
-        {{ label: 'Summary', render: row => row.summary }},
-      ]),
-      renderTable('Patterns', finalSnapshot.patterns || [], [
-        {{ label: 'ID', render: row => row.id }},
-        {{ label: 'Status', render: row => row.status }},
-        {{ label: 'Type', render: row => row.pattern_type }},
         {{ label: 'Summary', render: row => row.summary }},
       ]),
     ].join('');
@@ -494,7 +484,6 @@ def _render_html_report(report: dict[str, Any]) -> str:
           · ${{entry.ingest_result?.summary || entry.episode?.content || 'unknown'}}
           · events=${{entry.stats?.event_count || 0}}
           · contexts=${{entry.stats?.context_count || 0}}
-          · patterns=${{entry.stats?.pattern_count || 0}}
         </summary>
         <div style="margin-top: 10px;">
           ${{entry.error ? `<div class="pill-warn">Error: ${{entry.error}}</div>` : `<div class="pill-ok">event_id: ${{entry.ingest_result?.event_id || '-'}}</div>`}}

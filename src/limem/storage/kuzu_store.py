@@ -13,7 +13,6 @@ import kuzu
 from ..core.episode import Episode
 from ..core.event import Event, EventRelation
 from ..core.context import Context
-from ..core.pattern import Pattern
 from ..core.entity import Entity
 from ..utils import safe_json_dumps, safe_json_loads
 from .graph_store import GraphStore
@@ -68,25 +67,19 @@ class KuzuStore(GraphStore):
         self.conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS Event(
                 id STRING,
-                event_type STRING,
                 summary STRING,
                 participants STRING,
                 time_range STRING,
-                location STRING,
                 action STRING,
                 causality STRING,
                 payload STRING,
                 evidence STRING,
-                consistency STRING,
                 timestamp INT64,
                 last_active INT64,
                 created_at INT64,
                 updated_at INT64,
                 valid_from INT64,
                 valid_to INT64,
-                salience DOUBLE,
-                confidence DOUBLE,
-                source STRING,
                 status STRING,
                 support_count INT64,
                 embedding FLOAT[1536],
@@ -130,26 +123,6 @@ class KuzuStore(GraphStore):
                 PRIMARY KEY(id)
             )
         """)
-        self.conn.execute("""
-            CREATE NODE TABLE IF NOT EXISTS Pattern(
-                id STRING,
-                pattern_type STRING,
-                summary STRING,
-                prototype_features STRING,
-                support_count INT64,
-                confidence DOUBLE,
-                stability_score DOUBLE,
-                drift_score DOUBLE,
-                created_at INT64,
-                updated_at INT64,
-                valid_from INT64,
-                valid_to INT64,
-                last_seen_at INT64,
-                status STRING,
-                embedding FLOAT[1536],
-                PRIMARY KEY(id)
-            )
-        """)
 
         # 关系表
         self.conn.execute("""
@@ -188,41 +161,6 @@ class KuzuStore(GraphStore):
             )
         """)
         self.conn.execute("""
-            CREATE REL TABLE IF NOT EXISTS NEXT(
-                FROM Event TO Event,
-                confidence DOUBLE,
-                score DOUBLE,
-                relation_hint STRING,
-                created_at INT64,
-                updated_at INT64,
-                last_seen_at INT64,
-                support_count INT64
-            )
-        """)
-        self.conn.execute("""
-            CREATE REL TABLE IF NOT EXISTS EVENT_REL(
-                FROM Event TO Event,
-                relation_type STRING,
-                confidence DOUBLE,
-                reason STRING,
-                source STRING,
-                created_at INT64,
-                updated_at INT64,
-                last_seen_at INT64,
-                support_count INT64
-            )
-        """)
-        self.conn.execute("""
-            CREATE REL TABLE IF NOT EXISTS ABSTRACT_TO(
-                FROM Event TO Pattern,
-                confidence DOUBLE,
-                contribution_weight DOUBLE,
-                created_at INT64,
-                updated_at INT64,
-                last_reinforced_at INT64
-            )
-        """)
-        self.conn.execute("""
             CREATE REL TABLE IF NOT EXISTS EVENT_MERGE_TRACE(
                 FROM Event TO Event,
                 merge_reason STRING,
@@ -240,22 +178,16 @@ class KuzuStore(GraphStore):
         migrations = [
             "ALTER TABLE Event ADD participants STRING",
             "ALTER TABLE Event ADD time_range STRING",
-            "ALTER TABLE Event ADD location STRING",
             "ALTER TABLE Event ADD action STRING",
             "ALTER TABLE Event ADD causality STRING",
-            "ALTER TABLE Event ADD event_type STRING",
             "ALTER TABLE Event ADD payload STRING",
             "ALTER TABLE Event ADD evidence STRING",
-            "ALTER TABLE Event ADD consistency STRING",
             "ALTER TABLE Event ADD timestamp INT64",
             "ALTER TABLE Event ADD last_active INT64",
             "ALTER TABLE Event ADD created_at INT64",
             "ALTER TABLE Event ADD updated_at INT64",
             "ALTER TABLE Event ADD valid_from INT64",
             "ALTER TABLE Event ADD valid_to INT64",
-            "ALTER TABLE Event ADD salience DOUBLE",
-            "ALTER TABLE Event ADD confidence DOUBLE",
-            "ALTER TABLE Event ADD source STRING",
             "ALTER TABLE Event ADD status STRING",
             "ALTER TABLE Event ADD support_count INT64",
             "ALTER TABLE Entity ADD embedding FLOAT[1536]",
@@ -275,18 +207,6 @@ class KuzuStore(GraphStore):
             "ALTER TABLE Context ADD source_refs STRING",
             "ALTER TABLE Context ADD merged_from STRING",
             "ALTER TABLE Context ADD embedding FLOAT[1536]",
-            "ALTER TABLE Pattern ADD prototype_features STRING",
-            "ALTER TABLE Pattern ADD support_count INT64",
-            "ALTER TABLE Pattern ADD confidence DOUBLE",
-            "ALTER TABLE Pattern ADD stability_score DOUBLE",
-            "ALTER TABLE Pattern ADD drift_score DOUBLE",
-            "ALTER TABLE Pattern ADD created_at INT64",
-            "ALTER TABLE Pattern ADD updated_at INT64",
-            "ALTER TABLE Pattern ADD valid_from INT64",
-            "ALTER TABLE Pattern ADD valid_to INT64",
-            "ALTER TABLE Pattern ADD last_seen_at INT64",
-            "ALTER TABLE Pattern ADD status STRING",
-            "ALTER TABLE Pattern ADD embedding FLOAT[1536]",
             "ALTER TABLE IN_REL ADD original_signal STRING",
             "ALTER TABLE IN_REL ADD evidence_span STRING",
             "ALTER TABLE IN_REL ADD confidence DOUBLE",
@@ -294,26 +214,6 @@ class KuzuStore(GraphStore):
             "ALTER TABLE IN_REL ADD created_at INT64",
             "ALTER TABLE IN_REL ADD updated_at INT64",
             "ALTER TABLE IN_REL ADD last_seen_at INT64",
-            "ALTER TABLE NEXT ADD confidence DOUBLE",
-            "ALTER TABLE NEXT ADD score DOUBLE",
-            "ALTER TABLE NEXT ADD relation_hint STRING",
-            "ALTER TABLE NEXT ADD created_at INT64",
-            "ALTER TABLE NEXT ADD updated_at INT64",
-            "ALTER TABLE NEXT ADD last_seen_at INT64",
-            "ALTER TABLE NEXT ADD support_count INT64",
-            "ALTER TABLE EVENT_REL ADD relation_type STRING",
-            "ALTER TABLE EVENT_REL ADD confidence DOUBLE",
-            "ALTER TABLE EVENT_REL ADD reason STRING",
-            "ALTER TABLE EVENT_REL ADD source STRING",
-            "ALTER TABLE EVENT_REL ADD created_at INT64",
-            "ALTER TABLE EVENT_REL ADD updated_at INT64",
-            "ALTER TABLE EVENT_REL ADD last_seen_at INT64",
-            "ALTER TABLE EVENT_REL ADD support_count INT64",
-            "ALTER TABLE ABSTRACT_TO ADD confidence DOUBLE",
-            "ALTER TABLE ABSTRACT_TO ADD contribution_weight DOUBLE",
-            "ALTER TABLE ABSTRACT_TO ADD created_at INT64",
-            "ALTER TABLE ABSTRACT_TO ADD updated_at INT64",
-            "ALTER TABLE ABSTRACT_TO ADD last_reinforced_at INT64",
             "ALTER TABLE EVENT_MERGE_TRACE ADD merge_reason STRING",
             "ALTER TABLE EVENT_MERGE_TRACE ADD similarity_score DOUBLE",
             "ALTER TABLE EVENT_MERGE_TRACE ADD merged_at INT64",
@@ -329,20 +229,17 @@ class KuzuStore(GraphStore):
     def _event_columns(self) -> list[str]:
         return [
             "id", "summary", "action", "causality", "time_range",
-            "last_active", "participants", "location", "evidence",
-            "consistency", "embedding", "event_type", "timestamp",
-            "created_at", "updated_at", "valid_from", "valid_to",
-            "salience", "confidence", "source", "status",
-            "support_count", "payload",
+            "last_active", "participants", "evidence",
+            "embedding", "timestamp", "created_at", "updated_at",
+            "valid_from", "valid_to", "status", "support_count", "payload",
         ]
 
     def _event_select_clause(self, alias: str = "e") -> str:
         return f"""
             {alias}.id, {alias}.summary, {alias}.action, {alias}.causality, {alias}.time_range,
-            {alias}.last_active, {alias}.participants, {alias}.location, {alias}.evidence,
-            {alias}.consistency, {alias}.embedding, {alias}.event_type, {alias}.timestamp,
-            {alias}.created_at, {alias}.updated_at, {alias}.valid_from, {alias}.valid_to,
-            {alias}.salience, {alias}.confidence, {alias}.source, {alias}.status,
+            {alias}.last_active, {alias}.participants, {alias}.evidence,
+            {alias}.embedding, {alias}.timestamp, {alias}.created_at, {alias}.updated_at,
+            {alias}.valid_from, {alias}.valid_to, {alias}.status,
             {alias}.support_count, {alias}.payload
         """
 
@@ -355,22 +252,16 @@ class KuzuStore(GraphStore):
             time_range=safe_json_loads(row[4], {}),
             last_active=row[5] or 0,
             participants=safe_json_loads(row[6], []),
-            location=safe_json_loads(row[7], {}),
-            evidence=safe_json_loads(row[8], []),
-            consistency=row[9] or "uncertain",
-            embedding=list(row[10]) if row[10] else None,
-            event_type=row[11] or "generic",
-            timestamp=row[12] or 0,
-            created_at=row[13] or 0,
-            updated_at=row[14] or 0,
-            valid_from=row[15] or 0,
-            valid_to=row[16],
-            salience=float(row[17] or 0.5),
-            confidence=float(row[18] or 0.7),
-            source=row[19] or "llm_extraction",
-            status=row[20] or "active",
-            support_count=int(row[21] or 1),
-            payload=safe_json_loads(row[22], {}),
+            evidence=safe_json_loads(row[7], []),
+            embedding=list(row[8]) if row[8] else None,
+            timestamp=row[9] or 0,
+            created_at=row[10] or 0,
+            updated_at=row[11] or 0,
+            valid_from=row[12] or 0,
+            valid_to=row[13],
+            status=row[14] or "active",
+            support_count=int(row[15] or 1),
+            payload=safe_json_loads(row[16], {}),
         )
 
     def _tokenize_text(self, text: str) -> set[str]:
@@ -453,25 +344,19 @@ class KuzuStore(GraphStore):
             """
             CREATE (:Event {
                 id: $id,
-                event_type: $event_type,
                 summary: $summary,
                 participants: $participants,
                 time_range: $time_range,
-                location: $location,
                 action: $action,
                 causality: $causality,
                 payload: $payload,
                 evidence: $evidence,
-                consistency: $consistency,
                 timestamp: $timestamp,
                 last_active: $last_active,
                 created_at: $created_at,
                 updated_at: $updated_at,
                 valid_from: $valid_from,
                 valid_to: $valid_to,
-                salience: $salience,
-                confidence: $confidence,
-                source: $source,
                 status: $status,
                 support_count: $support_count,
                 embedding: $embedding
@@ -486,11 +371,9 @@ class KuzuStore(GraphStore):
             """
             MATCH (e:Event {id: $id})
             RETURN e.id, e.summary, e.action, e.causality, e.time_range,
-                   e.last_active, e.participants, e.location, e.evidence,
-                   e.consistency, e.embedding, e.event_type, e.timestamp,
-                   e.created_at, e.updated_at, e.valid_from, e.valid_to,
-                   e.salience, e.confidence, e.source, e.status,
-                   e.support_count, e.payload
+                   e.last_active, e.participants, e.evidence, e.embedding,
+                   e.timestamp, e.created_at, e.updated_at, e.valid_from, e.valid_to,
+                   e.status, e.support_count, e.payload
             """,
             {"id": event_id},
         )
@@ -507,22 +390,16 @@ class KuzuStore(GraphStore):
             SET e.summary = $summary,
                 e.participants = $participants,
                 e.time_range = $time_range,
-                e.location = $location,
                 e.action = $action,
                 e.causality = $causality,
-                e.event_type = $event_type,
                 e.payload = $payload,
                 e.evidence = $evidence,
-                e.consistency = $consistency,
                 e.timestamp = $timestamp,
                 e.last_active = $last_active,
                 e.created_at = $created_at,
                 e.updated_at = $updated_at,
                 e.valid_from = $valid_from,
                 e.valid_to = $valid_to,
-                e.salience = $salience,
-                e.confidence = $confidence,
-                e.source = $source,
                 e.status = $status,
                 e.support_count = $support_count,
                 e.embedding = $embedding
@@ -536,11 +413,9 @@ class KuzuStore(GraphStore):
             MATCH (e:Event)-[:INVOLVES]->(en:Entity)
             WHERE en.id IN $entities
             RETURN DISTINCT e.id, e.summary, e.action, e.causality, e.time_range,
-                   e.last_active, e.participants, e.location, e.evidence,
-                   e.consistency, e.embedding, e.event_type, e.timestamp,
-                   e.created_at, e.updated_at, e.valid_from, e.valid_to,
-                   e.salience, e.confidence, e.source, e.status,
-                   e.support_count, e.payload
+                   e.last_active, e.participants, e.evidence, e.embedding,
+                   e.timestamp, e.created_at, e.updated_at, e.valid_from, e.valid_to,
+                   e.status, e.support_count, e.payload
         """
         resp = self.conn.execute(query, {"entities": entities})
 
@@ -554,7 +429,7 @@ class KuzuStore(GraphStore):
         query = """
             MATCH (e:Event)-[r:INVOLVES]->(en:Entity)
             RETURN e.id, e.summary, e.embedding, e.action, e.last_active,
-                   collect(en.id), e.status, e.confidence, e.salience, e.timestamp
+                   collect(en.id), e.status, e.timestamp
         """
         resp = self.conn.execute(query)
 
@@ -569,9 +444,7 @@ class KuzuStore(GraphStore):
                 "last_active": row[4],
                 "entities": row[5],
                 "status": row[6] or "active",
-                "confidence": float(row[7] or 0.7),
-                "salience": float(row[8] or 0.5),
-                "timestamp": row[9] or 0,
+                "timestamp": row[7] or 0,
             })
         return events
 
@@ -912,123 +785,6 @@ class KuzuStore(GraphStore):
             result.append(Context.from_db_row(list(resp.get_next()), cols))
         return result
 
-    def save_pattern(self, pattern: Pattern) -> None:
-        self.conn.execute(
-            """
-            CREATE (:Pattern {
-                id: $id,
-                pattern_type: $pattern_type,
-                summary: $summary,
-                prototype_features: $prototype_features,
-                support_count: $support_count,
-                confidence: $confidence,
-                stability_score: $stability_score,
-                drift_score: $drift_score,
-                created_at: $created_at,
-                updated_at: $updated_at,
-                valid_from: $valid_from,
-                valid_to: $valid_to,
-                last_seen_at: $last_seen_at,
-                status: $status,
-                embedding: $embedding
-            })
-            """,
-            pattern.to_db_fields(),
-        )
-
-    def get_pattern(self, pattern_id: str) -> Optional[Pattern]:
-        resp = self.conn.execute(
-            """
-            MATCH (p:Pattern {id: $id})
-            RETURN p.id, p.pattern_type, p.summary, p.prototype_features,
-                   p.support_count, p.confidence, p.stability_score, p.drift_score,
-                   p.created_at, p.updated_at, p.valid_from, p.valid_to,
-                   p.last_seen_at, p.status, p.embedding
-            """,
-            {"id": pattern_id},
-        )
-        if not resp.has_next():
-            return None
-        cols = [
-            "id", "pattern_type", "summary", "prototype_features",
-            "support_count", "confidence", "stability_score", "drift_score",
-            "created_at", "updated_at", "valid_from", "valid_to",
-            "last_seen_at", "status", "embedding",
-        ]
-        return Pattern.from_db_row(list(resp.get_next()), cols)
-
-    def update_pattern(self, pattern: Pattern) -> None:
-        fields = pattern.to_db_fields()
-        self.conn.execute(
-            """
-            MATCH (p:Pattern {id: $id})
-            SET p.pattern_type = $pattern_type,
-                p.summary = $summary,
-                p.prototype_features = $prototype_features,
-                p.support_count = $support_count,
-                p.confidence = $confidence,
-                p.stability_score = $stability_score,
-                p.drift_score = $drift_score,
-                p.updated_at = $updated_at,
-                p.valid_from = $valid_from,
-                p.valid_to = $valid_to,
-                p.last_seen_at = $last_seen_at,
-                p.status = $status,
-                p.embedding = $embedding
-            """,
-            {
-                "id": fields["id"],
-                "pattern_type": fields["pattern_type"],
-                "summary": fields["summary"],
-                "prototype_features": fields["prototype_features"],
-                "support_count": fields["support_count"],
-                "confidence": fields["confidence"],
-                "stability_score": fields["stability_score"],
-                "drift_score": fields["drift_score"],
-                "updated_at": fields["updated_at"],
-                "valid_from": fields["valid_from"],
-                "valid_to": fields["valid_to"],
-                "last_seen_at": fields["last_seen_at"],
-                "status": fields["status"],
-                "embedding": fields["embedding"],
-            },
-        )
-
-    def find_pattern_candidates(
-        self,
-        pattern_type: str,
-        limit: int = 20,
-        only_active: bool = True,
-    ) -> list[Pattern]:
-        filters = ["p.pattern_type = $pattern_type"]
-        params: dict[str, Any] = {"pattern_type": pattern_type, "limit": int(limit)}
-        if only_active:
-            filters.append("p.status = 'active'")
-        where_clause = " AND ".join(filters)
-        resp = self.conn.execute(
-            f"""
-            MATCH (p:Pattern)
-            WHERE {where_clause}
-            RETURN p.id, p.pattern_type, p.summary, p.prototype_features,
-                   p.support_count, p.confidence, p.stability_score, p.drift_score,
-                   p.created_at, p.updated_at, p.valid_from, p.valid_to,
-                   p.last_seen_at, p.status, p.embedding
-            ORDER BY p.last_seen_at DESC
-            LIMIT $limit
-            """,
-            params,
-        )
-        cols = [
-            "id", "pattern_type", "summary", "prototype_features",
-            "support_count", "confidence", "stability_score", "drift_score",
-            "created_at", "updated_at", "valid_from", "valid_to",
-            "last_seen_at", "status", "embedding",
-        ]
-        result = []
-        while resp.has_next():
-            result.append(Pattern.from_db_row(list(resp.get_next()), cols))
-        return result
-
     def link_event_to_context(
         self,
         event_id: str,
@@ -1094,196 +850,6 @@ class KuzuStore(GraphStore):
             },
         )
 
-    def link_next(
-        self,
-        from_event_id: str,
-        to_event_id: str,
-        confidence: float,
-        score: float,
-        relation_hint: str,
-        timestamp: int,
-    ) -> None:
-        if from_event_id == to_event_id:
-            return
-        exists = self.conn.execute(
-            """
-            MATCH (:Event {id: $from_event_id})-[r:NEXT]->(:Event {id: $to_event_id})
-            RETURN r.support_count
-            """,
-            {"from_event_id": from_event_id, "to_event_id": to_event_id},
-        )
-        if exists.has_next():
-            support_count = exists.get_next()[0] or 1
-            self.conn.execute(
-                """
-                MATCH (:Event {id: $from_event_id})-[r:NEXT]->(:Event {id: $to_event_id})
-                SET r.confidence = $confidence,
-                    r.score = $score,
-                    r.relation_hint = $relation_hint,
-                    r.updated_at = $timestamp,
-                    r.last_seen_at = $timestamp,
-                    r.support_count = $support_count
-                """,
-                {
-                    "from_event_id": from_event_id,
-                    "to_event_id": to_event_id,
-                    "confidence": float(confidence),
-                    "score": float(score),
-                    "relation_hint": relation_hint,
-                    "timestamp": int(timestamp),
-                    "support_count": int(support_count) + 1,
-                },
-            )
-            return
-
-        self.conn.execute(
-            """
-            MATCH (a:Event {id: $from_event_id}), (b:Event {id: $to_event_id})
-            CREATE (a)-[:NEXT {
-                confidence: $confidence,
-                score: $score,
-                relation_hint: $relation_hint,
-                created_at: $timestamp,
-                updated_at: $timestamp,
-                last_seen_at: $timestamp,
-                support_count: 1
-            }]->(b)
-            """,
-            {
-                "from_event_id": from_event_id,
-                "to_event_id": to_event_id,
-                "confidence": float(confidence),
-                "score": float(score),
-                "relation_hint": relation_hint,
-                "timestamp": int(timestamp),
-            },
-        )
-
-    def link_event_relation(
-        self,
-        from_event_id: str,
-        to_event_id: str,
-        relation_type: str,
-        confidence: float,
-        reason: str,
-        source: str,
-        timestamp: int,
-    ) -> None:
-        if from_event_id == to_event_id:
-            return
-        exists = self.conn.execute(
-            """
-            MATCH (:Event {id: $from_event_id})-[r:EVENT_REL]->(:Event {id: $to_event_id})
-            RETURN r.support_count
-            """,
-            {"from_event_id": from_event_id, "to_event_id": to_event_id},
-        )
-        if exists.has_next():
-            support_count = exists.get_next()[0] or 1
-            self.conn.execute(
-                """
-                MATCH (:Event {id: $from_event_id})-[r:EVENT_REL]->(:Event {id: $to_event_id})
-                SET r.relation_type = $relation_type,
-                    r.confidence = $confidence,
-                    r.reason = $reason,
-                    r.source = $source,
-                    r.updated_at = $timestamp,
-                    r.last_seen_at = $timestamp,
-                    r.support_count = $support_count
-                """,
-                {
-                    "from_event_id": from_event_id,
-                    "to_event_id": to_event_id,
-                    "relation_type": relation_type,
-                    "confidence": float(confidence),
-                    "reason": reason,
-                    "source": source,
-                    "timestamp": int(timestamp),
-                    "support_count": int(support_count) + 1,
-                },
-            )
-            return
-
-        self.conn.execute(
-            """
-            MATCH (a:Event {id: $from_event_id}), (b:Event {id: $to_event_id})
-            CREATE (a)-[:EVENT_REL {
-                relation_type: $relation_type,
-                confidence: $confidence,
-                reason: $reason,
-                source: $source,
-                created_at: $timestamp,
-                updated_at: $timestamp,
-                last_seen_at: $timestamp,
-                support_count: 1
-            }]->(b)
-            """,
-            {
-                "from_event_id": from_event_id,
-                "to_event_id": to_event_id,
-                "relation_type": relation_type,
-                "confidence": float(confidence),
-                "reason": reason,
-                "source": source,
-                "timestamp": int(timestamp),
-            },
-        )
-
-    def link_event_to_pattern(
-        self,
-        event_id: str,
-        pattern_id: str,
-        confidence: float,
-        contribution_weight: float,
-        timestamp: int,
-    ) -> None:
-        exists = self.conn.execute(
-            """
-            MATCH (:Event {id: $event_id})-[r:ABSTRACT_TO]->(:Pattern {id: $pattern_id})
-            RETURN count(*)
-            """,
-            {"event_id": event_id, "pattern_id": pattern_id},
-        )
-        found = exists.has_next() and exists.get_next()[0] > 0
-        if found:
-            self.conn.execute(
-                """
-                MATCH (:Event {id: $event_id})-[r:ABSTRACT_TO]->(:Pattern {id: $pattern_id})
-                SET r.confidence = $confidence,
-                    r.contribution_weight = $contribution_weight,
-                    r.updated_at = $timestamp,
-                    r.last_reinforced_at = $timestamp
-                """,
-                {
-                    "event_id": event_id,
-                    "pattern_id": pattern_id,
-                    "confidence": float(confidence),
-                    "contribution_weight": float(contribution_weight),
-                    "timestamp": int(timestamp),
-                },
-            )
-            return
-
-        self.conn.execute(
-            """
-            MATCH (e:Event {id: $event_id}), (p:Pattern {id: $pattern_id})
-            CREATE (e)-[:ABSTRACT_TO {
-                confidence: $confidence,
-                contribution_weight: $contribution_weight,
-                created_at: $timestamp,
-                updated_at: $timestamp,
-                last_reinforced_at: $timestamp
-            }]->(p)
-            """,
-            {
-                "event_id": event_id,
-                "pattern_id": pattern_id,
-                "confidence": float(confidence),
-                "contribution_weight": float(contribution_weight),
-                "timestamp": int(timestamp),
-            },
-        )
-
     def get_recent_events(
         self,
         current_time: int,
@@ -1292,15 +858,10 @@ class KuzuStore(GraphStore):
     ) -> list[Event]:
         min_ts = int(current_time) - int(window_seconds)
         resp = self.conn.execute(
-            """
+            f"""
             MATCH (e:Event)
             WHERE e.last_active >= $min_ts
-            RETURN e.id, e.summary, e.action, e.causality, e.time_range,
-                   e.last_active, e.participants, e.location, e.evidence,
-                   e.consistency, e.embedding, e.event_type, e.timestamp,
-                   e.created_at, e.updated_at, e.valid_from, e.valid_to,
-                   e.salience, e.confidence, e.source, e.status,
-                   e.support_count, e.payload
+            RETURN {self._event_select_clause('e')}
             ORDER BY e.last_active DESC
             LIMIT $limit
             """,
@@ -1332,29 +893,6 @@ class KuzuStore(GraphStore):
         result = []
         while resp.has_next():
             result.append(Context.from_db_row(list(resp.get_next()), cols))
-        return result
-
-    def get_event_patterns(self, event_id: str) -> list[Pattern]:
-        resp = self.conn.execute(
-            """
-            MATCH (:Event {id: $event_id})-[r:ABSTRACT_TO]->(p:Pattern)
-            RETURN p.id, p.pattern_type, p.summary, p.prototype_features,
-                   p.support_count, p.confidence, p.stability_score, p.drift_score,
-                   p.created_at, p.updated_at, p.valid_from, p.valid_to,
-                   p.last_seen_at, p.status, p.embedding
-            ORDER BY r.contribution_weight DESC, p.confidence DESC
-            """,
-            {"event_id": event_id},
-        )
-        cols = [
-            "id", "pattern_type", "summary", "prototype_features",
-            "support_count", "confidence", "stability_score", "drift_score",
-            "created_at", "updated_at", "valid_from", "valid_to",
-            "last_seen_at", "status", "embedding",
-        ]
-        result = []
-        while resp.has_next():
-            result.append(Pattern.from_db_row(list(resp.get_next()), cols))
         return result
 
     def retrieve_candidate_contexts_for_query(
@@ -1394,43 +932,6 @@ class KuzuStore(GraphStore):
         scored.sort(key=lambda item: item[0], reverse=True)
         return [context for _, context in scored[:limit]]
 
-    def retrieve_candidate_patterns_for_query(
-        self,
-        query: str,
-        query_entities: list[str],
-        limit: int = 20,
-    ) -> list[Pattern]:
-        resp = self.conn.execute(
-            """
-            MATCH (p:Pattern)
-            WHERE p.status = 'active'
-            RETURN p.id, p.pattern_type, p.summary, p.prototype_features,
-                   p.support_count, p.confidence, p.stability_score, p.drift_score,
-                   p.created_at, p.updated_at, p.valid_from, p.valid_to,
-                   p.last_seen_at, p.status, p.embedding
-            ORDER BY p.last_seen_at DESC
-            LIMIT $limit
-            """,
-            {"limit": int(max(limit * 4, limit))},
-        )
-        cols = [
-            "id", "pattern_type", "summary", "prototype_features",
-            "support_count", "confidence", "stability_score", "drift_score",
-            "created_at", "updated_at", "valid_from", "valid_to",
-            "last_seen_at", "status", "embedding",
-        ]
-        scored: list[tuple[float, Pattern]] = []
-        while resp.has_next():
-            pattern = Pattern.from_db_row(list(resp.get_next()), cols)
-            haystack = f"{pattern.summary} {safe_json_dumps(pattern.prototype_features)}".lower()
-            score = self._text_similarity_score(haystack, query, query_entities)
-            if score <= 0.0 and (query or query_entities):
-                continue
-            score += 0.15 * pattern.confidence
-            scored.append((score, pattern))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [pattern for _, pattern in scored[:limit]]
-
     def _apply_status_filters(
         self,
         alias: str,
@@ -1460,28 +961,6 @@ class KuzuStore(GraphStore):
             LIMIT $limit
             """,
             {"context_ids": context_ids, "limit": int(limit)},
-        )
-        result = []
-        while resp.has_next():
-            result.append(self._row_to_event(list(resp.get_next())))
-        return result
-
-    def retrieve_events_by_patterns(
-        self,
-        pattern_ids: list[str],
-        limit: int = 50,
-    ) -> list[Event]:
-        if not pattern_ids:
-            return []
-        resp = self.conn.execute(
-            f"""
-            MATCH (e:Event)-[r:ABSTRACT_TO]->(p:Pattern)
-            WHERE p.id IN $pattern_ids
-            RETURN DISTINCT {self._event_select_clause('e')}
-            ORDER BY e.last_active DESC
-            LIMIT $limit
-            """,
-            {"pattern_ids": pattern_ids, "limit": int(limit)},
         )
         result = []
         while resp.has_next():
@@ -1542,46 +1021,6 @@ class KuzuStore(GraphStore):
             )
         return rows
 
-    def prune_weak_next_edges(self, min_score: float, stale_before: int) -> int:
-        count_resp = self.conn.execute(
-            """
-            MATCH (:Event)-[r:NEXT]->(:Event)
-            WHERE r.score < $min_score AND r.last_seen_at < $stale_before
-            RETURN count(r)
-            """,
-            {"min_score": float(min_score), "stale_before": int(stale_before)},
-        )
-        count = count_resp.get_next()[0] if count_resp.has_next() else 0
-        self.conn.execute(
-            """
-            MATCH (:Event)-[r:NEXT]->(:Event)
-            WHERE r.score < $min_score AND r.last_seen_at < $stale_before
-            DELETE r
-            """,
-            {"min_score": float(min_score), "stale_before": int(stale_before)},
-        )
-        return int(count)
-
-    def prune_weak_event_relation_edges(self, min_confidence: float, stale_before: int) -> int:
-        count_resp = self.conn.execute(
-            """
-            MATCH (:Event)-[r:EVENT_REL]->(:Event)
-            WHERE r.confidence < $min_confidence AND r.last_seen_at < $stale_before
-            RETURN count(r)
-            """,
-            {"min_confidence": float(min_confidence), "stale_before": int(stale_before)},
-        )
-        count = count_resp.get_next()[0] if count_resp.has_next() else 0
-        self.conn.execute(
-            """
-            MATCH (:Event)-[r:EVENT_REL]->(:Event)
-            WHERE r.confidence < $min_confidence AND r.last_seen_at < $stale_before
-            DELETE r
-            """,
-            {"min_confidence": float(min_confidence), "stale_before": int(stale_before)},
-        )
-        return int(count)
-
     def archive_event(self, event_id: str, archived_at: int) -> None:
         self.conn.execute(
             """
@@ -1636,9 +1075,6 @@ class KuzuStore(GraphStore):
             "entity_relations": 0,
             "episode_links": 0,
             "context_links": 0,
-            "pattern_links": 0,
-            "next_edges": 0,
-            "event_relation_edges": 0,
             "permanent_traits": 0,
         }
 
@@ -1737,145 +1173,6 @@ class KuzuStore(GraphStore):
 
         resp = self.conn.execute(
             """
-            MATCH (:Event {id: $source_event_id})-[r:ABSTRACT_TO]->(p:Pattern)
-            RETURN p.id, r.confidence, r.contribution_weight, r.last_reinforced_at
-            """,
-            {"source_event_id": source_event_id},
-        )
-        while resp.has_next():
-            row = resp.get_next()
-            self.link_event_to_pattern(
-                event_id=target_event_id,
-                pattern_id=row[0],
-                confidence=float(row[1] or 0.7),
-                contribution_weight=float(row[2] or 1.0),
-                timestamp=int(row[3] or ts),
-            )
-            moved["pattern_links"] += 1
-        self.conn.execute(
-            """
-            MATCH (:Event {id: $source_event_id})-[r:ABSTRACT_TO]->(:Pattern)
-            DELETE r
-            """,
-            {"source_event_id": source_event_id},
-        )
-
-        resp = self.conn.execute(
-            """
-            MATCH (a:Event)-[r:NEXT]->(:Event {id: $source_event_id})
-            RETURN a.id, r.confidence, r.score, r.relation_hint, r.last_seen_at
-            """,
-            {"source_event_id": source_event_id},
-        )
-        while resp.has_next():
-            row = resp.get_next()
-            if row[0] == target_event_id:
-                continue
-            self.link_next(
-                from_event_id=row[0],
-                to_event_id=target_event_id,
-                confidence=float(row[1] or 0.6),
-                score=float(row[2] or 0.0),
-                relation_hint=row[3] or "manual_merge",
-                timestamp=int(row[4] or ts),
-            )
-            moved["next_edges"] += 1
-        self.conn.execute(
-            """
-            MATCH (:Event)-[r:NEXT]->(:Event {id: $source_event_id})
-            DELETE r
-            """,
-            {"source_event_id": source_event_id},
-        )
-
-        resp = self.conn.execute(
-            """
-            MATCH (:Event {id: $source_event_id})-[r:NEXT]->(b:Event)
-            RETURN b.id, r.confidence, r.score, r.relation_hint, r.last_seen_at
-            """,
-            {"source_event_id": source_event_id},
-        )
-        while resp.has_next():
-            row = resp.get_next()
-            if row[0] == target_event_id:
-                continue
-            self.link_next(
-                from_event_id=target_event_id,
-                to_event_id=row[0],
-                confidence=float(row[1] or 0.6),
-                score=float(row[2] or 0.0),
-                relation_hint=row[3] or "manual_merge",
-                timestamp=int(row[4] or ts),
-            )
-            moved["next_edges"] += 1
-        self.conn.execute(
-            """
-            MATCH (:Event {id: $source_event_id})-[r:NEXT]->(:Event)
-            DELETE r
-            """,
-            {"source_event_id": source_event_id},
-        )
-
-        resp = self.conn.execute(
-            """
-            MATCH (a:Event)-[r:EVENT_REL]->(:Event {id: $source_event_id})
-            RETURN a.id, r.relation_type, r.confidence, r.reason, r.source, r.last_seen_at
-            """,
-            {"source_event_id": source_event_id},
-        )
-        while resp.has_next():
-            row = resp.get_next()
-            if row[0] == target_event_id:
-                continue
-            self.link_event_relation(
-                from_event_id=row[0],
-                to_event_id=target_event_id,
-                relation_type=row[1] or "related_to",
-                confidence=float(row[2] or 0.0),
-                reason=row[3] or "manual_merge",
-                source=row[4] or "manual_merge",
-                timestamp=int(row[5] or ts),
-            )
-            moved["event_relation_edges"] += 1
-        self.conn.execute(
-            """
-            MATCH (:Event)-[r:EVENT_REL]->(:Event {id: $source_event_id})
-            DELETE r
-            """,
-            {"source_event_id": source_event_id},
-        )
-
-        resp = self.conn.execute(
-            """
-            MATCH (:Event {id: $source_event_id})-[r:EVENT_REL]->(b:Event)
-            RETURN b.id, r.relation_type, r.confidence, r.reason, r.source, r.last_seen_at
-            """,
-            {"source_event_id": source_event_id},
-        )
-        while resp.has_next():
-            row = resp.get_next()
-            if row[0] == target_event_id:
-                continue
-            self.link_event_relation(
-                from_event_id=target_event_id,
-                to_event_id=row[0],
-                relation_type=row[1] or "related_to",
-                confidence=float(row[2] or 0.0),
-                reason=row[3] or "manual_merge",
-                source=row[4] or "manual_merge",
-                timestamp=int(row[5] or ts),
-            )
-            moved["event_relation_edges"] += 1
-        self.conn.execute(
-            """
-            MATCH (:Event {id: $source_event_id})-[r:EVENT_REL]->(:Event)
-            DELETE r
-            """,
-            {"source_event_id": source_event_id},
-        )
-
-        resp = self.conn.execute(
-            """
             MATCH (u:User)-[r:PERMANENT_TRAIT]->(:Event {id: $source_event_id})
             RETURN u.id, r.t_created
             """,
@@ -1932,42 +1229,6 @@ class KuzuStore(GraphStore):
         )
         return moved
 
-    def relink_pattern_edges(
-        self,
-        source_pattern_id: str,
-        target_pattern_id: str,
-        timestamp: int,
-    ) -> int:
-        if source_pattern_id == target_pattern_id:
-            return 0
-        ts = int(timestamp)
-        moved = 0
-        resp = self.conn.execute(
-            """
-            MATCH (e:Event)-[r:ABSTRACT_TO]->(:Pattern {id: $source_pattern_id})
-            RETURN e.id, r.confidence, r.contribution_weight, r.last_reinforced_at
-            """,
-            {"source_pattern_id": source_pattern_id},
-        )
-        while resp.has_next():
-            row = resp.get_next()
-            self.link_event_to_pattern(
-                event_id=row[0],
-                pattern_id=target_pattern_id,
-                confidence=float(row[1] or 0.7),
-                contribution_weight=float(row[2] or 1.0),
-                timestamp=int(row[3] or ts),
-            )
-            moved += 1
-        self.conn.execute(
-            """
-            MATCH (:Event)-[r:ABSTRACT_TO]->(:Pattern {id: $source_pattern_id})
-            DELETE r
-            """,
-            {"source_pattern_id": source_pattern_id},
-        )
-        return moved
-
     def list_events(
         self,
         limit: int = 50,
@@ -1997,7 +1258,6 @@ class KuzuStore(GraphStore):
                         event.summary,
                         event.action,
                         event.causality,
-                        safe_json_dumps(event.location),
                         safe_json_dumps(event.payload),
                     ]
                 )
@@ -2052,50 +1312,6 @@ class KuzuStore(GraphStore):
         rows.sort(key=lambda item: (item[0], item[1].last_seen_at), reverse=True)
         return [context for _, context in rows[:limit]]
 
-    def list_patterns(
-        self,
-        limit: int = 50,
-        query: str = "",
-        statuses: Optional[list[str]] = None,
-    ) -> list[Pattern]:
-        params: dict[str, Any] = {"limit": int(max(limit, 1) * (6 if query else 1))}
-        filters = self._apply_status_filters("p", statuses, params)
-        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-        resp = self.conn.execute(
-            f"""
-            MATCH (p:Pattern)
-            {where_clause}
-            RETURN p.id, p.pattern_type, p.summary, p.prototype_features,
-                   p.support_count, p.confidence, p.stability_score, p.drift_score,
-                   p.created_at, p.updated_at, p.valid_from, p.valid_to,
-                   p.last_seen_at, p.status, p.embedding
-            ORDER BY p.last_seen_at DESC
-            LIMIT $limit
-            """,
-            params,
-        )
-        cols = [
-            "id", "pattern_type", "summary", "prototype_features",
-            "support_count", "confidence", "stability_score", "drift_score",
-            "created_at", "updated_at", "valid_from", "valid_to",
-            "last_seen_at", "status", "embedding",
-        ]
-        rows: list[tuple[float, Pattern]] = []
-        while resp.has_next():
-            pattern = Pattern.from_db_row(list(resp.get_next()), cols)
-            score = 1.0
-            if query:
-                score = self._text_similarity_score(
-                    f"{pattern.summary} {safe_json_dumps(pattern.prototype_features)}",
-                    query,
-                    [],
-                )
-                if score <= 0.0:
-                    continue
-            rows.append((score, pattern))
-        rows.sort(key=lambda item: (item[0], item[1].last_seen_at), reverse=True)
-        return [pattern for _, pattern in rows[:limit]]
-
     def list_event_context_edges(
         self,
         limit: int = 200,
@@ -2135,120 +1351,6 @@ class KuzuStore(GraphStore):
             )
         return rows
 
-    def list_event_pattern_edges(
-        self,
-        limit: int = 200,
-        event_statuses: Optional[list[str]] = None,
-        pattern_statuses: Optional[list[str]] = None,
-    ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": int(limit)}
-        filters: list[str] = []
-        filters = self._apply_status_filters("e", event_statuses, params, filters)
-        if pattern_statuses:
-            filters.append("p.status IN $pattern_statuses")
-            params["pattern_statuses"] = list(pattern_statuses)
-        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-        resp = self.conn.execute(
-            f"""
-            MATCH (e:Event)-[r:ABSTRACT_TO]->(p:Pattern)
-            {where_clause}
-            RETURN e.id, p.id, r.confidence, r.contribution_weight, r.last_reinforced_at
-            ORDER BY r.last_reinforced_at DESC
-            LIMIT $limit
-            """,
-            params,
-        )
-        rows = []
-        while resp.has_next():
-            row = resp.get_next()
-            rows.append(
-                {
-                    "event_id": row[0],
-                    "pattern_id": row[1],
-                    "confidence": float(row[2] or 0.0),
-                    "contribution_weight": float(row[3] or 0.0),
-                    "last_reinforced_at": int(row[4] or 0),
-                }
-            )
-        return rows
-
-    def list_next_edges(
-        self,
-        limit: int = 200,
-        event_statuses: Optional[list[str]] = None,
-    ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": int(limit)}
-        filters: list[str] = []
-        filters = self._apply_status_filters("a", event_statuses, params, filters)
-        if event_statuses:
-            filters.append("b.status IN $next_target_statuses")
-            params["next_target_statuses"] = list(event_statuses)
-        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-        resp = self.conn.execute(
-            f"""
-            MATCH (a:Event)-[r:NEXT]->(b:Event)
-            {where_clause}
-            RETURN a.id, b.id, r.confidence, r.score, r.relation_hint, r.last_seen_at, r.support_count
-            ORDER BY r.last_seen_at DESC
-            LIMIT $limit
-            """,
-            params,
-        )
-        rows = []
-        while resp.has_next():
-            row = resp.get_next()
-            rows.append(
-                {
-                    "from_event_id": row[0],
-                    "to_event_id": row[1],
-                    "confidence": float(row[2] or 0.0),
-                    "score": float(row[3] or 0.0),
-                    "relation_hint": row[4] or "",
-                    "last_seen_at": int(row[5] or 0),
-                    "support_count": int(row[6] or 0),
-                }
-            )
-        return rows
-
-    def list_event_relation_edges(
-        self,
-        limit: int = 200,
-        event_statuses: Optional[list[str]] = None,
-    ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": int(limit)}
-        filters: list[str] = []
-        filters = self._apply_status_filters("a", event_statuses, params, filters)
-        if event_statuses:
-            filters.append("b.status IN $event_rel_target_statuses")
-            params["event_rel_target_statuses"] = list(event_statuses)
-        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-        resp = self.conn.execute(
-            f"""
-            MATCH (a:Event)-[r:EVENT_REL]->(b:Event)
-            {where_clause}
-            RETURN a.id, b.id, r.relation_type, r.confidence, r.reason, r.source, r.last_seen_at, r.support_count
-            ORDER BY r.last_seen_at DESC
-            LIMIT $limit
-            """,
-            params,
-        )
-        rows = []
-        while resp.has_next():
-            row = resp.get_next()
-            rows.append(
-                {
-                    "from_event_id": row[0],
-                    "to_event_id": row[1],
-                    "relation_type": row[2] or "related_to",
-                    "confidence": float(row[3] or 0.0),
-                    "reason": row[4] or "",
-                    "source": row[5] or "",
-                    "last_seen_at": int(row[6] or 0),
-                    "support_count": int(row[7] or 0),
-                }
-            )
-        return rows
-
     # ==================== 统计 ====================
 
     def get_stats(self) -> dict[str, Any]:
@@ -2271,25 +1373,12 @@ class KuzuStore(GraphStore):
         resp = self.conn.execute("MATCH (c:Context) RETURN count(*)")
         stats["context_count"] = resp.get_next()[0] if resp.has_next() else 0
 
-        # 统计 Pattern
-        resp = self.conn.execute("MATCH (p:Pattern) RETURN count(*)")
-        stats["pattern_count"] = resp.get_next()[0] if resp.has_next() else 0
-
         # 统计 INVOLVES 关系
         resp = self.conn.execute("MATCH ()-[r:INVOLVES]->() RETURN count(r)")
         stats["involves_count"] = resp.get_next()[0] if resp.has_next() else 0
 
         resp = self.conn.execute("MATCH ()-[r:IN_REL]->() RETURN count(r)")
         stats["in_count"] = resp.get_next()[0] if resp.has_next() else 0
-
-        resp = self.conn.execute("MATCH ()-[r:NEXT]->() RETURN count(r)")
-        stats["next_count"] = resp.get_next()[0] if resp.has_next() else 0
-
-        resp = self.conn.execute("MATCH ()-[r:EVENT_REL]->() RETURN count(r)")
-        stats["event_relation_count"] = resp.get_next()[0] if resp.has_next() else 0
-
-        resp = self.conn.execute("MATCH ()-[r:ABSTRACT_TO]->() RETURN count(r)")
-        stats["abstract_to_count"] = resp.get_next()[0] if resp.has_next() else 0
 
         resp = self.conn.execute("MATCH ()-[r:EVENT_MERGE_TRACE]->() RETURN count(r)")
         stats["event_merge_trace_count"] = resp.get_next()[0] if resp.has_next() else 0

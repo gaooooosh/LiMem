@@ -4,7 +4,7 @@
 编排四阶段检索管道：
 1. 实体提取（LLM）
 2. 实体匹配（精确 + 模糊，索引兼容层）
-3. 双路图路径搜索 → 获取候选事件（Entity + Context/Pattern）
+3. 双路图路径搜索 → 获取候选事件（Entity + Context）
 4. 加权重排序
 5. LLM总结（可选）
 """
@@ -27,7 +27,6 @@ from ..config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     GENERATION_MODEL,
-    OFFLINE_MODE,
     SEARCH_TOP_K,
     SEARCH_MAX_TOKENS,
     SEARCH_TEMPERATURE,
@@ -98,7 +97,7 @@ class MemorySearcher:
         self.base_url = base_url or DASHSCOPE_BASE_URL
         self.generation_model = generation_model or GENERATION_MODEL
         self.dynamic_engine = dynamic_engine
-        self.offline_mode = OFFLINE_MODE if offline_mode is None else offline_mode
+        self.offline_mode = False if offline_mode is None else offline_mode
 
         # 配置DashScope（离线模式下跳过）
         if dashscope is not None:
@@ -142,15 +141,14 @@ class MemorySearcher:
         entities = self._extract_entities(query)
         print(f"🧩 Extracted entities: {entities}")
 
-        # Stage 2/3: 实体索引路 + Context/Pattern 语义路
+        # Stage 2/3: 实体索引路 + Context 语义路
         candidate_bundle = self._collect_candidates(query, entities)
         raw_events = candidate_bundle["raw_events"]
         print(
             "🔍 Found "
             f"{candidate_bundle['debug']['merged_candidate_count']} merged candidates "
             f"(entity={candidate_bundle['debug']['entity_route_hit_count']}, "
-            f"context={candidate_bundle['debug']['context_route_hit_count']}, "
-            f"pattern={candidate_bundle['debug']['pattern_route_hit_count']})"
+            f"context={candidate_bundle['debug']['context_route_hit_count']})"
         )
 
         if not raw_events:
@@ -207,8 +205,7 @@ class MemorySearcher:
             "🔍 Found "
             f"{candidate_bundle['debug']['merged_candidate_count']} merged candidates "
             f"(entity={candidate_bundle['debug']['entity_route_hit_count']}, "
-            f"context={candidate_bundle['debug']['context_route_hit_count']}, "
-            f"pattern={candidate_bundle['debug']['pattern_route_hit_count']})"
+            f"context={candidate_bundle['debug']['context_route_hit_count']})"
         )
 
         # Stage 4: 重排序
@@ -237,7 +234,6 @@ class MemorySearcher:
                 },
                 "entity_route_hit_count": candidate_bundle["debug"]["entity_route_hit_count"],
                 "context_route_hit_count": candidate_bundle["debug"]["context_route_hit_count"],
-                "pattern_route_hit_count": candidate_bundle["debug"]["pattern_route_hit_count"],
                 "merged_candidate_count": candidate_bundle["debug"]["merged_candidate_count"],
                 "raw_event_count": len(raw_events),
                 "ranked_event_count": len(ranked_events),
@@ -264,20 +260,17 @@ class MemorySearcher:
                 query_entities=entities,
                 limit=max(self.config.default_top_k * 4, 24),
             )
-            context_pattern_raw_events = self._events_to_raw_rows(
-                route_bundle["context_events"] + route_bundle["pattern_events"]
-            )
+            context_raw_events = self._events_to_raw_rows(route_bundle["context_events"])
         else:
             route_bundle = {
                 "entity_events": [],
                 "context_events": [],
-                "pattern_events": [],
                 "events": [],
             }
-            context_pattern_raw_events = []
+            context_raw_events = []
 
         merged_rows: dict[str, dict[str, Any]] = {}
-        for row in entity_raw_events + context_pattern_raw_events:
+        for row in entity_raw_events + context_raw_events:
             event_id = row.get("event_id", row.get("id", ""))
             if not event_id:
                 continue
@@ -312,7 +305,6 @@ class MemorySearcher:
             "debug": {
                 "entity_route_hit_count": len(entity_raw_events),
                 "context_route_hit_count": len(route_bundle.get("context_events", [])),
-                "pattern_route_hit_count": len(route_bundle.get("pattern_events", [])),
                 "merged_candidate_count": len(raw_events),
             },
         }
@@ -328,7 +320,6 @@ class MemorySearcher:
                     "action": event.action,
                     "causality": event.causality,
                     "participants": event.participants,
-                    "location": event.location,
                     "time_range": event.time_range,
                     "last_active": event.last_active,
                     "t_valid": event.last_active,
@@ -337,10 +328,8 @@ class MemorySearcher:
                     "t_invalid": None,
                     "status": event.status,
                     "support_count": event.support_count,
-                    "confidence": event.confidence,
-                    "salience": event.salience,
                     "entity_match_weights": {},
-                    "match_type": "context_or_pattern",
+                    "match_type": "context",
                 }
             )
         return rows
@@ -448,7 +437,6 @@ class MemorySearcher:
                 "action": event.action,
                 "causality": event.causality,
                 "participants": event.participants,
-                "location": event.location,
                 "time_range": event.time_range,
                 "last_active": event.last_active,
                 "t_valid": best_t_valid,
@@ -457,8 +445,6 @@ class MemorySearcher:
                 "t_invalid": t_invalid,
                 "status": event.status,
                 "support_count": event.support_count,
-                "confidence": event.confidence,
-                "salience": event.salience,
                 "entity_match_weights": weights,
                 "match_type": match_type,
             })

@@ -9,7 +9,7 @@
 5. 修剪/提升
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 import uuid
 import time
@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover - optional dependency for offline mode
     TextEmbedding = None
 
 from ..core.episode import Episode
-from ..core.event import Event, EventRelation, Consistency
+from ..core.event import Event, EventRelation
 from ..core.memory import IngestResult
 from ..config import (
     DASHSCOPE_API_KEY,
@@ -32,12 +32,7 @@ from ..config import (
     PRUNE_C_VALID_THRESHOLD,
     PRUNE_EVIDENCE_TOP_K,
 )
-from ..utils import (
-    hash_summary,
-    safe_json_dumps,
-    safe_json_loads,
-    time_bucket_from_ts,
-)
+from ..utils import hash_summary, time_bucket_from_ts
 from .extractor import LLMExtractor, ExtractionResult
 from .consolidator import Consolidator, ConsolidationResult
 
@@ -244,19 +239,6 @@ class MemoryBuilder:
         if not time_range.get("display_time_bucket", ""):
             time_range["display_time_bucket"] = time_bucket_from_ts(current_time)
 
-        # 处理 consistency 字段（可能是字符串或浮点数）
-        consistency_value = data.get("consistency", "uncertain")
-        if isinstance(consistency_value, (int, float)):
-            # 如果是浮点数，转换为对应的字符串
-            if consistency_value >= 0.8:
-                consistency_str = "consistent"
-            elif consistency_value <= 0.2:
-                consistency_str = "inconsistent"
-            else:
-                consistency_str = "uncertain"
-        else:
-            consistency_str = str(consistency_value)
-
         payload = dict(data)
         payload["episode_id"] = episode.id
         payload["episode_text"] = episode.content
@@ -271,18 +253,12 @@ class MemoryBuilder:
             time_range=time_range,
             last_active=current_time,
             participants=data.get("participants", []),
-            location=data.get("location", {}),
             evidence=data.get("evidence", []),
-            consistency=Consistency(consistency_str),
-            event_type=data.get("event_type", data.get("type", data.get("action", "generic"))),
             timestamp=current_time,
             created_at=current_time,
             updated_at=current_time,
             valid_from=current_time,
             payload=payload,
-            confidence=float(data.get("confidence", extraction.confidence if extraction else 0.7) or 0.7),
-            salience=float(data.get("salience", 0.5) or 0.5),
-            source=str(data.get("source", "llm_extraction")),
             status=str(data.get("status", "active")),
         )
 

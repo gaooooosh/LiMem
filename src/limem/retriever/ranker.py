@@ -111,7 +111,6 @@ class MemoryRanker:
                     action=event.get("action", ""),
                     causality=event.get("causality", ""),
                     participants=str(event.get("participants", "")),
-                    location=str(event.get("location", "")),
                     time_range=str(event.get("time_range", "")),
                     match_type=event.get("match_type", ""),
                     entity_match_weights=event.get("entity_match_weights"),
@@ -219,10 +218,9 @@ class MemoryRanker:
         entity_match_weights = event.get("entity_match_weights", {})
         entity_factor = self._calculate_entity_factor(entity_match_weights)
 
-        # 演化感知项（context/pattern/validity/drift/decay）
+        # 演化感知项（context/validity/drift/decay）
         evolution_score = float(event.get("evolution_score", 0.0) or 0.0)
         context_match = float(event.get("context_match", 0.0) or 0.0)
-        pattern_similarity = float(event.get("pattern_similarity", 0.0) or 0.0)
         validity = float(event.get("validity", 1.0) or 1.0)
         support_norm = float(event.get("support_norm", 0.0) or 0.0)
         drift_penalty = float(event.get("drift_penalty", 0.0) or 0.0)
@@ -232,7 +230,6 @@ class MemoryRanker:
             1.0
             + 0.25 * evolution_score
             + 0.10 * context_match
-            + 0.10 * pattern_similarity
             + 0.10 * validity
             + 0.05 * support_norm
             - 0.15 * drift_penalty
