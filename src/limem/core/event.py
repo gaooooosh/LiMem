@@ -48,20 +48,32 @@ class Event:
     # 核心语义字段
     summary: str
     id: str = ""  # 默认为空，__post_init__ 中根据 summary 生成
+    event_type: str = "generic"
     action: str = ""
     causality: str = ""
 
     # 时间信息
     time_range: dict[str, Any] = field(default_factory=dict)
+    timestamp: int = 0
     last_active: int = 0
+    created_at: int = 0
+    updated_at: int = 0
+    valid_from: int = 0
+    valid_to: Optional[int] = None
 
     # 参与者与位置
     participants: list[dict[str, Any]] = field(default_factory=list)
     location: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = field(default_factory=dict)
 
     # 证据与一致性
     evidence: list[dict[str, Any]] = field(default_factory=list)
     consistency: Consistency = Consistency.UNCERTAIN
+    salience: float = 0.5
+    confidence: float = 0.7
+    source: str = "llm_extraction"
+    status: str = "active"
+    support_count: int = 1
 
     # 向量嵌入
     embedding: Optional[list[float]] = None
@@ -74,6 +86,15 @@ class Event:
         # 确保 consistency 是枚举类型
         if isinstance(self.consistency, str):
             self.consistency = Consistency(self.consistency)
+
+        if self.timestamp <= 0:
+            self.timestamp = self.last_active
+        if self.created_at <= 0:
+            self.created_at = self.timestamp
+        if self.updated_at <= 0:
+            self.updated_at = self.last_active or self.timestamp
+        if self.valid_from <= 0:
+            self.valid_from = self.timestamp
 
     @classmethod
     def from_extraction(cls, data: dict[str, Any], current_time: int) -> "Event":
@@ -93,11 +114,20 @@ class Event:
             action=data.get("action", ""),
             causality=data.get("causality", ""),
             time_range=data.get("time_range", {}),
+            timestamp=current_time,
             last_active=current_time,
+            created_at=current_time,
+            updated_at=current_time,
+            valid_from=current_time,
             participants=data.get("participants", []),
             location=data.get("location", {}),
+            payload=data,
             evidence=data.get("evidence", []),
             consistency=Consistency(data.get("consistency", "uncertain")),
+            salience=float(data.get("salience", 0.5) or 0.5),
+            confidence=float(data.get("confidence", 0.7) or 0.7),
+            source=str(data.get("source", "llm_extraction")),
+            status=str(data.get("status", "active")),
         )
 
     @classmethod
@@ -121,11 +151,22 @@ class Event:
             action=data.get("action", ""),
             causality=data.get("causality", ""),
             time_range=safe_json_loads(data.get("time_range"), {}),
+            timestamp=data.get("timestamp", 0),
             last_active=data.get("last_active", 0),
+            created_at=data.get("created_at", 0),
+            updated_at=data.get("updated_at", 0),
+            valid_from=data.get("valid_from", 0),
+            valid_to=data.get("valid_to"),
             participants=safe_json_loads(data.get("participants"), []),
             location=safe_json_loads(data.get("location"), {}),
+            payload=safe_json_loads(data.get("payload"), {}),
             evidence=safe_json_loads(data.get("evidence"), []),
             consistency=Consistency(data.get("consistency", "uncertain")),
+            salience=float(data.get("salience", 0.5) or 0.5),
+            confidence=float(data.get("confidence", 0.7) or 0.7),
+            source=data.get("source", "llm_extraction"),
+            status=data.get("status", "active"),
+            support_count=int(data.get("support_count", 1) or 1),
             embedding=list(data.get("embedding", [])) if data.get("embedding") else None,
         )
 
@@ -151,11 +192,22 @@ class Event:
             action=self.action,
             causality=self.causality,
             time_range=self.time_range,
+            timestamp=self.timestamp,
             last_active=current_time,  # 刷新激活时间
+            created_at=self.created_at,
+            updated_at=current_time,
+            valid_from=self.valid_from,
+            valid_to=self.valid_to,
             participants=merged_participants,
             location=self.location,
+            payload=self.payload or other.payload,
             evidence=merged_evidence,
             consistency=self.consistency,
+            salience=max(self.salience, other.salience),
+            confidence=max(self.confidence, other.confidence),
+            source=self.source,
+            status=self.status,
+            support_count=self.support_count + other.support_count,
             embedding=self.embedding,  # 保留原嵌入
         )
 
@@ -173,11 +225,23 @@ class Event:
             "action": self.action,
             "causality": self.causality,
             "time_range": json.dumps(self.time_range, ensure_ascii=False),
+            "timestamp": self.timestamp,
             "last_active": self.last_active,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "valid_from": self.valid_from,
+            "valid_to": self.valid_to,
             "participants": json.dumps(self.participants, ensure_ascii=False),
             "location": json.dumps(self.location, ensure_ascii=False),
+            "payload": json.dumps(self.payload, ensure_ascii=False),
             "evidence": json.dumps(self.evidence, ensure_ascii=False),
             "consistency": self.consistency.value,
+            "salience": float(self.salience),
+            "confidence": float(self.confidence),
+            "source": self.source,
+            "status": self.status,
+            "support_count": int(self.support_count),
+            "event_type": self.event_type,
             "embedding": self.embedding,
         }
 

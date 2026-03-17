@@ -11,6 +11,7 @@
 from .extractor import (
     LLMExtractor,
     TwoStageExtractor,
+    HeuristicExtractor,
     ExtractionResult,
 )
 from .consolidator import Consolidator, ConsolidationResult
@@ -20,6 +21,7 @@ __all__ = [
     # Extractor
     "LLMExtractor",
     "TwoStageExtractor",
+    "HeuristicExtractor",
     "ExtractionResult",
     # Consolidator
     "Consolidator",

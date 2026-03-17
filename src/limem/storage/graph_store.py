@@ -252,6 +252,96 @@ class GraphStore(ABC):
         """
         pass
 
+    # ==================== Dynamic Evolution 扩展 ====================
+    # 默认提供可选扩展接口，子类按需实现。
+
+    def save_context(self, context: Any) -> None:
+        raise NotImplementedError("save_context is not implemented")
+
+    def get_context(self, context_id: str) -> Optional[Any]:
+        raise NotImplementedError("get_context is not implemented")
+
+    def update_context(self, context: Any) -> None:
+        raise NotImplementedError("update_context is not implemented")
+
+    def find_context_candidates(
+        self,
+        context_type: str,
+        subtype: str = "",
+        limit: int = 20,
+        only_active: bool = True,
+    ) -> list[Any]:
+        raise NotImplementedError("find_context_candidates is not implemented")
+
+    def save_pattern(self, pattern: Any) -> None:
+        raise NotImplementedError("save_pattern is not implemented")
+
+    def get_pattern(self, pattern_id: str) -> Optional[Any]:
+        raise NotImplementedError("get_pattern is not implemented")
+
+    def update_pattern(self, pattern: Any) -> None:
+        raise NotImplementedError("update_pattern is not implemented")
+
+    def find_pattern_candidates(
+        self,
+        pattern_type: str,
+        limit: int = 20,
+        only_active: bool = True,
+    ) -> list[Any]:
+        raise NotImplementedError("find_pattern_candidates is not implemented")
+
+    def link_event_to_context(
+        self,
+        event_id: str,
+        context_id: str,
+        confidence: float,
+        weight: float,
+        original_type: str,
+        timestamp: int,
+    ) -> None:
+        raise NotImplementedError("link_event_to_context is not implemented")
+
+    def link_next(
+        self,
+        from_event_id: str,
+        to_event_id: str,
+        confidence: float,
+        score: float,
+        relation_hint: str,
+        timestamp: int,
+    ) -> None:
+        raise NotImplementedError("link_next is not implemented")
+
+    def link_event_to_pattern(
+        self,
+        event_id: str,
+        pattern_id: str,
+        confidence: float,
+        contribution_weight: float,
+        timestamp: int,
+    ) -> None:
+        raise NotImplementedError("link_event_to_pattern is not implemented")
+
+    def get_recent_events(
+        self,
+        current_time: int,
+        window_seconds: int,
+        limit: int = 100,
+    ) -> list[Event]:
+        raise NotImplementedError("get_recent_events is not implemented")
+
+    def get_event_contexts(self, event_id: str) -> list[Any]:
+        raise NotImplementedError("get_event_contexts is not implemented")
+
+    def get_event_patterns(self, event_id: str) -> list[Any]:
+        raise NotImplementedError("get_event_patterns is not implemented")
+
+    def prune_weak_next_edges(self, min_score: float, stale_before: int) -> int:
+        raise NotImplementedError("prune_weak_next_edges is not implemented")
+
+    def archive_event(self, event_id: str, archived_at: int) -> None:
+        raise NotImplementedError("archive_event is not implemented")
+
     # ==================== 统计 ====================
 
     @abstractmethod

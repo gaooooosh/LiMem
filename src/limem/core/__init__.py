@@ -6,6 +6,8 @@
 
 from .episode import Episode
 from .event import Event, EventRelation, RankedEvent, Consistency
+from .context import Context
+from .pattern import Pattern
 from .entity import Entity
 from .memory import LTMemory, SearchResult, IngestResult
 
@@ -17,6 +19,8 @@ __all__ = [
     "EventRelation",
     "RankedEvent",
     "Consistency",
+    "Context",
+    "Pattern",
     # Entity
     "Entity",
     # Memory

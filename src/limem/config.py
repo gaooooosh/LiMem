@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 import os
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency
+    def load_dotenv(*args, **kwargs):
+        return False
 
 load_dotenv()
 
@@ -79,6 +83,59 @@ MAX_EPISODES = int(os.getenv("MAX_EPISODES", "6"))
 # DB / storage.
 DB_PATH = os.getenv("DB_PATH", "./DB/demo_db.kz")
 
+# =========================
+# Dynamic Evolution Graph Parameters
+# =========================
+# Master switch for the dynamic evolution pipeline.
+ENABLE_DYNAMIC_EVOLUTION = env_bool("ENABLE_DYNAMIC_EVOLUTION", True)
+
+# Write path: append-first Event ingestion.
+APPEND_FIRST_MODE = env_bool("APPEND_FIRST_MODE", True)
+
+# Context resolution thresholds.
+CONTEXT_REUSE_THRESHOLD = float(os.getenv("CONTEXT_REUSE_THRESHOLD", "0.62"))
+CONTEXT_CONFLICT_THRESHOLD = float(os.getenv("CONTEXT_CONFLICT_THRESHOLD", "0.72"))
+CONTEXT_CANDIDATE_LIMIT = int(os.getenv("CONTEXT_CANDIDATE_LIMIT", "24"))
+
+# Local NEXT evolution thresholds.
+NEXT_RECENT_WINDOW_SECONDS = int(os.getenv("NEXT_RECENT_WINDOW_SECONDS", "43200"))  # 12h
+NEXT_MAX_PREDECESSORS = int(os.getenv("NEXT_MAX_PREDECESSORS", "2"))
+NEXT_MIN_SCORE = float(os.getenv("NEXT_MIN_SCORE", "0.25"))
+
+# Pattern induction thresholds.
+PATTERN_ASSIGN_THRESHOLD = float(os.getenv("PATTERN_ASSIGN_THRESHOLD", "0.64"))
+PATTERN_DRIFT_THRESHOLD = float(os.getenv("PATTERN_DRIFT_THRESHOLD", "0.42"))
+PATTERN_SPLIT_DRIFT_THRESHOLD = float(os.getenv("PATTERN_SPLIT_DRIFT_THRESHOLD", "0.78"))
+PATTERN_MERGE_THRESHOLD = float(os.getenv("PATTERN_MERGE_THRESHOLD", "0.84"))
+PATTERN_CANDIDATE_LIMIT = int(os.getenv("PATTERN_CANDIDATE_LIMIT", "24"))
+
+# Reinforcement / decay controls.
+REINFORCEMENT_STEP = float(os.getenv("REINFORCEMENT_STEP", "0.06"))
+DECAY_STEP = float(os.getenv("DECAY_STEP", "0.04"))
+STALE_SECONDS = int(os.getenv("STALE_SECONDS", "2592000"))  # 30 days
+ARCHIVE_EVENT_SECONDS = int(os.getenv("ARCHIVE_EVENT_SECONDS", "7776000"))  # 90 days
+
+# Retrieval (evolution-aware) weights.
+RETRIEVAL_WEIGHT_EVENT_SIM = float(os.getenv("RETRIEVAL_WEIGHT_EVENT_SIM", "0.33"))
+RETRIEVAL_WEIGHT_CONTEXT = float(os.getenv("RETRIEVAL_WEIGHT_CONTEXT", "0.20"))
+RETRIEVAL_WEIGHT_PATTERN = float(os.getenv("RETRIEVAL_WEIGHT_PATTERN", "0.22"))
+RETRIEVAL_WEIGHT_RECENCY = float(os.getenv("RETRIEVAL_WEIGHT_RECENCY", "0.10"))
+RETRIEVAL_WEIGHT_VALIDITY = float(os.getenv("RETRIEVAL_WEIGHT_VALIDITY", "0.10"))
+RETRIEVAL_WEIGHT_SUPPORT = float(os.getenv("RETRIEVAL_WEIGHT_SUPPORT", "0.05"))
+
+# Consolidation / forgetting.
+ENABLE_AUTO_CONSOLIDATION = env_bool("ENABLE_AUTO_CONSOLIDATION", True)
+CONSOLIDATION_MIN_INTERVAL_SECONDS = int(
+    os.getenv("CONSOLIDATION_MIN_INTERVAL_SECONDS", "1800")
+)
+WEAK_EDGE_PRUNE_THRESHOLD = float(os.getenv("WEAK_EDGE_PRUNE_THRESHOLD", "0.18"))
+CONSOLIDATION_LOG_PATH = os.getenv(
+    "CONSOLIDATION_LOG_PATH", "./outputs/consolidation_log.jsonl"
+)
+
+# Offline mode allows testing without external LLM/embedding APIs.
+OFFLINE_MODE = env_bool("OFFLINE_MODE", False)
+
 # Visualization knobs.
 EXPORT_GRAPH = env_bool("EXPORT_GRAPH", True)
 EXPORT_EVERY_EPISODE = env_bool("EXPORT_EVERY_EPISODE", True)
@@ -87,4 +144,3 @@ INCLUDE_EPISODES_IN_GRAPH = env_bool("INCLUDE_EPISODES_IN_GRAPH", False)
 GRAPH_OUTPUT_DIR = os.getenv("GRAPH_OUTPUT_DIR", "./outputs")
 GRAPH_MAX_EVENTS = int(os.getenv("GRAPH_MAX_EVENTS", "0"))
 KUZU_EXPLORER_URL = os.getenv("KUZU_EXPLORER_URL", "")
-

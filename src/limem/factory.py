@@ -11,17 +11,21 @@ from .ltmemory_impl import LTMemoryImpl
 from .storage.kuzu_store import KuzuStore
 from .storage.graph_store import GraphStore
 from .builder.memory_builder import MemoryBuilder, BuilderConfig
-from .builder.extractor import TwoStageExtractor
+from .builder.extractor import TwoStageExtractor, HeuristicExtractor
 from .builder.consolidator import Consolidator
 from .retriever.memory_searcher import MemorySearcher, SearcherConfig
 from .retriever.entity_matcher import EntityMatcher
 from .retriever.ranker import MemoryRanker, RankerConfig
+from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
 from .config import (
+    APPEND_FIRST_MODE,
     DB_PATH,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
+    ENABLE_DYNAMIC_EVOLUTION,
     GENERATION_MODEL,
     EMBEDDING_MODEL,
+    OFFLINE_MODE,
     SIMILARITY_THRESHOLD,
     MERGE_WEIGHT_SEMANTIC,
     MERGE_WEIGHT_ENTITY,
@@ -77,6 +81,25 @@ class EmbeddingClient:
         return output.embeddings[0].embedding
 
 
+class HashEmbeddingClient:
+    """Deterministic local embedding fallback for offline mode."""
+
+    def __init__(self, dim: int = 1536):
+        self.dim = dim
+
+    def get_embedding(self, text: str) -> list[float]:
+        import hashlib
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        vec = [0.0] * self.dim
+        for i, b in enumerate(digest):
+            idx = i % self.dim
+            vec[idx] += (b / 255.0) * 2.0 - 1.0
+        norm = sum(x * x for x in vec) ** 0.5
+        if norm == 0:
+            return vec
+        return [x / norm for x in vec]
+
+
 def create_ltm_system(
     db_path: str = DB_PATH,
     config: Optional[dict[str, Any]] = None,
@@ -105,13 +128,17 @@ def create_ltm_system(
     config = config or {}
     api_key = api_key or DASHSCOPE_API_KEY
     base_url = base_url or DASHSCOPE_BASE_URL
+    offline_mode = bool(config.get("offline_mode", OFFLINE_MODE))
 
     # 1. 创建嵌入客户端
-    embedding_client = EmbeddingClient(
-        api_key=api_key,
-        base_url=base_url,
-        embedding_model=config.get("embedding_model", EMBEDDING_MODEL),
-    )
+    if offline_mode:
+        embedding_client = HashEmbeddingClient()
+    else:
+        embedding_client = EmbeddingClient(
+            api_key=api_key,
+            base_url=base_url,
+            embedding_model=config.get("embedding_model", EMBEDDING_MODEL),
+        )
 
     # 2. 创建存储层
     store = KuzuStore(
@@ -120,12 +147,15 @@ def create_ltm_system(
     )
 
     # 3. 创建提取器
-    extractor = TwoStageExtractor(
-        api_key=api_key,
-        base_url=base_url,
-        generation_model=config.get("generation_model", GENERATION_MODEL),
-        enable_thinking=config.get("enable_thinking", False),
-    )
+    if offline_mode:
+        extractor = HeuristicExtractor()
+    else:
+        extractor = TwoStageExtractor(
+            api_key=api_key,
+            base_url=base_url,
+            generation_model=config.get("generation_model", GENERATION_MODEL),
+            enable_thinking=config.get("enable_thinking", False),
+        )
 
     # 4. 创建合并器
     consolidator = Consolidator(
@@ -145,7 +175,18 @@ def create_ltm_system(
         prune_threshold=config.get("prune_threshold", PRUNE_C_VALID_THRESHOLD),
         prune_top_k=config.get("prune_top_k", PRUNE_EVIDENCE_TOP_K),
         default_user_id=config.get("default_user_id", DEFAULT_USER_ID),
+        append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
     )
+
+    dynamic_engine = None
+    if config.get("enable_dynamic_evolution", ENABLE_DYNAMIC_EVOLUTION):
+        dynamic_engine = DynamicEvolutionEngine(
+            store=store,
+            config=DynamicEvolutionConfig(
+                append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
+                enable_auto_consolidation=config.get("enable_auto_consolidation", True),
+            ),
+        )
 
     builder = MemoryBuilder(
         extractor=extractor,
@@ -155,6 +196,7 @@ def create_ltm_system(
         api_key=api_key,
         base_url=base_url,
         embedding_model=config.get("embedding_model", EMBEDDING_MODEL),
+        dynamic_engine=dynamic_engine,
     )
 
     # 6. 创建检索器组件
@@ -189,6 +231,8 @@ def create_ltm_system(
         api_key=api_key,
         base_url=base_url,
         generation_model=config.get("generation_model", GENERATION_MODEL),
+        dynamic_engine=dynamic_engine,
+        offline_mode=offline_mode,
     )
 
     # 7. 组装系统
@@ -198,6 +242,7 @@ def create_ltm_system(
         searcher=searcher,
         episode_ttl=config.get("episode_ttl", EPISODE_TTL),
         decay_rate=config.get("decay_rate", DECAY_RATE),
+        dynamic_engine=dynamic_engine,
     )
 
 

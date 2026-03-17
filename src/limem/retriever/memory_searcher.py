@@ -14,8 +14,12 @@ from typing import Any, Optional
 import json
 import time
 
-import dashscope
-from dashscope import Generation
+try:
+    import dashscope
+    from dashscope import Generation
+except Exception:  # pragma: no cover - optional dependency for offline mode
+    dashscope = None
+    Generation = None
 
 from ..core.memory import SearchResult
 from ..core.event import RankedEvent
@@ -23,6 +27,7 @@ from ..config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     GENERATION_MODEL,
+    OFFLINE_MODE,
     SEARCH_TOP_K,
     SEARCH_MAX_TOKENS,
     SEARCH_TEMPERATURE,
@@ -69,6 +74,8 @@ class MemorySearcher:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         generation_model: Optional[str] = None,
+        dynamic_engine=None,
+        offline_mode: Optional[bool] = None,
     ):
         """初始化记忆搜索器
 
@@ -90,12 +97,18 @@ class MemorySearcher:
         self.api_key = api_key or DASHSCOPE_API_KEY
         self.base_url = base_url or DASHSCOPE_BASE_URL
         self.generation_model = generation_model or GENERATION_MODEL
+        self.dynamic_engine = dynamic_engine
+        self.offline_mode = OFFLINE_MODE if offline_mode is None else offline_mode
 
-        # 配置DashScope
-        dashscope.base_http_api_url = self.base_url
-        if not self.api_key or self.api_key in {"YOUR_API_KEY", "sk-xxx"}:
+        # 配置DashScope（离线模式下跳过）
+        if dashscope is not None:
+            dashscope.base_http_api_url = self.base_url
+        if (not self.offline_mode) and (not self.api_key or self.api_key in {"YOUR_API_KEY", "sk-xxx"}):
             raise ValueError("Set DASHSCOPE_API_KEY in .env or environment.")
-        dashscope.api_key = self.api_key
+        if (not self.offline_mode) and (Generation is None):
+            raise ImportError("dashscope is required for online MemorySearcher mode.")
+        if (not self.offline_mode) and dashscope is not None:
+            dashscope.api_key = self.api_key
 
         # 加载提示词
         self._entity_extraction_system = load_prompt("entity_extraction_system.txt")
@@ -152,6 +165,12 @@ class MemorySearcher:
 
         # Stage 3: 图路径搜索
         raw_events = self._fetch_events(match_results)
+        if self.dynamic_engine:
+            raw_events = self.dynamic_engine.enrich_raw_events_for_retrieval(
+                query=query,
+                raw_events=raw_events,
+                query_entities=entities,
+            )
         print(f"🔍 Found {len(raw_events)} events from graph")
 
         if not raw_events:
@@ -236,6 +255,12 @@ class MemorySearcher:
 
         # Stage 3: 图路径搜索
         raw_events = self._fetch_events(match_results)
+        if self.dynamic_engine:
+            raw_events = self.dynamic_engine.enrich_raw_events_for_retrieval(
+                query=query,
+                raw_events=raw_events,
+                query_entities=entities,
+            )
         print(f"🔍 Found {len(raw_events)} events from graph")
 
         # Stage 4: 重排序
@@ -286,6 +311,9 @@ class MemorySearcher:
         """
         user_msg = self._entity_extraction_user.format(query=query)
 
+        if self.offline_mode or Generation is None:
+            return self._extract_entities_fallback(query)
+
         resp = Generation.call(
             api_key=self.api_key,
             model=self.generation_model,
@@ -299,7 +327,7 @@ class MemorySearcher:
 
         if resp.status_code != 200:
             print(f"⚠️ Entity extraction failed: {resp.message}")
-            return []
+            return self._extract_entities_fallback(query)
 
         content = resp.output.choices[0].message.content.strip()
 
@@ -317,6 +345,11 @@ class MemorySearcher:
         entities = self._filter_entities(entities)
 
         return entities
+
+    def _extract_entities_fallback(self, query: str) -> list[str]:
+        import re
+        tokens = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_]{1,20}|\d{2,}", query)
+        return self._filter_entities(tokens)
 
     def _filter_entities(self, entities: list[str]) -> list[str]:
         """过滤实体
@@ -385,12 +418,26 @@ class MemorySearcher:
         for event in events:
             event_id = event.id
             event_entities = self.store.get_event_entities(event_id)
+            relations = self.store.get_event_relations(event_id)
+            relation_by_entity = {r.entity_id: r for r in relations}
 
             # 计算此事件的实体匹配权重
             weights = {}
+            best_c_valid = 1
+            best_t_valid = event.last_active
+            t_expired = None
+            t_invalid = None
             for entity_id in event_entities:
                 if entity_id in matched_db_entities:
                     weights[entity_id] = matched_db_entities[entity_id]
+                    rel = relation_by_entity.get(entity_id)
+                    if rel:
+                        best_c_valid = max(best_c_valid, rel.c_valid or 1)
+                        best_t_valid = max(best_t_valid, rel.t_valid or event.last_active)
+                        if rel.t_expired is not None:
+                            t_expired = rel.t_expired
+                        if rel.t_invalid is not None:
+                            t_invalid = rel.t_invalid
 
             # 确定匹配类型
             match_type = self._determine_match_type(weights)
@@ -405,10 +452,14 @@ class MemorySearcher:
                 "location": event.location,
                 "time_range": event.time_range,
                 "last_active": event.last_active,
-                "t_valid": event.last_active,  # 使用 last_active 作为 t_valid
-                "c_valid": 1,  # 默认值，实际应该从关系获取
-                "t_expired": None,
-                "t_invalid": None,
+                "t_valid": best_t_valid,
+                "c_valid": best_c_valid,
+                "t_expired": t_expired,
+                "t_invalid": t_invalid,
+                "status": event.status,
+                "support_count": event.support_count,
+                "confidence": event.confidence,
+                "salience": event.salience,
                 "entity_match_weights": weights,
                 "match_type": match_type,
             })
@@ -451,6 +502,10 @@ class MemorySearcher:
         if not events:
             return "抱歉，我没有找到相关的记忆来回答这个问题。"
 
+        if self.offline_mode:
+            bullets = [f"- {e.summary}" for e in events[:3]]
+            return "根据当前记忆检索到的相关事件：\n" + "\n".join(bullets)
+
         # 格式化事件上下文
         events_context = []
         for i, event in enumerate(events):
@@ -470,6 +525,10 @@ class MemorySearcher:
             events_context=events_str,
             query=query,
         )
+
+        if self.offline_mode or Generation is None:
+            bullets = [f"- {e.summary}" for e in events[:3]]
+            return "根据当前记忆检索到的相关事件：\n" + "\n".join(bullets)
 
         resp = Generation.call(
             api_key=self.api_key,

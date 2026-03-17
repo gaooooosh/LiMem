@@ -7,9 +7,14 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
+import time
 
-import dashscope
-from dashscope import Generation
+try:
+    import dashscope
+    from dashscope import Generation
+except Exception:  # pragma: no cover - optional dependency for offline mode
+    dashscope = None
+    Generation = None
 
 from ..config import (
     DASHSCOPE_API_KEY,
@@ -86,6 +91,9 @@ class TwoStageExtractor(LLMExtractor):
         self.base_url = base_url or DASHSCOPE_BASE_URL
         self.generation_model = generation_model or GENERATION_MODEL
         self.enable_thinking = enable_thinking or ENABLE_THINKING
+
+        if dashscope is None or Generation is None:
+            raise ImportError("dashscope is required for TwoStageExtractor. Use HeuristicExtractor in offline mode.")
 
         # 配置 DashScope
         dashscope.base_http_api_url = self.base_url
@@ -194,3 +202,69 @@ class TwoStageExtractor(LLMExtractor):
             entities = []
 
         return entities
+
+
+class HeuristicExtractor(LLMExtractor):
+    """轻量规则提取器（离线模式）。
+
+    用于端侧/测试环境，避免依赖外部 LLM 服务。
+    """
+
+    def extract(self, text: str) -> ExtractionResult:
+        import re
+        now_ts = int(time.time())
+
+        # 规则摘要：优先截取“用户说/车机回答”片段
+        summary = text.strip()
+        if "->" in summary:
+            left, right = summary.split("->", 1)
+            summary = f"{left.strip()} -> {right.strip()}"
+        summary = summary[:180]
+
+        # 粗粒度 action 判定
+        action = "interaction"
+        action_hints = [
+            ("导航", "navigation"),
+            ("播放", "media_play"),
+            ("暂停", "media_pause"),
+            ("开会", "meeting_mode"),
+            ("勿扰", "do_not_disturb"),
+            ("温度", "climate"),
+            ("空调", "climate"),
+            ("风量", "climate"),
+        ]
+        for token, action_name in action_hints:
+            if token in text:
+                action = action_name
+                break
+
+        # 轻量实体提取：中文连续词 + 英文词 + 数字短词
+        candidates = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_]{1,20}|\d{2,}", text)
+        stop = {"用户", "车机", "回答", "左右", "时间", "时候"}
+        entities = []
+        for c in candidates:
+            c = c.strip()
+            if not c or c in stop:
+                continue
+            if c not in entities:
+                entities.append(c)
+
+        event_data = {
+            "summary": summary,
+            "action": action,
+            "causality": "",
+            "time_range": {
+                "start": now_ts,
+                "end": now_ts,
+                "display_time_bucket": "",
+            },
+            "participants": [{"role": "用户", "seat": ""}],
+            "location": {"geo_context": "车内", "digital_context": "车机"},
+            "evidence": [{"source": "heuristic", "snippet": text[:160], "timestamp": now_ts, "confidence": 0.7}],
+            "consistency": "uncertain",
+            "salience": 0.5,
+            "confidence": 0.65,
+            "source": "heuristic_extractor",
+            "event_type": action,
+        }
+        return ExtractionResult(event_data=event_data, entities=entities, confidence=0.65)

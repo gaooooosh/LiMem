@@ -34,6 +34,7 @@ class LTMemoryImpl(LTMemory):
         searcher: MemorySearcher,
         episode_ttl: int = EPISODE_TTL,
         decay_rate: float = DECAY_RATE,
+        dynamic_engine=None,
     ):
         """初始化长时记忆系统
 
@@ -49,6 +50,7 @@ class LTMemoryImpl(LTMemory):
         self.searcher = searcher
         self.episode_ttl = episode_ttl
         self.decay_rate = decay_rate
+        self.dynamic_engine = dynamic_engine
 
     def ingest(self, episode: Episode) -> IngestResult:
         """摄入Episode
@@ -153,6 +155,25 @@ class LTMemoryImpl(LTMemory):
             包含事件数、实体数等统计信息的字典
         """
         return self.store.get_stats()
+
+    def retrieve_memories(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        """Evolution-aware retrieval output for edge-side small models."""
+        if not self.dynamic_engine:
+            search_result = self.search(query=query, top_k=top_k, generate_answer=False)
+            return [
+                {
+                    "event_id": item.event_id,
+                    "summary": item.summary,
+                    "weight": item.weight,
+                }
+                for item in search_result.top_k_events
+            ]
+        return self.dynamic_engine.retrieve_memories(query=query, top_k=top_k)
+
+    def run_consolidation(self) -> dict[str, int]:
+        if not self.dynamic_engine:
+            return {}
+        return self.dynamic_engine.run_consolidation()
 
     # ==================== 便捷方法 ====================
 

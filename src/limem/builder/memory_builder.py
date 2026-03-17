@@ -12,8 +12,12 @@
 from dataclasses import dataclass, field
 from typing import Any, Optional
 import uuid
+import time
 
-from dashscope import TextEmbedding
+try:
+    from dashscope import TextEmbedding
+except Exception:  # pragma: no cover - optional dependency for offline mode
+    TextEmbedding = None
 
 from ..core.episode import Episode
 from ..core.event import Event, EventRelation, Consistency
@@ -23,6 +27,7 @@ from ..config import (
     DASHSCOPE_BASE_URL,
     EMBEDDING_MODEL,
     DEFAULT_USER_ID,
+    APPEND_FIRST_MODE,
     PRUNE_C_VALID_THRESHOLD,
     PRUNE_EVIDENCE_TOP_K,
 )
@@ -44,11 +49,13 @@ class BuilderConfig:
         prune_threshold: 修剪阈值（c_valid）
         prune_top_k: 证据修剪数量
         default_user_id: 默认用户ID
+        append_first_mode: 是否启用append-first事件写入
     """
 
     prune_threshold: int = PRUNE_C_VALID_THRESHOLD
     prune_top_k: int = PRUNE_EVIDENCE_TOP_K
     default_user_id: str = DEFAULT_USER_ID
+    append_first_mode: bool = APPEND_FIRST_MODE
 
 
 class MemoryBuilder:
@@ -77,6 +84,7 @@ class MemoryBuilder:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         embedding_model: Optional[str] = None,
+        dynamic_engine=None,
     ):
         """初始化记忆构建器
 
@@ -98,6 +106,7 @@ class MemoryBuilder:
         self.api_key = api_key or DASHSCOPE_API_KEY
         self.base_url = base_url or DASHSCOPE_BASE_URL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
+        self.dynamic_engine = dynamic_engine
 
     def build(self, episode: Episode) -> IngestResult:
         """从Episode构建记忆
@@ -130,43 +139,53 @@ class MemoryBuilder:
         # Step 3: 生成嵌入向量
         embedding = self._get_embedding(event.summary)
 
-        # Step 4: 相似度搜索
-        consolidation = self.consolidator.find_similar_event(
-            embedding=embedding,
-            entities=entities,
-            action=event.action,
-            current_time=current_time,
-        )
-
-        if consolidation.similarity_score > 0:
-            print(f"🔎 Top match (combined={consolidation.similarity_score:.4f})")
-            if consolidation.debug_info:
-                debug = consolidation.debug_info
-                print(
-                    f"   └─ semantic={debug.get('semantic', 0):.3f}, "
-                    f"entity={debug.get('entity', 0):.3f}, "
-                    f"time={debug.get('time', 0):.3f}, "
-                    f"action={debug.get('action', 0):.3f}"
-                )
-
-        # Step 5: 合并或创建
-        if consolidation.should_merge:
-            # 合并到现有事件
-            event = self._merge_event(
-                event_id=consolidation.target_event_id,
-                incoming_event=event,
-                embedding=embedding,
-                current_time=current_time,
-            )
-            is_new = False
-            print(f"🔍 Merged into existing memory: {consolidation.target_event_id[:8]}...")
-        else:
-            # 创建新事件
-            event.id = hash_summary(event.summary)
+        # Step 4/5: append-first or legacy consolidation.
+        if self.config.append_first_mode:
+            event.id = self._append_first_event_id(event)
             event.embedding = embedding
+            event.timestamp = event.timestamp or current_time
+            event.created_at = event.created_at or current_time
+            event.updated_at = current_time
+            event.valid_from = event.valid_from or current_time
+            event.status = event.status or "active"
             self.store.save_event(event)
             is_new = True
-            print(f"🆕 Created new memory: {event.id[:8]}...")
+            consolidation = ConsolidationResult(should_merge=False)
+            print(f"🆕 Append-first event created: {event.id[:12]}...")
+        else:
+            consolidation = self.consolidator.find_similar_event(
+                embedding=embedding,
+                entities=entities,
+                action=event.action,
+                current_time=current_time,
+            )
+
+            if consolidation.similarity_score > 0:
+                print(f"🔎 Top match (combined={consolidation.similarity_score:.4f})")
+                if consolidation.debug_info:
+                    debug = consolidation.debug_info
+                    print(
+                        f"   └─ semantic={debug.get('semantic', 0):.3f}, "
+                        f"entity={debug.get('entity', 0):.3f}, "
+                        f"time={debug.get('time', 0):.3f}, "
+                        f"action={debug.get('action', 0):.3f}"
+                    )
+
+            if consolidation.should_merge:
+                event = self._merge_event(
+                    event_id=consolidation.target_event_id,
+                    incoming_event=event,
+                    embedding=embedding,
+                    current_time=current_time,
+                )
+                is_new = False
+                print(f"🔍 Merged into existing memory: {consolidation.target_event_id[:8]}...")
+            else:
+                event.id = hash_summary(event.summary)
+                event.embedding = embedding
+                self.store.save_event(event)
+                is_new = True
+                print(f"🆕 Created new memory: {event.id[:8]}...")
 
         # Step 6: 创建Event → Episode链接
         self.store.link_event_to_episode(event.id, episode.id)
@@ -177,6 +196,10 @@ class MemoryBuilder:
             entities=entities,
             current_time=current_time,
         )
+
+        # Dynamic evolution updates are strictly local and incremental.
+        if self.dynamic_engine:
+            self.dynamic_engine.evolve_existing_events([event])
 
         return IngestResult(
             event=event,
@@ -241,6 +264,16 @@ class MemoryBuilder:
             location=data.get("location", {}),
             evidence=data.get("evidence", []),
             consistency=Consistency(consistency_str),
+            event_type=data.get("event_type", data.get("type", data.get("action", "generic"))),
+            timestamp=current_time,
+            created_at=current_time,
+            updated_at=current_time,
+            valid_from=current_time,
+            payload=data,
+            confidence=float(data.get("confidence", extraction.confidence if extraction else 0.7) or 0.7),
+            salience=float(data.get("salience", 0.5) or 0.5),
+            source=str(data.get("source", "llm_extraction")),
+            status=str(data.get("status", "active")),
         )
 
     def _merge_event(
@@ -386,6 +419,17 @@ class MemoryBuilder:
         Returns:
             嵌入向量
         """
+        if TextEmbedding is None:
+            # Offline deterministic embedding fallback
+            import hashlib
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
+            dim = 1536
+            vec = [0.0] * dim
+            for i, b in enumerate(digest):
+                vec[i % dim] += (b / 255.0) * 2.0 - 1.0
+            norm = sum(v * v for v in vec) ** 0.5
+            return [v / norm for v in vec] if norm else vec
+
         import dashscope
         dashscope.base_http_api_url = self.base_url
         dashscope.api_key = self.api_key
@@ -409,3 +453,8 @@ class MemoryBuilder:
         if isinstance(entity, dict):
             return entity.get("name")
         return str(entity) if entity else None
+
+    def _append_first_event_id(self, event: Event) -> str:
+        base = event.id or hash_summary(event.summary or uuid.uuid4().hex)
+        ts = event.timestamp or event.last_active or int(time.time())
+        return f"{base[:20]}_{ts}_{uuid.uuid4().hex[:6]}"

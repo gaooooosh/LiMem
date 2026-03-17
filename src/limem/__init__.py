@@ -25,6 +25,8 @@ from .core import (
     EventRelation,
     RankedEvent,
     Consistency,
+    Context,
+    Pattern,
     Entity,
     LTMemory,
     SearchResult,
@@ -41,6 +43,7 @@ from .storage import GraphStore, KuzuStore
 from .builder import (
     LLMExtractor,
     TwoStageExtractor,
+    HeuristicExtractor,
     ExtractionResult,
     Consolidator,
     ConsolidationResult,
@@ -61,15 +64,25 @@ from .retriever import (
 
 # ==================== 系统实现 ====================
 from .ltmemory_impl import LTMemoryImpl
+from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
+from .migration import migrate_to_dynamic_graph, MigrationReport, LegacyEdgeAdapter
 
 # ==================== 兼容旧版API ====================
-from .ltm import ResearchLTM
-from .search import LTMSearcher, RetrievalConfig
-from .models import (
-    EpisodicEventFrame,
-    ContextSnapshot,
-    ProactiveProposal,
-)
+try:
+    from .ltm import ResearchLTM
+    from .search import LTMSearcher, RetrievalConfig
+    from .models import (
+        EpisodicEventFrame,
+        ContextSnapshot,
+        ProactiveProposal,
+    )
+except Exception:  # pragma: no cover - optional legacy dependencies
+    ResearchLTM = None
+    LTMSearcher = None
+    RetrievalConfig = None
+    EpisodicEventFrame = None
+    ContextSnapshot = None
+    ProactiveProposal = None
 
 # ==================== 数据库和工具 ====================
 from .db import open_connection, init_db
@@ -109,6 +122,34 @@ from .config import (
     MAX_EPISODES,
     # 数据库路径
     DB_PATH,
+    ENABLE_DYNAMIC_EVOLUTION,
+    APPEND_FIRST_MODE,
+    CONTEXT_REUSE_THRESHOLD,
+    CONTEXT_CONFLICT_THRESHOLD,
+    CONTEXT_CANDIDATE_LIMIT,
+    NEXT_RECENT_WINDOW_SECONDS,
+    NEXT_MAX_PREDECESSORS,
+    NEXT_MIN_SCORE,
+    PATTERN_ASSIGN_THRESHOLD,
+    PATTERN_DRIFT_THRESHOLD,
+    PATTERN_SPLIT_DRIFT_THRESHOLD,
+    PATTERN_MERGE_THRESHOLD,
+    PATTERN_CANDIDATE_LIMIT,
+    REINFORCEMENT_STEP,
+    DECAY_STEP,
+    STALE_SECONDS,
+    ARCHIVE_EVENT_SECONDS,
+    RETRIEVAL_WEIGHT_EVENT_SIM,
+    RETRIEVAL_WEIGHT_CONTEXT,
+    RETRIEVAL_WEIGHT_PATTERN,
+    RETRIEVAL_WEIGHT_RECENCY,
+    RETRIEVAL_WEIGHT_VALIDITY,
+    RETRIEVAL_WEIGHT_SUPPORT,
+    ENABLE_AUTO_CONSOLIDATION,
+    CONSOLIDATION_MIN_INTERVAL_SECONDS,
+    WEAK_EDGE_PRUNE_THRESHOLD,
+    CONSOLIDATION_LOG_PATH,
+    OFFLINE_MODE,
 )
 
 __all__ = [
@@ -118,6 +159,8 @@ __all__ = [
     "EventRelation",
     "RankedEvent",
     "Consistency",
+    "Context",
+    "Pattern",
     "Entity",
     "LTMemory",
     "SearchResult",
@@ -132,6 +175,7 @@ __all__ = [
     # ===== 构建层 =====
     "LLMExtractor",
     "TwoStageExtractor",
+    "HeuristicExtractor",
     "ExtractionResult",
     "Consolidator",
     "ConsolidationResult",
@@ -147,6 +191,11 @@ __all__ = [
     "SearcherConfig",
     # ===== 系统实现 =====
     "LTMemoryImpl",
+    "DynamicEvolutionEngine",
+    "DynamicEvolutionConfig",
+    "migrate_to_dynamic_graph",
+    "MigrationReport",
+    "LegacyEdgeAdapter",
     # ===== 兼容旧版 =====
     "ResearchLTM",
     "LTMSearcher",
@@ -186,6 +235,34 @@ __all__ = [
     "TEST_DATASET_KEY",
     "MAX_EPISODES",
     "DB_PATH",
+    "ENABLE_DYNAMIC_EVOLUTION",
+    "APPEND_FIRST_MODE",
+    "CONTEXT_REUSE_THRESHOLD",
+    "CONTEXT_CONFLICT_THRESHOLD",
+    "CONTEXT_CANDIDATE_LIMIT",
+    "NEXT_RECENT_WINDOW_SECONDS",
+    "NEXT_MAX_PREDECESSORS",
+    "NEXT_MIN_SCORE",
+    "PATTERN_ASSIGN_THRESHOLD",
+    "PATTERN_DRIFT_THRESHOLD",
+    "PATTERN_SPLIT_DRIFT_THRESHOLD",
+    "PATTERN_MERGE_THRESHOLD",
+    "PATTERN_CANDIDATE_LIMIT",
+    "REINFORCEMENT_STEP",
+    "DECAY_STEP",
+    "STALE_SECONDS",
+    "ARCHIVE_EVENT_SECONDS",
+    "RETRIEVAL_WEIGHT_EVENT_SIM",
+    "RETRIEVAL_WEIGHT_CONTEXT",
+    "RETRIEVAL_WEIGHT_PATTERN",
+    "RETRIEVAL_WEIGHT_RECENCY",
+    "RETRIEVAL_WEIGHT_VALIDITY",
+    "RETRIEVAL_WEIGHT_SUPPORT",
+    "ENABLE_AUTO_CONSOLIDATION",
+    "CONSOLIDATION_MIN_INTERVAL_SECONDS",
+    "WEAK_EDGE_PRUNE_THRESHOLD",
+    "CONSOLIDATION_LOG_PATH",
+    "OFFLINE_MODE",
 ]
 
 # 版本信息

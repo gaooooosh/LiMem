@@ -46,6 +46,7 @@ class WeightDebugInfo:
     base_weight: float
     temporal_factor: float
     entity_factor: float
+    evolution_factor: float = 1.0
 
 
 class MemoryRanker:
@@ -217,8 +218,28 @@ class MemoryRanker:
         entity_match_weights = event.get("entity_match_weights", {})
         entity_factor = self._calculate_entity_factor(entity_match_weights)
 
+        # 演化感知项（context/pattern/validity/drift/decay）
+        evolution_score = float(event.get("evolution_score", 0.0) or 0.0)
+        context_match = float(event.get("context_match", 0.0) or 0.0)
+        pattern_similarity = float(event.get("pattern_similarity", 0.0) or 0.0)
+        validity = float(event.get("validity", 1.0) or 1.0)
+        support_norm = float(event.get("support_norm", 0.0) or 0.0)
+        drift_penalty = float(event.get("drift_penalty", 0.0) or 0.0)
+        decay_penalty = float(event.get("decay_penalty", 0.0) or 0.0)
+        evolution_factor = max(
+            0.1,
+            1.0
+            + 0.25 * evolution_score
+            + 0.10 * context_match
+            + 0.10 * pattern_similarity
+            + 0.10 * validity
+            + 0.05 * support_norm
+            - 0.15 * drift_penalty
+            - 0.10 * decay_penalty,
+        )
+
         # 综合权重
-        weight = base_weight * temporal_factor * entity_factor
+        weight = base_weight * temporal_factor * entity_factor * evolution_factor
 
         debug = WeightDebugInfo(
             event_id=event_id,
@@ -235,6 +256,7 @@ class MemoryRanker:
             base_weight=base_weight,
             temporal_factor=temporal_factor,
             entity_factor=entity_factor,
+            evolution_factor=evolution_factor,
         )
 
         return weight, debug
