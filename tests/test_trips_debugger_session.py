@@ -41,6 +41,7 @@ class TestTripsDebuggerSession(unittest.TestCase):
                     offline_mode=True,
                     append_first_mode=True,
                     snapshot_limit=20,
+                    auto_merge_after_write=False,
                 )
             )
 
@@ -72,11 +73,25 @@ class TestTripsDebuggerSession(unittest.TestCase):
                 },
             )["result"]["item"]["id"]
 
-            merge_result = session.merge_context(
-                canonical_context_id=context_id,
-                merged_context_id=second_context,
+            preview = session.auto_merge(
+                scope="context",
+                strategy="heuristic",
+                dry_run=True,
+                max_pairs=5,
             )
-            self.assertEqual(merge_result["result"]["merged_context"]["status"], "merged")
+            self.assertGreaterEqual(preview["result"]["context_candidates"], 1)
+
+            merge_result = session.auto_merge(
+                scope="context",
+                strategy="heuristic",
+                dry_run=False,
+                max_pairs=5,
+            )
+            self.assertGreaterEqual(merge_result["result"]["merged_contexts"], 1)
+            self.assertEqual(
+                merge_result["state"]["latest_auto_merge"]["resolved_strategy"],
+                "heuristic",
+            )
             self.assertGreaterEqual(len(merge_result["state"]["operation_log"]), 1)
 
 

@@ -47,11 +47,15 @@ class ResetRequest(BaseModel):
 class WriteSelectedRequest(BaseModel):
     episode_indexes: list[int] = Field(default_factory=list)
     allow_replay: bool = False
+    auto_merge: bool = False
+    merge_strategy: str = "auto"
 
 
 class WriteNextRequest(BaseModel):
     count: int = 1
     allow_replay: bool = False
+    auto_merge: bool = False
+    merge_strategy: str = "auto"
 
 
 class ManualWriteRequest(BaseModel):
@@ -59,6 +63,8 @@ class ManualWriteRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     entity_ids: list[Any] = Field(default_factory=list)
     evolve: bool = True
+    auto_merge: bool = False
+    merge_strategy: str = "auto"
 
 
 class MergeEventRequest(BaseModel):
@@ -73,6 +79,13 @@ class MergeContextRequest(BaseModel):
     merged_context_id: str
 
 
+class AutoMergeRequest(BaseModel):
+    scope: str = "all"
+    strategy: str = "auto"
+    dry_run: bool = False
+    max_pairs: int = 10
+
+
 @dataclass
 class TripsDebuggerConfig:
     trips_path: str
@@ -84,6 +97,8 @@ class TripsDebuggerConfig:
     max_items: int = 0
     sort_by_time: bool = True
     enable_auto_consolidation: bool = False
+    default_merge_strategy: str = "auto"
+    auto_merge_after_write: bool = True
 
 
 class TripsDebuggerSession:
@@ -100,6 +115,7 @@ class TripsDebuggerSession:
         )
         self._written_indices: set[int] = set()
         self._operation_log: list[dict[str, Any]] = []
+        self._latest_auto_merge: dict[str, Any] | None = None
         self._ltm = None
         self.reset(clear_db=True)
 
@@ -108,6 +124,7 @@ class TripsDebuggerSession:
             self._dispose_ltm(clear_db=clear_db)
             self._written_indices = set()
             self._operation_log = []
+            self._latest_auto_merge = None
             self._ltm = create_ltm(
                 db_path=self.config.db_path,
                 config={
@@ -115,6 +132,7 @@ class TripsDebuggerSession:
                     "enable_dynamic_evolution": True,
                     "append_first_mode": self.config.append_first_mode,
                     "enable_auto_consolidation": self.config.enable_auto_consolidation,
+                    "merge_decision_strategy": self.config.default_merge_strategy,
                     "generate_answer": False,
                     "search_top_k": 5,
                 },
@@ -172,7 +190,13 @@ class TripsDebuggerSession:
                 ),
             }
 
-    def write_selected(self, episode_indexes: list[int], allow_replay: bool = False) -> dict[str, Any]:
+    def write_selected(
+        self,
+        episode_indexes: list[int],
+        allow_replay: bool = False,
+        auto_merge: Optional[bool] = None,
+        merge_strategy: str = "auto",
+    ) -> dict[str, Any]:
         with self._lock:
             if self._ltm is None:
                 raise RuntimeError("Session is not initialized")
@@ -207,16 +231,33 @@ class TripsDebuggerSession:
                 }
                 results.append(result)
                 self._append_log(action="write_episode", detail=result)
+            merge_report = self._run_auto_merge_locked(
+                enabled=self.config.auto_merge_after_write if auto_merge is None else bool(auto_merge),
+                strategy=merge_strategy,
+                trigger="write_selected",
+            )
             return {
                 "results": results,
+                "auto_merge": merge_report,
                 "state": self._build_state(),
             }
 
-    def write_next(self, count: int = 1, allow_replay: bool = False) -> dict[str, Any]:
+    def write_next(
+        self,
+        count: int = 1,
+        allow_replay: bool = False,
+        auto_merge: Optional[bool] = None,
+        merge_strategy: str = "auto",
+    ) -> dict[str, Any]:
         with self._lock:
             pending = [index for index in range(len(self._episodes)) if index not in self._written_indices]
             target = pending[: max(int(count), 0)]
-        return self.write_selected(target, allow_replay=allow_replay)
+        return self.write_selected(
+            target,
+            allow_replay=allow_replay,
+            auto_merge=auto_merge,
+            merge_strategy=merge_strategy,
+        )
 
     def write_manual(
         self,
@@ -224,6 +265,8 @@ class TripsDebuggerSession:
         payload: dict[str, Any],
         entity_ids: Optional[list[Any]] = None,
         evolve: bool = True,
+        auto_merge: Optional[bool] = None,
+        merge_strategy: str = "auto",
     ) -> dict[str, Any]:
         with self._lock:
             if self._ltm is None:
@@ -242,6 +285,36 @@ class TripsDebuggerSession:
                     "result": result,
                 },
             )
+            merge_report = self._run_auto_merge_locked(
+                enabled=self.config.auto_merge_after_write if auto_merge is None else bool(auto_merge),
+                strategy=merge_strategy,
+                trigger="write_manual",
+            )
+            return {
+                "result": result,
+                "auto_merge": merge_report,
+                "state": self._build_state(),
+            }
+
+    def auto_merge(
+        self,
+        scope: str = "all",
+        strategy: str = "auto",
+        dry_run: bool = False,
+        max_pairs: int = 10,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self._ltm is None:
+                raise RuntimeError("Session is not initialized")
+            result = self._ltm.auto_merge(
+                scope=scope,
+                strategy=strategy,
+                dry_run=dry_run,
+                max_pairs=max_pairs,
+            )
+            result["trigger"] = "manual_auto_merge"
+            self._latest_auto_merge = result
+            self._append_log(action="auto_merge", detail=result)
             return {
                 "result": result,
                 "state": self._build_state(),
@@ -304,6 +377,25 @@ class TripsDebuggerSession:
         )
         self._operation_log = self._operation_log[-60:]
 
+    def _run_auto_merge_locked(
+        self,
+        enabled: bool,
+        strategy: str,
+        trigger: str,
+    ) -> Optional[dict[str, Any]]:
+        if not enabled or self._ltm is None:
+            return None
+        result = self._ltm.auto_merge(
+            scope="all",
+            strategy=strategy,
+            dry_run=False,
+            max_pairs=12,
+        )
+        result["trigger"] = trigger
+        self._latest_auto_merge = result
+        self._append_log(action="auto_merge", detail=result)
+        return result
+
     def _build_state(self) -> dict[str, Any]:
         if self._ltm is None:
             raise RuntimeError("Session is not initialized")
@@ -316,6 +408,8 @@ class TripsDebuggerSession:
                 "append_first_mode": self.config.append_first_mode,
                 "snapshot_limit": self.config.snapshot_limit,
                 "episodes_total": len(self._episodes),
+                "default_merge_strategy": self.config.default_merge_strategy,
+                "auto_merge_after_write": self.config.auto_merge_after_write,
             },
             "progress": {
                 "written_count": len(self._written_indices),
@@ -327,6 +421,7 @@ class TripsDebuggerSession:
             },
             "stats": self._ltm.get_stats(),
             "snapshot": snapshot,
+            "latest_auto_merge": self._latest_auto_merge,
             "operation_log": list(reversed(self._operation_log[-20:])),
         }
 
@@ -382,13 +477,23 @@ def create_trips_debugger_app(config: TripsDebuggerConfig) -> FastAPI:
     @app.post("/api/trips-debug/write-selected")
     def post_write_selected(request: WriteSelectedRequest) -> dict[str, Any]:
         try:
-            return session.write_selected(request.episode_indexes, allow_replay=request.allow_replay)
+            return session.write_selected(
+                request.episode_indexes,
+                allow_replay=request.allow_replay,
+                auto_merge=request.auto_merge,
+                merge_strategy=request.merge_strategy,
+            )
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
 
     @app.post("/api/trips-debug/write-next")
     def post_write_next(request: WriteNextRequest) -> dict[str, Any]:
-        return session.write_next(count=request.count, allow_replay=request.allow_replay)
+        return session.write_next(
+            count=request.count,
+            allow_replay=request.allow_replay,
+            auto_merge=request.auto_merge,
+            merge_strategy=request.merge_strategy,
+        )
 
     @app.post("/api/trips-debug/write-manual")
     def post_write_manual(request: ManualWriteRequest) -> dict[str, Any]:
@@ -398,11 +503,25 @@ def create_trips_debugger_app(config: TripsDebuggerConfig) -> FastAPI:
                 payload=request.payload,
                 entity_ids=request.entity_ids,
                 evolve=request.evolve,
+                auto_merge=request.auto_merge,
+                merge_strategy=request.merge_strategy,
             )
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
         except RuntimeError as ex:
             raise HTTPException(status_code=409, detail=str(ex)) from ex
+
+    @app.post("/api/trips-debug/auto-merge")
+    def post_auto_merge(request: AutoMergeRequest) -> dict[str, Any]:
+        try:
+            return session.auto_merge(
+                scope=request.scope,
+                strategy=request.strategy,
+                dry_run=request.dry_run,
+                max_pairs=request.max_pairs,
+            )
+        except (ValueError, RuntimeError) as ex:
+            raise HTTPException(status_code=400, detail=str(ex)) from ex
 
     @app.post("/api/trips-debug/merge-event")
     def post_merge_event(request: MergeEventRequest) -> dict[str, Any]:

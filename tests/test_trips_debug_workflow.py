@@ -112,6 +112,14 @@ class TestTripsDebugWorkflow(unittest.TestCase):
                 kind="context",
             )["item"]
 
+            auto_preview = ltm.auto_merge(
+                scope="context",
+                strategy="heuristic",
+                dry_run=True,
+                max_pairs=5,
+            )
+            self.assertGreaterEqual(auto_preview["context_candidates"], 1)
+
             ltm.store.link_event_to_context(
                 event_id=second["item"]["id"],
                 context_id=secondary_context["id"],

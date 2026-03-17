@@ -312,6 +312,18 @@ class GraphStore(ABC):
     ) -> None:
         raise NotImplementedError("link_next is not implemented")
 
+    def link_event_relation(
+        self,
+        from_event_id: str,
+        to_event_id: str,
+        relation_type: str,
+        confidence: float,
+        reason: str,
+        source: str,
+        timestamp: int,
+    ) -> None:
+        raise NotImplementedError("link_event_relation is not implemented")
+
     def link_event_to_pattern(
         self,
         event_id: str,
@@ -382,6 +394,9 @@ class GraphStore(ABC):
 
     def prune_weak_next_edges(self, min_score: float, stale_before: int) -> int:
         raise NotImplementedError("prune_weak_next_edges is not implemented")
+
+    def prune_weak_event_relation_edges(self, min_confidence: float, stale_before: int) -> int:
+        raise NotImplementedError("prune_weak_event_relation_edges is not implemented")
 
     def archive_event(self, event_id: str, archived_at: int) -> None:
         raise NotImplementedError("archive_event is not implemented")
@@ -465,6 +480,13 @@ class GraphStore(ABC):
         event_statuses: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         raise NotImplementedError("list_next_edges is not implemented")
+
+    def list_event_relation_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError("list_event_relation_edges is not implemented")
 
     # ==================== 统计 ====================
 

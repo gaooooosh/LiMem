@@ -184,7 +184,17 @@ def create_ltm_system(
             store=store,
             config=DynamicEvolutionConfig(
                 append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
+                offline_mode=offline_mode,
+                merge_decision_strategy=config.get("merge_decision_strategy", "auto"),
+                llm_api_key=api_key,
+                llm_base_url=base_url,
+                llm_model=config.get("generation_model", GENERATION_MODEL),
                 enable_auto_consolidation=config.get("enable_auto_consolidation", True),
+                enable_event_relations=config.get("enable_event_relations", True),
+                event_relation_window_seconds=config.get("event_relation_window_seconds", 43200),
+                event_relation_candidate_limit=config.get("event_relation_candidate_limit", 8),
+                event_relation_max_links_per_event=config.get("event_relation_max_links_per_event", 3),
+                event_relation_confidence_threshold=config.get("event_relation_confidence_threshold", 0.58),
             ),
         )
 

@@ -172,10 +172,10 @@ class LTMemoryImpl(LTMemory):
             ]
         return self.dynamic_engine.retrieve_memories(query=query, top_k=top_k)
 
-    def run_consolidation(self, dry_run: bool = False) -> dict[str, int]:
+    def run_consolidation(self, dry_run: bool = False, strategy: str = "auto") -> dict[str, int]:
         if not self.dynamic_engine:
             return {}
-        return self.dynamic_engine.run_consolidation(dry_run=dry_run)
+        return self.dynamic_engine.run_consolidation(dry_run=dry_run, strategy=strategy)
 
     def write(
         self,
@@ -257,6 +257,20 @@ class LTMemoryImpl(LTMemory):
             limit=limit,
             include_inactive=include_inactive,
             text=text,
+        )
+
+    def auto_merge(
+        self,
+        scope: str = "all",
+        strategy: str = "auto",
+        dry_run: bool = False,
+        max_pairs: int = 10,
+    ) -> dict[str, Any]:
+        return self.ops.auto_merge(
+            scope=scope,
+            strategy=strategy,
+            dry_run=dry_run,
+            max_pairs=max_pairs,
         )
 
     # ==================== 便捷方法 ====================

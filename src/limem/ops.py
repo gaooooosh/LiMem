@@ -210,6 +210,24 @@ class MemoryGraphOps:
             include_inactive=include_inactive,
         )
 
+    def auto_merge(
+        self,
+        scope: str = "all",
+        strategy: str = "auto",
+        dry_run: bool = False,
+        max_pairs: int = 10,
+    ) -> dict[str, Any]:
+        if not self.dynamic_engine:
+            raise RuntimeError("Dynamic evolution engine is required for auto merge")
+        result = self.dynamic_engine.auto_merge(
+            scope=scope,
+            strategy=strategy,
+            dry_run=dry_run,
+            max_pairs=max_pairs,
+        )
+        result["snapshot"] = self.snapshot(limit=max(20, max_pairs * 8), include_inactive=True)
+        return result
+
     def _build_edge_bundle(
         self,
         limit: int,
@@ -226,10 +244,11 @@ class MemoryGraphOps:
                 event_statuses=statuses,
                 pattern_statuses=statuses,
             ),
-            "next": self.store.list_next_edges(
+            "event_event": self.store.list_event_relation_edges(
                 limit=limit,
                 event_statuses=statuses,
             ),
+            "next": [],
         }
 
     def _infer_kind(self, item: Any, kind: str) -> str:

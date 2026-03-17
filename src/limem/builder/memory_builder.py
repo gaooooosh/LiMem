@@ -131,7 +131,7 @@ class MemoryBuilder:
         extraction = self.extractor.extract(episode.content)
 
         # 构建事件帧
-        event = self._build_event_frame(extraction, episode.content, current_time)
+        event = self._build_event_frame(extraction, episode, current_time)
         print(f"🧠 Extracted Event: {event.summary}")
 
         # 获取实体
@@ -215,14 +215,14 @@ class MemoryBuilder:
     def _build_event_frame(
         self,
         extraction: ExtractionResult,
-        episode_content: str,
+        episode: Episode,
         current_time: int,
     ) -> Event:
         """构建事件帧
 
         Args:
             extraction: 提取结果
-            episode_content: 原始Episode内容
+            episode: 原始Episode
             current_time: 当前时间戳
 
         Returns:
@@ -233,7 +233,7 @@ class MemoryBuilder:
         # 使用摘要或截取Episode内容作为摘要
         summary = data.get("summary", "")
         if not summary:
-            summary = episode_content[:120]
+            summary = episode.content[:120]
 
         # 构建时间范围
         time_range = data.get("time_range", {})
@@ -257,6 +257,11 @@ class MemoryBuilder:
         else:
             consistency_str = str(consistency_value)
 
+        payload = dict(data)
+        payload["episode_id"] = episode.id
+        if episode.metadata:
+            payload["episode_metadata"] = dict(episode.metadata)
+
         return Event(
             id=hash_summary(summary) if summary else "",
             summary=summary,
@@ -273,7 +278,7 @@ class MemoryBuilder:
             created_at=current_time,
             updated_at=current_time,
             valid_from=current_time,
-            payload=data,
+            payload=payload,
             confidence=float(data.get("confidence", extraction.confidence if extraction else 0.7) or 0.7),
             salience=float(data.get("salience", 0.5) or 0.5),
             source=str(data.get("source", "llm_extraction")),

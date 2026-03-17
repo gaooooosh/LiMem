@@ -197,6 +197,19 @@ class KuzuStore(GraphStore):
             )
         """)
         self.conn.execute("""
+            CREATE REL TABLE IF NOT EXISTS EVENT_REL(
+                FROM Event TO Event,
+                relation_type STRING,
+                confidence DOUBLE,
+                reason STRING,
+                source STRING,
+                created_at INT64,
+                updated_at INT64,
+                last_seen_at INT64,
+                support_count INT64
+            )
+        """)
+        self.conn.execute("""
             CREATE REL TABLE IF NOT EXISTS ABSTRACT_TO(
                 FROM Event TO Pattern,
                 confidence DOUBLE,
@@ -282,6 +295,14 @@ class KuzuStore(GraphStore):
             "ALTER TABLE NEXT ADD updated_at INT64",
             "ALTER TABLE NEXT ADD last_seen_at INT64",
             "ALTER TABLE NEXT ADD support_count INT64",
+            "ALTER TABLE EVENT_REL ADD relation_type STRING",
+            "ALTER TABLE EVENT_REL ADD confidence DOUBLE",
+            "ALTER TABLE EVENT_REL ADD reason STRING",
+            "ALTER TABLE EVENT_REL ADD source STRING",
+            "ALTER TABLE EVENT_REL ADD created_at INT64",
+            "ALTER TABLE EVENT_REL ADD updated_at INT64",
+            "ALTER TABLE EVENT_REL ADD last_seen_at INT64",
+            "ALTER TABLE EVENT_REL ADD support_count INT64",
             "ALTER TABLE ABSTRACT_TO ADD confidence DOUBLE",
             "ALTER TABLE ABSTRACT_TO ADD contribution_weight DOUBLE",
             "ALTER TABLE ABSTRACT_TO ADD created_at INT64",
@@ -1117,6 +1138,76 @@ class KuzuStore(GraphStore):
             },
         )
 
+    def link_event_relation(
+        self,
+        from_event_id: str,
+        to_event_id: str,
+        relation_type: str,
+        confidence: float,
+        reason: str,
+        source: str,
+        timestamp: int,
+    ) -> None:
+        if from_event_id == to_event_id:
+            return
+        exists = self.conn.execute(
+            """
+            MATCH (:Event {id: $from_event_id})-[r:EVENT_REL]->(:Event {id: $to_event_id})
+            RETURN r.support_count
+            """,
+            {"from_event_id": from_event_id, "to_event_id": to_event_id},
+        )
+        if exists.has_next():
+            support_count = exists.get_next()[0] or 1
+            self.conn.execute(
+                """
+                MATCH (:Event {id: $from_event_id})-[r:EVENT_REL]->(:Event {id: $to_event_id})
+                SET r.relation_type = $relation_type,
+                    r.confidence = $confidence,
+                    r.reason = $reason,
+                    r.source = $source,
+                    r.updated_at = $timestamp,
+                    r.last_seen_at = $timestamp,
+                    r.support_count = $support_count
+                """,
+                {
+                    "from_event_id": from_event_id,
+                    "to_event_id": to_event_id,
+                    "relation_type": relation_type,
+                    "confidence": float(confidence),
+                    "reason": reason,
+                    "source": source,
+                    "timestamp": int(timestamp),
+                    "support_count": int(support_count) + 1,
+                },
+            )
+            return
+
+        self.conn.execute(
+            """
+            MATCH (a:Event {id: $from_event_id}), (b:Event {id: $to_event_id})
+            CREATE (a)-[:EVENT_REL {
+                relation_type: $relation_type,
+                confidence: $confidence,
+                reason: $reason,
+                source: $source,
+                created_at: $timestamp,
+                updated_at: $timestamp,
+                last_seen_at: $timestamp,
+                support_count: 1
+            }]->(b)
+            """,
+            {
+                "from_event_id": from_event_id,
+                "to_event_id": to_event_id,
+                "relation_type": relation_type,
+                "confidence": float(confidence),
+                "reason": reason,
+                "source": source,
+                "timestamp": int(timestamp),
+            },
+        )
+
     def link_event_to_pattern(
         self,
         event_id: str,
@@ -1446,6 +1537,26 @@ class KuzuStore(GraphStore):
         )
         return int(count)
 
+    def prune_weak_event_relation_edges(self, min_confidence: float, stale_before: int) -> int:
+        count_resp = self.conn.execute(
+            """
+            MATCH (:Event)-[r:EVENT_REL]->(:Event)
+            WHERE r.confidence < $min_confidence AND r.last_seen_at < $stale_before
+            RETURN count(r)
+            """,
+            {"min_confidence": float(min_confidence), "stale_before": int(stale_before)},
+        )
+        count = count_resp.get_next()[0] if count_resp.has_next() else 0
+        self.conn.execute(
+            """
+            MATCH (:Event)-[r:EVENT_REL]->(:Event)
+            WHERE r.confidence < $min_confidence AND r.last_seen_at < $stale_before
+            DELETE r
+            """,
+            {"min_confidence": float(min_confidence), "stale_before": int(stale_before)},
+        )
+        return int(count)
+
     def archive_event(self, event_id: str, archived_at: int) -> None:
         self.conn.execute(
             """
@@ -1502,6 +1613,7 @@ class KuzuStore(GraphStore):
             "context_links": 0,
             "pattern_links": 0,
             "next_edges": 0,
+            "event_relation_edges": 0,
             "permanent_traits": 0,
         }
 
@@ -1673,6 +1785,64 @@ class KuzuStore(GraphStore):
         self.conn.execute(
             """
             MATCH (:Event {id: $source_event_id})-[r:NEXT]->(:Event)
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        resp = self.conn.execute(
+            """
+            MATCH (a:Event)-[r:EVENT_REL]->(:Event {id: $source_event_id})
+            RETURN a.id, r.relation_type, r.confidence, r.reason, r.source, r.last_seen_at
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            if row[0] == target_event_id:
+                continue
+            self.link_event_relation(
+                from_event_id=row[0],
+                to_event_id=target_event_id,
+                relation_type=row[1] or "related_to",
+                confidence=float(row[2] or 0.0),
+                reason=row[3] or "manual_merge",
+                source=row[4] or "manual_merge",
+                timestamp=int(row[5] or ts),
+            )
+            moved["event_relation_edges"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event)-[r:EVENT_REL]->(:Event {id: $source_event_id})
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        resp = self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:EVENT_REL]->(b:Event)
+            RETURN b.id, r.relation_type, r.confidence, r.reason, r.source, r.last_seen_at
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while resp.has_next():
+            row = resp.get_next()
+            if row[0] == target_event_id:
+                continue
+            self.link_event_relation(
+                from_event_id=target_event_id,
+                to_event_id=row[0],
+                relation_type=row[1] or "related_to",
+                confidence=float(row[2] or 0.0),
+                reason=row[3] or "manual_merge",
+                source=row[4] or "manual_merge",
+                timestamp=int(row[5] or ts),
+            )
+            moved["event_relation_edges"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:EVENT_REL]->(:Event)
             DELETE r
             """,
             {"source_event_id": source_event_id},
@@ -2010,6 +2180,45 @@ class KuzuStore(GraphStore):
             )
         return rows
 
+    def list_event_relation_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": int(limit)}
+        filters: list[str] = []
+        filters = self._apply_status_filters("a", event_statuses, params, filters)
+        if event_statuses:
+            filters.append("b.status IN $event_rel_target_statuses")
+            params["event_rel_target_statuses"] = list(event_statuses)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        resp = self.conn.execute(
+            f"""
+            MATCH (a:Event)-[r:EVENT_REL]->(b:Event)
+            {where_clause}
+            RETURN a.id, b.id, r.relation_type, r.confidence, r.reason, r.source, r.last_seen_at, r.support_count
+            ORDER BY r.last_seen_at DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        rows = []
+        while resp.has_next():
+            row = resp.get_next()
+            rows.append(
+                {
+                    "from_event_id": row[0],
+                    "to_event_id": row[1],
+                    "relation_type": row[2] or "related_to",
+                    "confidence": float(row[3] or 0.0),
+                    "reason": row[4] or "",
+                    "source": row[5] or "",
+                    "last_seen_at": int(row[6] or 0),
+                    "support_count": int(row[7] or 0),
+                }
+            )
+        return rows
+
     # ==================== 统计 ====================
 
     def get_stats(self) -> dict[str, Any]:
@@ -2045,6 +2254,9 @@ class KuzuStore(GraphStore):
 
         resp = self.conn.execute("MATCH ()-[r:NEXT]->() RETURN count(r)")
         stats["next_count"] = resp.get_next()[0] if resp.has_next() else 0
+
+        resp = self.conn.execute("MATCH ()-[r:EVENT_REL]->() RETURN count(r)")
+        stats["event_relation_count"] = resp.get_next()[0] if resp.has_next() else 0
 
         resp = self.conn.execute("MATCH ()-[r:ABSTRACT_TO]->() RETURN count(r)")
         stats["abstract_to_count"] = resp.get_next()[0] if resp.has_next() else 0

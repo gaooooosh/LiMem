@@ -357,7 +357,7 @@ def _render_html_report(report: dict[str, Any]) -> str:
   <div class="page">
     <div class="hero">
       <h1>LiMem 两段式 Trips 调试报告</h1>
-      <p>基础段先构建记忆库，增量段随后逐步回放并记录图快照，便于观察事件、上下文、模式和 NEXT 边的动态演进。</p>
+      <p>基础段先构建记忆库，增量段随后逐步回放并记录图快照，便于观察事件、上下文、模式和显式事件语义关系边的动态演进。</p>
       <div class="grid" id="heroMetrics"></div>
     </div>
 
@@ -395,7 +395,7 @@ def _render_html_report(report: dict[str, Any]) -> str:
         <div class="tag">events: ${{stats.event_count || 0}}</div>
         <div class="tag">contexts: ${{stats.context_count || 0}}</div>
         <div class="tag">patterns: ${{stats.pattern_count || 0}}</div>
-        <div class="tag">next: ${{stats.next_count || 0}}</div>
+        <div class="tag">event_rel: ${{stats.event_relation_count || 0}}</div>
       `;
     }}
 

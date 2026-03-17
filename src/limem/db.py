@@ -181,6 +181,21 @@ def init_db(conn):
     )
     conn.execute(
         """
+        CREATE REL TABLE IF NOT EXISTS EVENT_REL(
+            FROM Event TO Event,
+            relation_type STRING,
+            confidence DOUBLE,
+            reason STRING,
+            source STRING,
+            created_at INT64,
+            updated_at INT64,
+            last_seen_at INT64,
+            support_count INT64
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE REL TABLE IF NOT EXISTS ABSTRACT_TO(
             FROM Event TO Pattern,
             confidence DOUBLE,
@@ -255,6 +270,14 @@ def init_db(conn):
         "ALTER TABLE NEXT ADD updated_at INT64",
         "ALTER TABLE NEXT ADD last_seen_at INT64",
         "ALTER TABLE NEXT ADD support_count INT64",
+        "ALTER TABLE EVENT_REL ADD relation_type STRING",
+        "ALTER TABLE EVENT_REL ADD confidence DOUBLE",
+        "ALTER TABLE EVENT_REL ADD reason STRING",
+        "ALTER TABLE EVENT_REL ADD source STRING",
+        "ALTER TABLE EVENT_REL ADD created_at INT64",
+        "ALTER TABLE EVENT_REL ADD updated_at INT64",
+        "ALTER TABLE EVENT_REL ADD last_seen_at INT64",
+        "ALTER TABLE EVENT_REL ADD support_count INT64",
         "ALTER TABLE ABSTRACT_TO ADD confidence DOUBLE",
         "ALTER TABLE ABSTRACT_TO ADD contribution_weight DOUBLE",
         "ALTER TABLE ABSTRACT_TO ADD created_at INT64",
