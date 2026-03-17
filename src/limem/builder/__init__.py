@@ -14,6 +14,7 @@ from .extractor import (
     HeuristicExtractor,
     ExtractionResult,
 )
+from .context_extractor import ContextExtractionPipeline
 from .consolidator import Consolidator, ConsolidationResult
 from .memory_builder import MemoryBuilder, BuilderConfig
 
@@ -23,6 +24,7 @@ __all__ = [
     "TwoStageExtractor",
     "HeuristicExtractor",
     "ExtractionResult",
+    "ContextExtractionPipeline",
     # Consolidator
     "Consolidator",
     "ConsolidationResult",

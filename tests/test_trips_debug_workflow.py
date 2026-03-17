@@ -125,7 +125,8 @@ class TestTripsDebugWorkflow(unittest.TestCase):
                 context_id=secondary_context["id"],
                 confidence=0.9,
                 weight=1.2,
-                original_type="manual_test",
+                original_signal="manual_test",
+                evidence_span="manual_test_context",
                 timestamp=ts + 40,
             )
 

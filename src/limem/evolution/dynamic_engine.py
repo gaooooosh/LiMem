@@ -83,7 +83,8 @@ from ..config import (
     STALE_SECONDS,
     WEAK_EDGE_PRUNE_THRESHOLD,
 )
-from ..core.context import Context
+from ..builder.context_extractor import ContextExtractionPipeline
+from ..core.context import Context, ContextDraft
 from ..core.event import Event
 from ..core.pattern import Pattern
 from ..utils import hash_summary, robust_json_loads, safe_json_dumps, safe_json_loads
@@ -157,6 +158,12 @@ class DynamicEvolutionEngine:
         self.store = store
         self.config = config or DynamicEvolutionConfig()
         self._last_consolidation_at = 0
+        self.context_extractor = ContextExtractionPipeline(
+            api_key=self.config.llm_api_key,
+            base_url=self.config.llm_base_url,
+            generation_model=self.config.llm_model,
+            offline_mode=self.config.offline_mode,
+        )
 
     # -------------------------------------------------------------------------
     # Algorithm 1: Incremental Event Ingestion
@@ -217,17 +224,8 @@ class DynamicEvolutionEngine:
             new_events.append(event)
 
         for event in new_events:
-            contexts = self.resolve_contexts(event)
-            for context in contexts:
-                self.store.link_event_to_context(
-                    event_id=event.id,
-                    context_id=context.id,
-                    confidence=max(0.3, min(1.0, context.confidence)),
-                    weight=max(0.1, min(5.0, 1.0 + math.log1p(context.support_count))),
-                    original_type="dynamic_context",
-                    timestamp=event.last_active or event.timestamp or now,
-                )
-                in_links += 1
+            resolved_contexts = self.resolve_context_pairs(event, record=record)
+            in_links += self.attach_contexts_to_event(event, resolved_contexts)
 
             pattern_id = self.update_patterns_for_event(event)
             if pattern_id:
@@ -256,17 +254,8 @@ class DynamicEvolutionEngine:
         context_links = 0
         pattern_links = 0
         for event in events:
-            contexts = self.resolve_contexts(event)
-            for context in contexts:
-                self.store.link_event_to_context(
-                    event_id=event.id,
-                    context_id=context.id,
-                    confidence=max(0.3, min(1.0, context.confidence)),
-                    weight=max(0.1, min(5.0, 1.0 + math.log1p(context.support_count))),
-                    original_type="dynamic_context",
-                    timestamp=event.last_active or event.timestamp or int(time.time()),
-                )
-                context_links += 1
+            resolved_contexts = self.resolve_context_pairs(event, record=None)
+            context_links += self.attach_contexts_to_event(event, resolved_contexts)
 
             pattern_id = self.update_patterns_for_event(event)
             if pattern_id:
@@ -288,19 +277,46 @@ class DynamicEvolutionEngine:
     # -------------------------------------------------------------------------
     # Algorithm 2: Dynamic Context Resolution
     # -------------------------------------------------------------------------
-    def resolve_contexts(self, event: Event) -> list[Context]:
-        draft = self._build_context_draft(event)
-        match = self.match_existing_context(draft)
+    def extract_context_drafts(
+        self,
+        event: Event,
+        record: Optional[Any] = None,
+    ) -> list[ContextDraft]:
+        return self.context_extractor.extract(record=record or event, event=event)
+
+    def resolve_context_pairs(
+        self,
+        event: Event,
+        record: Optional[Any] = None,
+    ) -> list[tuple[Context, ContextDraft]]:
+        drafts = self.extract_context_drafts(event, record=record)
+        resolved: list[tuple[Context, ContextDraft]] = []
+        for draft in drafts:
+            resolved.append((self.resolve_context(draft, event=event), draft))
+        return resolved
+
+    def resolve_contexts(
+        self,
+        event: Event,
+        record: Optional[Any] = None,
+    ) -> list[Context]:
+        return [context for context, _ in self.resolve_context_pairs(event, record=record)]
+
+    def resolve_context(
+        self,
+        context_draft: ContextDraft,
+        event: Optional[Event] = None,
+    ) -> Context:
+        match = self.match_existing_context(context_draft)
         if match is None:
-            return [self.create_context(draft)]
+            return self.create_context(context_draft)
 
-        if self.detect_conflict(match, draft):
-            return [self.handle_context_conflict(match, draft)]
+        if self.detect_conflict(match, context_draft):
+            return self.handle_context_conflict(match, context_draft)
 
-        updated = self.update_context(match, draft)
-        return [updated]
+        return self.update_context_with_evidence(match, context_draft, event)
 
-    def match_existing_context(self, context_draft: Context) -> Optional[Context]:
+    def match_existing_context(self, context_draft: ContextDraft) -> Optional[Context]:
         candidates = self.store.find_context_candidates(
             context_type=context_draft.context_type,
             subtype=context_draft.subtype,
@@ -318,18 +334,31 @@ class DynamicEvolutionEngine:
             return None
         return best if best_score >= self.config.context_reuse_threshold else None
 
-    def update_context(self, context_node: Context, evidence: Context) -> Context:
-        now = max(evidence.updated_at, int(time.time()))
+    def update_context_with_evidence(
+        self,
+        context_node: Context,
+        evidence: ContextDraft,
+        event: Optional[Event],
+    ) -> Context:
+        now = max(evidence.valid_from or 0, int(time.time()))
         merged_slots = dict(context_node.structured_slots)
         for key, value in evidence.structured_slots.items():
             if value not in (None, "", [], {}):
                 merged_slots[key] = value
 
         context_node.structured_slots = merged_slots
-        context_node.summary = context_node.summary or evidence.summary
+        if not context_node.summary or len(evidence.summary) > len(context_node.summary):
+            context_node.summary = evidence.summary
         context_node.support_count += 1
         context_node.updated_at = now
         context_node.last_seen_at = now
+        context_node.valid_from = min(
+            int(context_node.valid_from or now),
+            int(evidence.valid_from or now),
+        )
+        if evidence.valid_to:
+            context_node.valid_to = max(int(context_node.valid_to or 0), int(evidence.valid_to))
+        context_node.source_refs = self._merge_source_refs(context_node.source_refs, evidence.source_refs)
         context_node.confidence = min(
             1.0,
             (context_node.confidence * 0.8) + (evidence.confidence * 0.2) + self.config.reinforcement_step * 0.2,
@@ -338,16 +367,63 @@ class DynamicEvolutionEngine:
         self.store.update_context(context_node)
         return context_node
 
-    def create_context(self, context_draft: Context) -> Context:
-        now = context_draft.updated_at or int(time.time())
-        context_draft.id = context_draft.id or self._new_context_id(context_draft)
-        context_draft.created_at = context_draft.created_at or now
-        context_draft.updated_at = now
-        context_draft.valid_from = context_draft.valid_from or now
-        context_draft.last_seen_at = now
-        context_draft.status = context_draft.status or "active"
-        self.store.save_context(context_draft)
-        return context_draft
+    def create_context(self, context_draft: ContextDraft) -> Context:
+        now = context_draft.valid_from or int(time.time())
+        context = context_draft.to_node(
+            context_id=self._new_context_id(context_draft),
+            timestamp=now,
+            embedding=self._maybe_embed_context(context_draft.summary),
+        )
+        self.store.save_context(context)
+        return context
+
+    def maybe_deprecate_context(self, context_node: Context, now: Optional[int] = None) -> Context:
+        ts = int(now or time.time())
+        if context_node.status == "merged":
+            return context_node
+        context_node.confidence = max(0.0, context_node.confidence - self.config.decay_step)
+        context_node.updated_at = ts
+        if context_node.confidence < 0.25:
+            context_node.status = "deprecated"
+            context_node.valid_to = context_node.valid_to or ts
+        else:
+            context_node.status = "weakened"
+        self.store.update_context(context_node)
+        return context_node
+
+    def maybe_merge_contexts(self, context_a: Context, context_b: Context) -> Optional[dict[str, Any]]:
+        if self._context_merge_score(context_a, context_b) < max(
+            self.config.context_reuse_threshold,
+            0.82,
+        ):
+            return None
+        canonical, merged = self._pick_canonical_context(context_a, context_b)
+        return self.merge_contexts(
+            canonical_context_id=canonical.id,
+            merged_context_id=merged.id,
+            merged_at=int(time.time()),
+        )
+
+    def attach_contexts_to_event(
+        self,
+        event: Event,
+        resolved_contexts: list[tuple[Context, ContextDraft]],
+    ) -> int:
+        count = 0
+        ts = event.last_active or event.timestamp or int(time.time())
+        for context, draft in resolved_contexts:
+            source_ref = draft.source_refs[0] if draft.source_refs else {}
+            self.store.link_event_to_context(
+                event_id=event.id,
+                context_id=context.id,
+                confidence=max(0.3, min(1.0, context.confidence)),
+                weight=max(0.1, min(5.0, 1.0 + math.log1p(context.support_count))),
+                original_signal=str(source_ref.get("signal", "context_resolution") or "context_resolution"),
+                evidence_span=str(source_ref.get("evidence_span", draft.evidence_span) or draft.evidence_span),
+                timestamp=ts,
+            )
+            count += 1
+        return count
 
     # -------------------------------------------------------------------------
     # Algorithm 3: Explicit Event-Event Semantic Relations
@@ -1105,28 +1181,23 @@ class DynamicEvolutionEngine:
     # -------------------------------------------------------------------------
     # Algorithm 7: Conflict and Drift Management
     # -------------------------------------------------------------------------
-    def detect_conflict(self, node: Context, new_evidence: Context) -> bool:
+    def detect_conflict(self, node: Context, new_evidence: ContextDraft) -> bool:
         return self._context_conflict_ratio(node, new_evidence) >= self.config.context_conflict_threshold
 
-    def handle_context_conflict(self, context_node: Context, evidence: Context) -> Context:
-        now = evidence.updated_at or int(time.time())
-        sibling = Context(
-            id=f"{self._new_context_id(evidence)}_sib_{uuid.uuid4().hex[:6]}",
-            context_type=evidence.context_type,
-            subtype=evidence.subtype,
-            summary=evidence.summary,
-            structured_slots=evidence.structured_slots,
-            confidence=max(0.45, evidence.confidence),
-            support_count=1,
-            created_at=now,
-            updated_at=now,
-            valid_from=now,
-            last_seen_at=now,
-            status="active",
+    def handle_context_conflict(self, context_node: Context, evidence: ContextDraft) -> Context:
+        now = evidence.valid_from or int(time.time())
+        sibling = evidence.to_node(
+            context_id=f"{self._new_context_id(evidence)}_sib_{uuid.uuid4().hex[:6]}",
+            timestamp=now,
+            embedding=self._maybe_embed_context(evidence.summary),
         )
+        sibling.confidence = max(0.45, sibling.confidence)
         self.store.save_context(sibling)
-        context_node.status = "deprecated" if context_node.confidence < 0.4 else context_node.status
-        context_node.valid_to = context_node.valid_to or now if context_node.status == "deprecated" else context_node.valid_to
+        if context_node.confidence < 0.4:
+            context_node.status = "deprecated"
+            context_node.valid_to = context_node.valid_to or now
+        else:
+            context_node.status = "weakened"
         context_node.updated_at = now
         self.store.update_context(context_node)
         return sibling
@@ -1357,55 +1428,47 @@ class DynamicEvolutionEngine:
         merge_trace.append(trace_entry)
         return base
 
-    def _build_context_draft(self, event: Event) -> Context:
+    def _build_context_draft(self, event: Event) -> ContextDraft:
         timestamp = event.last_active or event.timestamp or int(time.time())
         slots = self._extract_context_slots(event)
         subtype = self._infer_context_subtype(event, slots)
         summary = self._build_context_summary(subtype, slots)
-        return Context(
-            id="",
-            context_type="situation",
+        return ContextDraft(
             subtype=subtype,
             summary=summary,
             structured_slots=slots,
             confidence=max(0.4, event.confidence),
-            support_count=1,
-            created_at=timestamp,
-            updated_at=timestamp,
+            evidence_span=summary,
+            source_refs=[{"source": "event_payload", "event_id": event.id, "signal": "event_payload"}],
             valid_from=timestamp,
-            last_seen_at=timestamp,
-            status="active",
         )
 
-    def _context_similarity(self, a: Context, b: Context) -> float:
-        slots_a = a.structured_slots if isinstance(a.structured_slots, dict) else {}
-        slots_b = b.structured_slots if isinstance(b.structured_slots, dict) else {}
-        core_slot_sim = self._slot_group_similarity(
-            slots_a,
-            slots_b,
-            self._core_context_slot_keys(),
+    def _context_similarity(self, a: Any, b: Any) -> float:
+        slots_a = self._context_slots(a)
+        slots_b = self._context_slots(b)
+        slot_sim = self._value_similarity(slots_a, slots_b)
+        summary_sim = self._lexical_similarity(self._context_summary(a), self._context_summary(b))
+        subtype_sim = 1.0 if self._context_subtype(a) == self._context_subtype(b) else 0.0
+        active_sim = 1.0 if self._context_status(a) == "active" else 0.75
+        temporal_sim = self._context_temporal_compatibility(a, b)
+        embedding_sim = self._context_embedding_similarity(a, b)
+        return (
+            0.28 * slot_sim
+            + 0.24 * summary_sim
+            + 0.18 * subtype_sim
+            + 0.12 * active_sim
+            + 0.10 * temporal_sim
+            + 0.08 * embedding_sim
         )
-        aux_slot_sim = self._slot_group_similarity(
-            slots_a,
-            slots_b,
-            self._aux_context_slot_keys(),
-        )
-        slot_sim = (
-            self.config.context_core_slot_weight * core_slot_sim
-            + self.config.context_aux_slot_weight * aux_slot_sim
-        )
-        type_sim = 1.0 if a.context_type == b.context_type else 0.0
-        subtype_sim = 1.0 if a.subtype == b.subtype else 0.0
-        return 0.20 * type_sim + 0.25 * subtype_sim + 0.55 * slot_sim
 
     def _context_merge_score(self, a: Context, b: Context) -> float:
         base = self._context_similarity(a, b)
         containment = self._context_slot_containment_ratio(a, b)
         return 0.7 * base + 0.3 * containment
 
-    def _context_slot_containment_ratio(self, a: Context, b: Context) -> float:
-        slots_a = a.structured_slots if isinstance(a.structured_slots, dict) else {}
-        slots_b = b.structured_slots if isinstance(b.structured_slots, dict) else {}
+    def _context_slot_containment_ratio(self, a: Any, b: Any) -> float:
+        slots_a = self._context_slots(a)
+        slots_b = self._context_slots(b)
         values_a = {
             key: value for key, value in slots_a.items()
             if value not in (None, "", [], {})
@@ -1442,9 +1505,9 @@ class DynamicEvolutionEngine:
             return left, right
         return right, left
 
-    def _context_conflict_ratio(self, a: Context, b: Context) -> float:
-        slots_a = a.structured_slots if isinstance(a.structured_slots, dict) else {}
-        slots_b = b.structured_slots if isinstance(b.structured_slots, dict) else {}
+    def _context_conflict_ratio(self, a: Any, b: Any) -> float:
+        slots_a = self._context_slots(a)
+        slots_b = self._context_slots(b)
         overlap_keys = set(slots_a.keys()) & set(slots_b.keys())
         overlap = 0
         conflicts = 0
@@ -1459,11 +1522,17 @@ class DynamicEvolutionEngine:
         return (conflicts / overlap) if overlap else 0.0
 
     def _infer_context_subtype(self, event: Event, slots: dict[str, Any]) -> str:
-        for key in ("scene", "task_stage", "goal_hint", "constraint_hint", "geo_context", "digital_context"):
-            value = str(slots.get(key, "") or "").strip()
-            if value:
-                return value[:48]
-        return event.event_type or "generic"
+        if str(slots.get("phase", "") or slots.get("task_stage", "")).strip():
+            return "phase"
+        if str(slots.get("goal", "") or slots.get("goal_hint", "")).strip():
+            return "goal"
+        if str(slots.get("constraint", "") or slots.get("constraint_hint", "")).strip():
+            return "constraint"
+        if str(slots.get("state", "")).strip():
+            return "state"
+        if str(slots.get("environment", "") or slots.get("geo_context", "") or slots.get("digital_context", "")).strip():
+            return "environment"
+        return "situation"
 
     def _extract_context_slots(self, event: Event) -> dict[str, Any]:
         payload = event.payload if isinstance(event.payload, dict) else {}
@@ -1501,17 +1570,101 @@ class DynamicEvolutionEngine:
         return {key: value for key, value in slots.items() if value not in (None, "", [], {})}
 
     def _build_context_summary(self, subtype: str, slots: dict[str, Any]) -> str:
-        summary_parts = [
-            str(slots.get("scene", "") or ""),
-            str(slots.get("geo_context", "") or ""),
-            str(slots.get("digital_context", "") or ""),
-            str(slots.get("time_bucket", "") or ""),
-            str(slots.get("task_stage", "") or ""),
-        ]
-        summary = " / ".join(part for part in summary_parts if part)
-        if not summary:
-            summary = subtype or "generic situation"
-        return f"context:{summary}"[:180]
+        preferred_keys = (
+            subtype,
+            "goal",
+            "constraint",
+            "state",
+            "environment",
+            "phase",
+            "scene",
+            "geo_context",
+            "digital_context",
+            "time_bucket",
+        )
+        for key in preferred_keys:
+            value = slots.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, list):
+                text = " / ".join(str(item) for item in value if str(item).strip())
+            else:
+                text = str(value).strip()
+            if text:
+                return text[:180]
+        return subtype[:180]
+
+    def _context_slots(self, node: Any) -> dict[str, Any]:
+        slots = getattr(node, "structured_slots", {})
+        return dict(slots) if isinstance(slots, dict) else {}
+
+    def _context_summary(self, node: Any) -> str:
+        return str(getattr(node, "summary", "") or "").strip()
+
+    def _context_subtype(self, node: Any) -> str:
+        return str(getattr(node, "subtype", "") or "").strip()
+
+    def _context_status(self, node: Any) -> str:
+        return str(getattr(node, "status", "active") or "active").strip()
+
+    def _context_embedding_similarity(self, left: Any, right: Any) -> float:
+        left_embedding = getattr(left, "embedding", None)
+        right_embedding = getattr(right, "embedding", None)
+        if not left_embedding or not right_embedding:
+            return 0.0
+        try:
+            numerator = sum(float(a) * float(b) for a, b in zip(left_embedding, right_embedding))
+            left_norm = math.sqrt(sum(float(a) * float(a) for a in left_embedding))
+            right_norm = math.sqrt(sum(float(b) * float(b) for b in right_embedding))
+            if left_norm <= 0.0 or right_norm <= 0.0:
+                return 0.0
+            return max(0.0, min(1.0, numerator / (left_norm * right_norm)))
+        except Exception:
+            return 0.0
+
+    def _context_temporal_compatibility(self, left: Any, right: Any) -> float:
+        left_start = int(getattr(left, "valid_from", 0) or getattr(left, "created_at", 0) or 0)
+        right_start = int(getattr(right, "valid_from", 0) or getattr(right, "created_at", 0) or 0)
+        left_end = getattr(left, "valid_to", None)
+        right_end = getattr(right, "valid_to", None)
+
+        if left_end and right_start and int(left_end) < right_start:
+            return 0.35
+        if right_end and left_start and int(right_end) < left_start:
+            return 0.35
+        if not left_start or not right_start:
+            return 0.7
+        diff = abs(left_start - right_start)
+        window = max(1, self.config.stale_seconds)
+        return max(0.3, math.exp(-diff / window))
+
+    def _merge_source_refs(
+        self,
+        existing: list[dict[str, Any]],
+        incoming: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for ref in list(existing or []) + list(incoming or []):
+            if not isinstance(ref, dict):
+                continue
+            signature = safe_json_dumps(ref)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            merged.append(dict(ref))
+        return merged
+
+    def _maybe_embed_context(self, text: str) -> Optional[list[float]]:
+        if not text or not hasattr(self.store, "embedding_client"):
+            return None
+        embedding_client = getattr(self.store, "embedding_client", None)
+        if embedding_client is None or not hasattr(embedding_client, "get_embedding"):
+            return None
+        try:
+            return embedding_client.get_embedding(text)
+        except Exception:
+            return None
 
     def _infer_scene_hint(self, event: Event) -> str:
         text = f"{event.summary} {event.action} {safe_json_dumps(event.payload)}".lower()
@@ -1725,6 +1878,8 @@ class DynamicEvolutionEngine:
         canonical.last_seen_at = max(canonical.last_seen_at, merged.last_seen_at, ts)
         canonical.structured_slots = self._merge_slots(canonical.structured_slots, merged.structured_slots)
         canonical.summary = canonical.summary or merged.summary
+        canonical.source_refs = self._merge_source_refs(canonical.source_refs, merged.source_refs)
+        canonical.merged_from = sorted(set(canonical.merged_from + [merged.id] + merged.merged_from))
         self.store.update_context(canonical)
         moved_links = self.store.relink_context_edges(
             source_context_id=merged.id,
@@ -1734,6 +1889,7 @@ class DynamicEvolutionEngine:
         merged.status = "merged"
         merged.valid_to = ts
         merged.updated_at = ts
+        merged.merged_from = sorted(set(merged.merged_from + [merged.id]))
         self.store.update_context(merged)
         return {
             "canonical_context_id": canonical.id,
@@ -1983,10 +2139,15 @@ class DynamicEvolutionEngine:
             "confidence": context.confidence,
             "support_count": context.support_count,
             "last_seen_at": context.last_seen_at,
+            "source_refs": context.source_refs[:3],
         }
 
-    def _new_context_id(self, context: Context) -> str:
-        signature = f"{context.context_type}|{context.subtype}|{safe_json_dumps(context.structured_slots)}"
+    def _new_context_id(self, context: Any) -> str:
+        summary = self._context_summary(context)
+        slots = self._context_slots(context)
+        subtype = self._context_subtype(context) or "situation"
+        valid_from = int(getattr(context, "valid_from", 0) or 0)
+        signature = f"context|{subtype}|{summary}|{safe_json_dumps(slots)}|{valid_from}"
         return f"ctx_{hash_summary(signature)[:20]}"
 
     def _ensure_append_first_event_id(self, event: Event) -> str:

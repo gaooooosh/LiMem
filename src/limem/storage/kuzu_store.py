@@ -124,6 +124,8 @@ class KuzuStore(GraphStore):
                 valid_to INT64,
                 last_seen_at INT64,
                 status STRING,
+                source_refs STRING,
+                merged_from STRING,
                 embedding FLOAT[1536],
                 PRIMARY KEY(id)
             )
@@ -178,7 +180,8 @@ class KuzuStore(GraphStore):
                 FROM Event TO Context,
                 confidence DOUBLE,
                 weight DOUBLE,
-                original_type STRING,
+                original_signal STRING,
+                evidence_span STRING,
                 created_at INT64,
                 updated_at INT64,
                 last_seen_at INT64
@@ -269,6 +272,8 @@ class KuzuStore(GraphStore):
             "ALTER TABLE Context ADD valid_to INT64",
             "ALTER TABLE Context ADD last_seen_at INT64",
             "ALTER TABLE Context ADD status STRING",
+            "ALTER TABLE Context ADD source_refs STRING",
+            "ALTER TABLE Context ADD merged_from STRING",
             "ALTER TABLE Context ADD embedding FLOAT[1536]",
             "ALTER TABLE Pattern ADD prototype_features STRING",
             "ALTER TABLE Pattern ADD support_count INT64",
@@ -282,7 +287,8 @@ class KuzuStore(GraphStore):
             "ALTER TABLE Pattern ADD last_seen_at INT64",
             "ALTER TABLE Pattern ADD status STRING",
             "ALTER TABLE Pattern ADD embedding FLOAT[1536]",
-            "ALTER TABLE IN_REL ADD original_type STRING",
+            "ALTER TABLE IN_REL ADD original_signal STRING",
+            "ALTER TABLE IN_REL ADD evidence_span STRING",
             "ALTER TABLE IN_REL ADD confidence DOUBLE",
             "ALTER TABLE IN_REL ADD weight DOUBLE",
             "ALTER TABLE IN_REL ADD created_at INT64",
@@ -798,6 +804,8 @@ class KuzuStore(GraphStore):
                 valid_to: $valid_to,
                 last_seen_at: $last_seen_at,
                 status: $status,
+                source_refs: $source_refs,
+                merged_from: $merged_from,
                 embedding: $embedding
             })
             """,
@@ -810,7 +818,8 @@ class KuzuStore(GraphStore):
             MATCH (c:Context {id: $id})
             RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
-                   c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
+                   c.valid_from, c.valid_to, c.last_seen_at, c.status,
+                   c.source_refs, c.merged_from, c.embedding
             """,
             {"id": context_id},
         )
@@ -820,7 +829,8 @@ class KuzuStore(GraphStore):
         cols = [
             "id", "context_type", "subtype", "summary", "structured_slots",
             "confidence", "support_count", "created_at", "updated_at",
-            "valid_from", "valid_to", "last_seen_at", "status", "embedding",
+            "valid_from", "valid_to", "last_seen_at", "status",
+            "source_refs", "merged_from", "embedding",
         ]
         return Context.from_db_row(list(row), cols)
 
@@ -840,6 +850,8 @@ class KuzuStore(GraphStore):
                 c.valid_to = $valid_to,
                 c.last_seen_at = $last_seen_at,
                 c.status = $status,
+                c.source_refs = $source_refs,
+                c.merged_from = $merged_from,
                 c.embedding = $embedding
             """,
             {
@@ -855,6 +867,8 @@ class KuzuStore(GraphStore):
                 "valid_to": fields["valid_to"],
                 "last_seen_at": fields["last_seen_at"],
                 "status": fields["status"],
+                "source_refs": fields["source_refs"],
+                "merged_from": fields["merged_from"],
                 "embedding": fields["embedding"],
             },
         )
@@ -880,7 +894,8 @@ class KuzuStore(GraphStore):
             WHERE {where_clause}
             RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
-                   c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
+                   c.valid_from, c.valid_to, c.last_seen_at, c.status,
+                   c.source_refs, c.merged_from, c.embedding
             ORDER BY c.last_seen_at DESC
             LIMIT $limit
             """,
@@ -889,7 +904,8 @@ class KuzuStore(GraphStore):
         cols = [
             "id", "context_type", "subtype", "summary", "structured_slots",
             "confidence", "support_count", "created_at", "updated_at",
-            "valid_from", "valid_to", "last_seen_at", "status", "embedding",
+            "valid_from", "valid_to", "last_seen_at", "status",
+            "source_refs", "merged_from", "embedding",
         ]
         result = []
         while resp.has_next():
@@ -1019,7 +1035,8 @@ class KuzuStore(GraphStore):
         context_id: str,
         confidence: float,
         weight: float,
-        original_type: str,
+        original_signal: str,
+        evidence_span: str,
         timestamp: int,
     ) -> None:
         exists = self.conn.execute(
@@ -1038,7 +1055,8 @@ class KuzuStore(GraphStore):
                     r.weight = $weight,
                     r.updated_at = $timestamp,
                     r.last_seen_at = $timestamp,
-                    r.original_type = $original_type
+                    r.original_signal = $original_signal,
+                    r.evidence_span = $evidence_span
                 """,
                 {
                     "event_id": event_id,
@@ -1046,7 +1064,8 @@ class KuzuStore(GraphStore):
                     "confidence": float(confidence),
                     "weight": float(weight),
                     "timestamp": int(timestamp),
-                    "original_type": original_type,
+                    "original_signal": original_signal,
+                    "evidence_span": evidence_span,
                 },
             )
             return
@@ -1057,7 +1076,8 @@ class KuzuStore(GraphStore):
             CREATE (e)-[:IN_REL {
                 confidence: $confidence,
                 weight: $weight,
-                original_type: $original_type,
+                original_signal: $original_signal,
+                evidence_span: $evidence_span,
                 created_at: $timestamp,
                 updated_at: $timestamp,
                 last_seen_at: $timestamp
@@ -1069,7 +1089,8 @@ class KuzuStore(GraphStore):
                 "confidence": float(confidence),
                 "weight": float(weight),
                 "timestamp": int(timestamp),
-                "original_type": original_type,
+                "original_signal": original_signal,
+                "evidence_span": evidence_span,
             },
         )
 
@@ -1296,7 +1317,8 @@ class KuzuStore(GraphStore):
             MATCH (:Event {id: $event_id})-[r:IN_REL]->(c:Context)
             RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
-                   c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
+                   c.valid_from, c.valid_to, c.last_seen_at, c.status,
+                   c.source_refs, c.merged_from, c.embedding
             ORDER BY r.weight DESC, r.confidence DESC
             """,
             {"event_id": event_id},
@@ -1304,7 +1326,8 @@ class KuzuStore(GraphStore):
         cols = [
             "id", "context_type", "subtype", "summary", "structured_slots",
             "confidence", "support_count", "created_at", "updated_at",
-            "valid_from", "valid_to", "last_seen_at", "status", "embedding",
+            "valid_from", "valid_to", "last_seen_at", "status",
+            "source_refs", "merged_from", "embedding",
         ]
         result = []
         while resp.has_next():
@@ -1346,7 +1369,8 @@ class KuzuStore(GraphStore):
             WHERE c.status = 'active'
             RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
-                   c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
+                   c.valid_from, c.valid_to, c.last_seen_at, c.status,
+                   c.source_refs, c.merged_from, c.embedding
             ORDER BY c.last_seen_at DESC
             LIMIT $limit
             """,
@@ -1355,7 +1379,8 @@ class KuzuStore(GraphStore):
         cols = [
             "id", "context_type", "subtype", "summary", "structured_slots",
             "confidence", "support_count", "created_at", "updated_at",
-            "valid_from", "valid_to", "last_seen_at", "status", "embedding",
+            "valid_from", "valid_to", "last_seen_at", "status",
+            "source_refs", "merged_from", "embedding",
         ]
         scored: list[tuple[float, Context]] = []
         while resp.has_next():
@@ -1572,7 +1597,7 @@ class KuzuStore(GraphStore):
         self.conn.execute(
             """
             MATCH (c:Context {id: $id})
-            SET c.status = 'removed',
+            SET c.status = 'deprecated',
                 c.updated_at = $archived_at,
                 c.valid_to = CASE WHEN c.valid_to IS NULL THEN $archived_at ELSE c.valid_to END
             """,
@@ -1686,7 +1711,7 @@ class KuzuStore(GraphStore):
         resp = self.conn.execute(
             """
             MATCH (:Event {id: $source_event_id})-[r:IN_REL]->(c:Context)
-            RETURN c.id, r.confidence, r.weight, r.original_type, r.last_seen_at
+            RETURN c.id, r.confidence, r.weight, r.original_signal, r.evidence_span, r.last_seen_at
             """,
             {"source_event_id": source_event_id},
         )
@@ -1697,8 +1722,9 @@ class KuzuStore(GraphStore):
                 context_id=row[0],
                 confidence=float(row[1] or 0.7),
                 weight=float(row[2] or 1.0),
-                original_type=row[3] or "manual_merge",
-                timestamp=int(row[4] or ts),
+                original_signal=row[3] or "manual_merge",
+                evidence_span=row[4] or "",
+                timestamp=int(row[5] or ts),
             )
             moved["context_links"] += 1
         self.conn.execute(
@@ -1881,7 +1907,7 @@ class KuzuStore(GraphStore):
         resp = self.conn.execute(
             """
             MATCH (e:Event)-[r:IN_REL]->(:Context {id: $source_context_id})
-            RETURN e.id, r.confidence, r.weight, r.original_type, r.last_seen_at
+            RETURN e.id, r.confidence, r.weight, r.original_signal, r.evidence_span, r.last_seen_at
             """,
             {"source_context_id": source_context_id},
         )
@@ -1892,8 +1918,9 @@ class KuzuStore(GraphStore):
                 context_id=target_context_id,
                 confidence=float(row[1] or 0.7),
                 weight=float(row[2] or 1.0),
-                original_type=row[3] or "manual_context_merge",
-                timestamp=int(row[4] or ts),
+                original_signal=row[3] or "manual_context_merge",
+                evidence_span=row[4] or "",
+                timestamp=int(row[5] or ts),
             )
             moved += 1
         self.conn.execute(
@@ -1996,7 +2023,8 @@ class KuzuStore(GraphStore):
             {where_clause}
             RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
-                   c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
+                   c.valid_from, c.valid_to, c.last_seen_at, c.status,
+                   c.source_refs, c.merged_from, c.embedding
             ORDER BY c.last_seen_at DESC
             LIMIT $limit
             """,
@@ -2005,7 +2033,8 @@ class KuzuStore(GraphStore):
         cols = [
             "id", "context_type", "subtype", "summary", "structured_slots",
             "confidence", "support_count", "created_at", "updated_at",
-            "valid_from", "valid_to", "last_seen_at", "status", "embedding",
+            "valid_from", "valid_to", "last_seen_at", "status",
+            "source_refs", "merged_from", "embedding",
         ]
         rows: list[tuple[float, Context]] = []
         while resp.has_next():
@@ -2084,7 +2113,7 @@ class KuzuStore(GraphStore):
             f"""
             MATCH (e:Event)-[r:IN_REL]->(c:Context)
             {where_clause}
-            RETURN e.id, c.id, r.confidence, r.weight, r.original_type, r.last_seen_at
+            RETURN e.id, c.id, r.confidence, r.weight, r.original_signal, r.evidence_span, r.last_seen_at
             ORDER BY r.last_seen_at DESC
             LIMIT $limit
             """,
@@ -2099,8 +2128,9 @@ class KuzuStore(GraphStore):
                     "context_id": row[1],
                     "confidence": float(row[2] or 0.0),
                     "weight": float(row[3] or 0.0),
-                    "original_type": row[4] or "",
-                    "last_seen_at": int(row[5] or 0),
+                    "original_signal": row[4] or "",
+                    "evidence_span": row[5] or "",
+                    "last_seen_at": int(row[6] or 0),
                 }
             )
         return rows

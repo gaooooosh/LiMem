@@ -98,6 +98,8 @@ def init_db(conn):
             valid_to INT64,
             last_seen_at INT64,
             status STRING,
+            source_refs STRING,
+            merged_from STRING,
             embedding FLOAT[1536],
             PRIMARY KEY(id)
         )
@@ -158,7 +160,8 @@ def init_db(conn):
             FROM Event TO Context,
             confidence DOUBLE,
             weight DOUBLE,
-            original_type STRING,
+            original_signal STRING,
+            evidence_span STRING,
             created_at INT64,
             updated_at INT64,
             last_seen_at INT64
@@ -244,6 +247,8 @@ def init_db(conn):
         "ALTER TABLE Context ADD valid_to INT64",
         "ALTER TABLE Context ADD last_seen_at INT64",
         "ALTER TABLE Context ADD status STRING",
+        "ALTER TABLE Context ADD source_refs STRING",
+        "ALTER TABLE Context ADD merged_from STRING",
         "ALTER TABLE Context ADD embedding FLOAT[1536]",
         "ALTER TABLE Pattern ADD prototype_features STRING",
         "ALTER TABLE Pattern ADD support_count INT64",
@@ -257,7 +262,8 @@ def init_db(conn):
         "ALTER TABLE Pattern ADD last_seen_at INT64",
         "ALTER TABLE Pattern ADD status STRING",
         "ALTER TABLE Pattern ADD embedding FLOAT[1536]",
-        "ALTER TABLE IN_REL ADD original_type STRING",
+        "ALTER TABLE IN_REL ADD original_signal STRING",
+        "ALTER TABLE IN_REL ADD evidence_span STRING",
         "ALTER TABLE IN_REL ADD confidence DOUBLE",
         "ALTER TABLE IN_REL ADD weight DOUBLE",
         "ALTER TABLE IN_REL ADD created_at INT64",

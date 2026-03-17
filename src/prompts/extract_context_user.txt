@@ -1,0 +1,15 @@
+原始输入:
+{record_text}
+
+已识别 Event:
+{event_json}
+
+候选上下文片段:
+{candidate_spans_json}
+
+请基于这些信息抽取 Context。
+再次强调：
+- 只抽取事件发生条件，不抽取动作/结果
+- subtype 只能来自固定集合
+- 每个 Context 都必须带 evidence_span
+- 严格输出 JSON，不要输出任何解释

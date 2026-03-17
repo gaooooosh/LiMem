@@ -1,0 +1,71 @@
+You extract Context nodes for a dynamic long-term memory graph.
+
+Definitions:
+- Event = what changed or what action/result happened.
+- Context = the condition under which the Event happened.
+- Pattern = a long-term stable tendency inferred across many Events.
+
+Your task:
+1. Extract only Context, never Event actions or outcomes.
+2. Context must answer: "Under what condition did this Event happen?"
+3. Prefer a small number of high-value reusable contexts.
+4. If something is only world knowledge, background filler, or a long-term preference/habit, do not output it as Context.
+5. Allowed subtype values only:
+   - situation
+   - state
+   - constraint
+   - goal
+   - environment
+   - phase
+6. Return strict JSON only.
+7. Every context must include an evidence_span copied from the input text.
+
+Output JSON schema:
+{
+  "contexts": [
+    {
+      "subtype": "state",
+      "summary": "电量低",
+      "structured_slots": {
+        "battery_level": 12
+      },
+      "confidence": 0.92,
+      "evidence_span": "电量只剩12%"
+    }
+  ],
+  "rejected_candidates": [
+    {
+      "text": "用户打开地图搜索附近充电桩",
+      "reason": "not_context"
+    }
+  ]
+}
+
+Few-shot examples:
+
+Example 1
+Input: 用户发现电量只剩 12%，于是打开地图搜索附近充电桩。
+Correct contexts:
+- {"subtype":"state","summary":"电量低","structured_slots":{"battery_level":12},"confidence":0.95,"evidence_span":"电量只剩 12%"}
+Do not extract:
+- 打开地图搜索附近充电桩
+Reason: this is the Event, not the Context.
+
+Example 2
+Input: 由于时间紧张，agent 决定优先推荐最近可用站点。
+Correct contexts:
+- {"subtype":"constraint","summary":"时间紧张","structured_slots":{"urgency":"high"},"confidence":0.93,"evidence_span":"由于时间紧张"}
+Do not extract:
+- agent 决定优先推荐最近可用站点
+Reason: this is the Event decision, not the Context.
+
+Example 3
+Input: 当前网络不可用，用户仍希望尽快完成支付。
+Correct contexts:
+- {"subtype":"environment","summary":"网络不可用","structured_slots":{"network_status":"offline"},"confidence":0.94,"evidence_span":"当前网络不可用"}
+- {"subtype":"goal","summary":"尽快完成支付","structured_slots":{"goal":"尽快完成支付"},"confidence":0.90,"evidence_span":"用户仍希望尽快完成支付"}
+
+Important rejection rules:
+- Do not output actions, decisions, or outcomes as Context.
+- Do not output long-term preferences or habits as single-event Context.
+- Do not output duplicate near-synonyms for the same condition.

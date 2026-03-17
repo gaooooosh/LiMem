@@ -321,8 +321,8 @@ class MemoryGraphOps:
         elif isinstance(item, dict):
             context = Context(
                 id=str(item.get("id", "") or ""),
-                context_type=str(item.get("context_type", "situation") or "situation"),
-                subtype=str(item.get("subtype", "generic") or "generic"),
+                context_type=str(item.get("context_type", "context") or "context"),
+                subtype=str(item.get("subtype", "situation") or "situation"),
                 summary=str(item.get("summary", "") or ""),
                 structured_slots=dict(item.get("structured_slots", {}) or {}),
                 confidence=float(item.get("confidence", 0.6) or 0.6),
@@ -333,6 +333,8 @@ class MemoryGraphOps:
                 valid_to=item.get("valid_to"),
                 last_seen_at=int(item.get("last_seen_at", 0) or 0),
                 status=str(item.get("status", "active") or "active"),
+                source_refs=list(item.get("source_refs", []) or []),
+                merged_from=list(item.get("merged_from", []) or []),
                 embedding=item.get("embedding"),
             )
         else:
@@ -480,6 +482,8 @@ class MemoryGraphOps:
             "valid_to": context.valid_to,
             "last_seen_at": context.last_seen_at,
             "status": context.status,
+            "source_refs": context.source_refs,
+            "merged_from": context.merged_from,
         }
 
     def _serialize_pattern(self, pattern: Optional[Pattern]) -> Optional[dict[str, Any]]:

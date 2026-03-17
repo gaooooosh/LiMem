@@ -296,7 +296,8 @@ class GraphStore(ABC):
         context_id: str,
         confidence: float,
         weight: float,
-        original_type: str,
+        original_signal: str,
+        evidence_span: str,
         timestamp: int,
     ) -> None:
         raise NotImplementedError("link_event_to_context is not implemented")

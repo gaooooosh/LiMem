@@ -259,6 +259,7 @@ class MemoryBuilder:
 
         payload = dict(data)
         payload["episode_id"] = episode.id
+        payload["episode_text"] = episode.content
         if episode.metadata:
             payload["episode_metadata"] = dict(episode.metadata)
 

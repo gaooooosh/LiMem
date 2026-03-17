@@ -45,7 +45,7 @@ class LegacyEdgeAdapter:
             resp = self.store.conn.execute(
                 """
                 MATCH (:Event {id: $event_id})-[r:IN_REL]->(c:Context)
-                RETURN c.id, c.summary, r.confidence, r.weight, r.original_type
+                RETURN c.id, c.summary, r.confidence, r.weight, r.original_signal
                 """,
                 {"event_id": event_id},
             )
@@ -58,7 +58,7 @@ class LegacyEdgeAdapter:
                         "target_summary": row[1],
                         "confidence": row[2],
                         "weight": row[3],
-                        "original_type": row[4],
+                        "original_signal": row[4],
                     }
                 )
         except Exception:
@@ -82,7 +82,7 @@ class LegacyEdgeAdapter:
                         "target_summary": str(row[0]),
                         "confidence": 1.0,
                         "weight": row[1] or 1,
-                        "original_type": "INVOLVES",
+                        "original_signal": "INVOLVES",
                     }
                 )
         except Exception:
@@ -150,7 +150,8 @@ def migrate_to_dynamic_graph(
                 context_id=ctx_id,
                 confidence=1.0,
                 weight=float(c_valid or 1),
-                original_type="INVOLVES",
+                original_signal="INVOLVES",
+                evidence_span=str(entity_id),
                 timestamp=int(t_valid or now),
             )
             report.migrated_in_to_context += 1
