@@ -1054,16 +1054,41 @@ class KuzuStore(GraphStore):
             "source_refs", "merged_from", "embedding",
         ]
         scored: list[tuple[float, Context]] = []
+        fallback_recent: list[Context] = []
         while resp.has_next():
             context = Context.from_db_row(list(resp.get_next()), cols)
             haystack = f"{context.summary} {safe_json_dumps(context.structured_slots)}".lower()
             score = self._text_similarity_score(haystack, query, query_entities)
-            if score <= 0.0 and (query or query_entities):
+            if score > 0.0 or not (query or query_entities):
+                score += 0.15 * context.confidence
+                scored.append((score, context))
                 continue
-            score += 0.15 * context.confidence
-            scored.append((score, context))
+            # Semantic miss fallback: keep a small recent-confidence pool to prevent sparse zero-recall.
+            fallback_recent.append(context)
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [context for _, context in scored[:limit]]
+        result = [context for _, context in scored[:limit]]
+        if len(result) >= limit or not fallback_recent:
+            return result
+
+        fallback_recent.sort(
+            key=lambda c: (
+                c.last_seen_at or c.updated_at or c.valid_from or c.created_at,
+                c.confidence,
+                c.support_count,
+            ),
+            reverse=True,
+        )
+        fallback_budget = min(max(2, limit // 4), limit - len(result))
+        existing_ids = {c.id for c in result}
+        for context in fallback_recent:
+            if context.id in existing_ids:
+                continue
+            result.append(context)
+            existing_ids.add(context.id)
+            if len(result) >= limit or fallback_budget <= 1:
+                break
+            fallback_budget -= 1
+        return result
 
     def _apply_status_filters(
         self,

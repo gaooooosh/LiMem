@@ -1101,7 +1101,7 @@ class DynamicEvolutionEngine:
                     continue
 
                 score = self._context_merge_score(left, right)
-                if score < threshold:
+                if resolved_strategy != "llm" and score < threshold:
                     continue
 
                 canonical, merged = self._pick_canonical_context(left, right)
