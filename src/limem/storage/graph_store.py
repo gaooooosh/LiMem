@@ -252,6 +252,31 @@ class GraphStore(ABC):
         """
         pass
 
+    @abstractmethod
+    def upsert_event_relation(
+        self,
+        from_event_id: str,
+        to_event_id: str,
+        relation_type: str,
+        description: str,
+        confidence: float,
+        evidence_span: str,
+        source_episode_id: str,
+        source_session_id: str,
+        timestamp: int,
+    ) -> None:
+        """创建或更新 Event->Event 关系边。"""
+        pass
+
+    @abstractmethod
+    def list_event_event_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """列出 Event->Event 关系边。"""
+        pass
+
     # ==================== Dynamic Evolution 扩展 ====================
     # 默认提供可选扩展接口，子类按需实现。
 

@@ -19,18 +19,19 @@ class TestExtractionNormalization(unittest.TestCase):
 
         normalized = normalize_event_payload(payload, episode_text="用户说：导航去公司")
 
-        self.assertEqual(normalized["event_type"], "interaction")
         self.assertEqual(normalized["participants"], [{"role": "用户", "seat": ""}])
-        self.assertEqual(normalized["location"]["geo_context"], "车内")
-        self.assertEqual(normalized["location"]["digital_context"], "导航系统")
         self.assertEqual(normalized["time_range"]["display_time_bucket"], "morning")
+        self.assertEqual(normalized["action"], "导航去公司")
+        self.assertEqual(normalized["causality"], "系统开始导航")
         self.assertTrue(normalized["summary"])
         self.assertNotIn("actor", normalized)
         self.assertNotIn("context", normalized)
         self.assertNotIn("time", normalized)
         self.assertNotIn("outcome", normalized)
+        self.assertNotIn("event_type", normalized)
+        self.assertNotIn("location", normalized)
 
-    def test_event_type_is_inferred_from_change_semantics(self):
+    def test_dynamic_change_is_preserved(self):
         normalized = normalize_event_payload(
             {
                 "event": {
@@ -42,7 +43,9 @@ class TestExtractionNormalization(unittest.TestCase):
             episode_text="系统检测到胎压异常",
         )
 
-        self.assertEqual(normalized["event_type"], "observation")
+        self.assertEqual(normalized["summary"], "系统检测到胎压异常")
+        self.assertEqual(normalized["action"], "检测到胎压异常")
+        self.assertEqual(normalized["participants"], [{"role": "系统", "seat": ""}])
 
     def test_static_background_is_not_promoted_as_dynamic_event(self):
         normalized = normalize_event_payload(

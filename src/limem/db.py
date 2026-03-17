@@ -140,6 +140,21 @@ def init_db(conn):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE REL TABLE IF NOT EXISTS EVENT_RELATION(
+            FROM Event TO Event,
+            relation_type STRING,
+            description STRING,
+            confidence DOUBLE,
+            evidence_span STRING,
+            source_episode_id STRING,
+            source_session_id STRING,
+            created_at INT64,
+            updated_at INT64
+        )
+        """
+    )
     # Best-effort migration for older databases.
     for stmt in [
         "ALTER TABLE Event ADD participants STRING",
@@ -181,6 +196,14 @@ def init_db(conn):
         "ALTER TABLE IN_REL ADD created_at INT64",
         "ALTER TABLE IN_REL ADD updated_at INT64",
         "ALTER TABLE IN_REL ADD last_seen_at INT64",
+        "ALTER TABLE EVENT_RELATION ADD relation_type STRING",
+        "ALTER TABLE EVENT_RELATION ADD description STRING",
+        "ALTER TABLE EVENT_RELATION ADD confidence DOUBLE",
+        "ALTER TABLE EVENT_RELATION ADD evidence_span STRING",
+        "ALTER TABLE EVENT_RELATION ADD source_episode_id STRING",
+        "ALTER TABLE EVENT_RELATION ADD source_session_id STRING",
+        "ALTER TABLE EVENT_RELATION ADD created_at INT64",
+        "ALTER TABLE EVENT_RELATION ADD updated_at INT64",
     ]:
         try:
             conn.execute(stmt)

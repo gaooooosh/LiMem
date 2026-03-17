@@ -35,6 +35,7 @@ from ..config import (
     DECAY_RATE,
     DECAY_STEP,
     ENABLE_AUTO_CONSOLIDATION,
+    ENABLE_EVENT_RELATIONS,
     EVENT_CONSOLIDATION_CANDIDATE_LIMIT,
     EVENT_CONSOLIDATION_PAYLOAD_WEIGHT,
     EVENT_CONSOLIDATION_TEXT_WEIGHT,
@@ -100,6 +101,7 @@ class DynamicEvolutionConfig:
     event_consolidation_time_weight: float = EVENT_CONSOLIDATION_TIME_WEIGHT
     event_merge_trace_strategy_version: str = EVENT_MERGE_TRACE_STRATEGY_VERSION
     event_merge_trace_log_path: str = EVENT_MERGE_TRACE_LOG_PATH
+    enable_event_relations: bool = ENABLE_EVENT_RELATIONS
 
 
 class DynamicEvolutionEngine:
@@ -158,6 +160,7 @@ class DynamicEvolutionEngine:
 
         new_events: list[Event] = []
         in_links = 0
+        relation_links = 0
         now = int(time.time())
 
         # Append-first: create event nodes without global rescoring.
@@ -174,6 +177,11 @@ class DynamicEvolutionEngine:
         for event in new_events:
             resolved_contexts = self.resolve_context_pairs(event, record=record)
             in_links += self.attach_contexts_to_event(event, resolved_contexts)
+        if self.config.enable_event_relations:
+            relation_links += self.extract_event_event_relations(
+                events=new_events,
+                record=record,
+            )
         if self.config.enable_auto_consolidation:
             ts = int(time.time())
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
@@ -183,17 +191,24 @@ class DynamicEvolutionEngine:
             "event_count": len(new_events),
             "context_links": in_links,
             "next_links": 0,
+            "event_relation_links": relation_links,
         }
 
     def evolve_existing_events(self, events: list[Event]) -> dict[str, int]:
         """Apply local dynamic updates for already-persisted events."""
         if not events:
-            return {"context_links": 0, "next_links": 0}
+            return {"context_links": 0, "next_links": 0, "event_relation_links": 0}
 
         context_links = 0
+        relation_links = 0
         for event in events:
             resolved_contexts = self.resolve_context_pairs(event, record=None)
             context_links += self.attach_contexts_to_event(event, resolved_contexts)
+        if self.config.enable_event_relations:
+            relation_links += self.extract_event_event_relations(
+                events=events,
+                record=None,
+            )
         if self.config.enable_auto_consolidation:
             ts = int(time.time())
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
@@ -202,6 +217,202 @@ class DynamicEvolutionEngine:
         return {
             "context_links": context_links,
             "next_links": 0,
+            "event_relation_links": relation_links,
+        }
+
+    def extract_event_event_relations(
+        self,
+        events: list[Event],
+        record: Optional[Any] = None,
+    ) -> int:
+        if len(events) < 2 or not self._llm_relation_available():
+            return 0
+
+        source_text = self._extract_relation_source_text(record=record, events=events)
+        if not source_text:
+            source_text = " ".join(event.summary for event in events if event.summary).strip()
+        if not source_text:
+            return 0
+
+        created = 0
+        for idx, left in enumerate(events):
+            for right in events[idx + 1:]:
+                if not left or not right or left.id == right.id:
+                    continue
+                if left.status in {"merged", "archived"} or right.status in {"merged", "archived"}:
+                    continue
+                if not self._same_relation_scope(left, right):
+                    continue
+                payload = self._relation_prompt_payload(left=left, right=right, source_text=source_text)
+                decision = self._call_relation_llm(payload)
+                if not isinstance(decision, dict) or not bool(decision.get("should_link", False)):
+                    continue
+                relation = self._normalize_relation_decision(left=left, right=right, decision=decision)
+                if relation is None:
+                    continue
+                self.store.upsert_event_relation(
+                    from_event_id=relation["from_event_id"],
+                    to_event_id=relation["to_event_id"],
+                    relation_type=relation["relation_type"],
+                    description=relation["description"],
+                    confidence=relation["confidence"],
+                    evidence_span=relation["evidence_span"],
+                    source_episode_id=relation["source_episode_id"],
+                    source_session_id=relation["source_session_id"],
+                    timestamp=relation["timestamp"],
+                )
+                created += 1
+        return created
+
+    def _extract_relation_source_text(self, record: Optional[Any], events: list[Event]) -> str:
+        if isinstance(record, str):
+            return record.strip()
+        if isinstance(record, dict):
+            for key in ["episode_text", "content", "text", "raw_text"]:
+                value = str(record.get(key, "") or "").strip()
+                if value:
+                    return value
+        for event in events:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            text = str(payload.get("episode_text", "") or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _same_relation_scope(self, left: Event, right: Event) -> bool:
+        left_payload = left.payload if isinstance(left.payload, dict) else {}
+        right_payload = right.payload if isinstance(right.payload, dict) else {}
+        left_session = str(left_payload.get("session_id", "") or "").strip()
+        right_session = str(right_payload.get("session_id", "") or "").strip()
+        if left_session and right_session:
+            return left_session == right_session
+        left_episode = str(left_payload.get("episode_id", "") or "").strip()
+        right_episode = str(right_payload.get("episode_id", "") or "").strip()
+        if left_episode and right_episode:
+            return left_episode == right_episode
+        return True
+
+    def _relation_prompt_payload(
+        self,
+        left: Event,
+        right: Event,
+        source_text: str,
+    ) -> dict[str, Any]:
+        return {
+            "task": (
+                "Given two extracted events from the same source text, decide whether to create an event-event "
+                "relation edge and provide a detailed relation description."
+            ),
+            "rules": [
+                "Only create an edge if the relation is explicitly supported by the source text.",
+                "Prefer concrete relation types such as causality, adjacency, prerequisite, enables, follows.",
+                "If no relation can be grounded in text, return should_link=false.",
+                "Return strict JSON only.",
+            ],
+            "source_text": source_text,
+            "left": self._event_prompt_payload(left),
+            "right": self._event_prompt_payload(right),
+            "output_schema": {
+                "should_link": True,
+                "relation_type": "causality",
+                "from_id": left.id,
+                "to_id": right.id,
+                "reason": "detailed relation description between the two events",
+                "evidence_span": "optional quote span from source text",
+                "confidence": 0.0,
+            },
+        }
+
+    def _llm_relation_available(self) -> bool:
+        return self._llm_merge_available()
+
+    def _call_relation_llm(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+        if not self._llm_relation_available():
+            return None
+        try:
+            dashscope.base_http_api_url = self.config.llm_base_url
+            dashscope.api_key = self.config.llm_api_key
+            resp = Generation.call(
+                api_key=self.config.llm_api_key,
+                model=self.config.llm_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an event relation extractor for memory graph construction. "
+                            "Return compact JSON only with keys: should_link, relation_type, from_id, to_id, "
+                            "reason, evidence_span, confidence."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(payload, ensure_ascii=False),
+                    },
+                ],
+                result_format="message",
+                enable_thinking=False,
+            )
+            if getattr(resp, "status_code", None) != 200:
+                return None
+            content = resp.output.choices[0].message.content
+            data = robust_json_loads(content, None)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def _normalize_relation_decision(
+        self,
+        left: Event,
+        right: Event,
+        decision: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        relation_type = str(decision.get("relation_type", "") or "").strip().lower()
+        if not relation_type:
+            return None
+        allowed_ids = {left.id, right.id}
+        from_event_id = str(decision.get("from_id", "") or "").strip()
+        to_event_id = str(decision.get("to_id", "") or "").strip()
+        if from_event_id not in allowed_ids or to_event_id not in allowed_ids or from_event_id == to_event_id:
+            ordered = sorted(
+                [left, right],
+                key=lambda event: (event.timestamp or event.last_active or 0, event.id),
+            )
+            from_event_id, to_event_id = ordered[0].id, ordered[1].id
+        reason = str(decision.get("reason", "") or "").strip()
+        if not reason:
+            return None
+        confidence_raw = decision.get("confidence", 0.0)
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        evidence_span = str(decision.get("evidence_span", "") or "").strip()
+
+        source_episode_id = ""
+        source_session_id = ""
+        for event in (left, right):
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            if not source_episode_id:
+                source_episode_id = str(payload.get("episode_id", "") or "").strip()
+            if not source_session_id:
+                source_session_id = str(payload.get("session_id", "") or "").strip()
+
+        timestamp = max(
+            int(left.last_active or left.timestamp or 0),
+            int(right.last_active or right.timestamp or 0),
+            int(time.time()),
+        )
+        return {
+            "from_event_id": from_event_id,
+            "to_event_id": to_event_id,
+            "relation_type": relation_type,
+            "description": reason,
+            "confidence": confidence,
+            "evidence_span": evidence_span,
+            "source_episode_id": source_episode_id,
+            "source_session_id": source_session_id,
+            "timestamp": timestamp,
         }
 
     # -------------------------------------------------------------------------

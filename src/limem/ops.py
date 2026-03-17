@@ -213,6 +213,11 @@ class MemoryGraphOps:
         statuses: Optional[list[str]],
     ) -> dict[str, list[dict[str, Any]]]:
         return {
+            "next": [],
+            "event_event": self.store.list_event_event_edges(
+                limit=limit,
+                event_statuses=statuses,
+            ),
             "event_context": self.store.list_event_context_edges(
                 limit=limit,
                 event_statuses=statuses,

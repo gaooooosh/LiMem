@@ -169,6 +169,19 @@ class KuzuStore(GraphStore):
                 strategy_version STRING
             )
         """)
+        self.conn.execute("""
+            CREATE REL TABLE IF NOT EXISTS EVENT_RELATION(
+                FROM Event TO Event,
+                relation_type STRING,
+                description STRING,
+                confidence DOUBLE,
+                evidence_span STRING,
+                source_episode_id STRING,
+                source_session_id STRING,
+                created_at INT64,
+                updated_at INT64
+            )
+        """)
 
         # Best-effort 迁移
         self._run_migrations()
@@ -218,6 +231,14 @@ class KuzuStore(GraphStore):
             "ALTER TABLE EVENT_MERGE_TRACE ADD similarity_score DOUBLE",
             "ALTER TABLE EVENT_MERGE_TRACE ADD merged_at INT64",
             "ALTER TABLE EVENT_MERGE_TRACE ADD strategy_version STRING",
+            "ALTER TABLE EVENT_RELATION ADD relation_type STRING",
+            "ALTER TABLE EVENT_RELATION ADD description STRING",
+            "ALTER TABLE EVENT_RELATION ADD confidence DOUBLE",
+            "ALTER TABLE EVENT_RELATION ADD evidence_span STRING",
+            "ALTER TABLE EVENT_RELATION ADD source_episode_id STRING",
+            "ALTER TABLE EVENT_RELATION ADD source_session_id STRING",
+            "ALTER TABLE EVENT_RELATION ADD created_at INT64",
+            "ALTER TABLE EVENT_RELATION ADD updated_at INT64",
         ]
 
         for stmt in migrations:
@@ -646,6 +667,118 @@ class KuzuStore(GraphStore):
                 """,
                 {"user_id": user_id, "event_id": event_id, "t_created": t_created},
             )
+
+    def upsert_event_relation(
+        self,
+        from_event_id: str,
+        to_event_id: str,
+        relation_type: str,
+        description: str,
+        confidence: float,
+        evidence_span: str,
+        source_episode_id: str,
+        source_session_id: str,
+        timestamp: int,
+    ) -> None:
+        relation_type = str(relation_type or "").strip().lower()
+        if not relation_type or not from_event_id or not to_event_id or from_event_id == to_event_id:
+            return
+        params = {
+            "from_event_id": from_event_id,
+            "to_event_id": to_event_id,
+            "relation_type": relation_type,
+            "description": str(description or "").strip(),
+            "confidence": float(confidence),
+            "evidence_span": str(evidence_span or "").strip(),
+            "source_episode_id": str(source_episode_id or "").strip(),
+            "source_session_id": str(source_session_id or "").strip(),
+            "timestamp": int(timestamp),
+        }
+        exists = self.conn.execute(
+            """
+            MATCH (:Event {id: $from_event_id})-[r:EVENT_RELATION {relation_type: $relation_type}]->(:Event {id: $to_event_id})
+            RETURN count(*)
+            """,
+            {
+                "from_event_id": from_event_id,
+                "to_event_id": to_event_id,
+                "relation_type": relation_type,
+            },
+        )
+        found = exists.has_next() and exists.get_next()[0] > 0
+        if found:
+            self.conn.execute(
+                """
+                MATCH (:Event {id: $from_event_id})-[r:EVENT_RELATION {relation_type: $relation_type}]->(:Event {id: $to_event_id})
+                SET r.description = $description,
+                    r.confidence = $confidence,
+                    r.evidence_span = $evidence_span,
+                    r.source_episode_id = $source_episode_id,
+                    r.source_session_id = $source_session_id,
+                    r.updated_at = $timestamp
+                """,
+                params,
+            )
+            return
+        self.conn.execute(
+            """
+            MATCH (src:Event {id: $from_event_id}), (dst:Event {id: $to_event_id})
+            CREATE (src)-[:EVENT_RELATION {
+                relation_type: $relation_type,
+                description: $description,
+                confidence: $confidence,
+                evidence_span: $evidence_span,
+                source_episode_id: $source_episode_id,
+                source_session_id: $source_session_id,
+                created_at: $timestamp,
+                updated_at: $timestamp
+            }]->(dst)
+            """,
+            params,
+        )
+
+    def list_event_event_edges(
+        self,
+        limit: int = 200,
+        event_statuses: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": int(limit)}
+        filters: list[str] = []
+        filters = self._apply_status_filters("src", event_statuses, params, filters)
+        if event_statuses:
+            filters.append("dst.status IN $dst_statuses")
+            params["dst_statuses"] = list(event_statuses)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        resp = self.conn.execute(
+            f"""
+            MATCH (src:Event)-[r:EVENT_RELATION]->(dst:Event)
+            {where_clause}
+            RETURN src.id, dst.id, r.relation_type, r.description, r.confidence,
+                   r.evidence_span, r.source_episode_id, r.source_session_id,
+                   r.created_at, r.updated_at
+            ORDER BY r.updated_at DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        rows = []
+        while resp.has_next():
+            row = resp.get_next()
+            rows.append(
+                {
+                    "from_event_id": row[0],
+                    "to_event_id": row[1],
+                    "relation_type": row[2] or "",
+                    "description": row[3] or "",
+                    "confidence": float(row[4] or 0.0),
+                    "evidence_span": row[5] or "",
+                    "source_episode_id": row[6] or "",
+                    "source_session_id": row[7] or "",
+                    "created_at": int(row[8] or 0),
+                    "updated_at": int(row[9] or 0),
+                }
+            )
+        return rows
 
     def _ensure_user(self, user_id: str) -> None:
         """确保用户存在"""
@@ -1076,6 +1209,7 @@ class KuzuStore(GraphStore):
             "episode_links": 0,
             "context_links": 0,
             "permanent_traits": 0,
+            "event_relations": 0,
         }
 
         resp = self.conn.execute(
@@ -1185,6 +1319,72 @@ class KuzuStore(GraphStore):
         self.conn.execute(
             """
             MATCH (:User)-[r:PERMANENT_TRAIT]->(:Event {id: $source_event_id})
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        outgoing = self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:EVENT_RELATION]->(dst:Event)
+            RETURN dst.id, r.relation_type, r.description, r.confidence, r.evidence_span,
+                   r.source_episode_id, r.source_session_id, r.updated_at
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while outgoing.has_next():
+            row = outgoing.get_next()
+            dst_id = row[0]
+            if dst_id == target_event_id:
+                continue
+            self.upsert_event_relation(
+                from_event_id=target_event_id,
+                to_event_id=dst_id,
+                relation_type=row[1] or "related",
+                description=row[2] or "",
+                confidence=float(row[3] or 0.0),
+                evidence_span=row[4] or "",
+                source_episode_id=row[5] or "",
+                source_session_id=row[6] or "",
+                timestamp=int(row[7] or ts),
+            )
+            moved["event_relations"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event {id: $source_event_id})-[r:EVENT_RELATION]->(:Event)
+            DELETE r
+            """,
+            {"source_event_id": source_event_id},
+        )
+
+        incoming = self.conn.execute(
+            """
+            MATCH (src:Event)-[r:EVENT_RELATION]->(:Event {id: $source_event_id})
+            RETURN src.id, r.relation_type, r.description, r.confidence, r.evidence_span,
+                   r.source_episode_id, r.source_session_id, r.updated_at
+            """,
+            {"source_event_id": source_event_id},
+        )
+        while incoming.has_next():
+            row = incoming.get_next()
+            src_id = row[0]
+            if src_id == target_event_id:
+                continue
+            self.upsert_event_relation(
+                from_event_id=src_id,
+                to_event_id=target_event_id,
+                relation_type=row[1] or "related",
+                description=row[2] or "",
+                confidence=float(row[3] or 0.0),
+                evidence_span=row[4] or "",
+                source_episode_id=row[5] or "",
+                source_session_id=row[6] or "",
+                timestamp=int(row[7] or ts),
+            )
+            moved["event_relations"] += 1
+        self.conn.execute(
+            """
+            MATCH (:Event)-[r:EVENT_RELATION]->(:Event {id: $source_event_id})
             DELETE r
             """,
             {"source_event_id": source_event_id},
@@ -1382,5 +1582,8 @@ class KuzuStore(GraphStore):
 
         resp = self.conn.execute("MATCH ()-[r:EVENT_MERGE_TRACE]->() RETURN count(r)")
         stats["event_merge_trace_count"] = resp.get_next()[0] if resp.has_next() else 0
+
+        resp = self.conn.execute("MATCH ()-[r:EVENT_RELATION]->() RETURN count(r)")
+        stats["event_relation_count"] = resp.get_next()[0] if resp.has_next() else 0
 
         return stats

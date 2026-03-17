@@ -23,6 +23,7 @@ from .config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     ENABLE_DYNAMIC_EVOLUTION,
+    ENABLE_EVENT_RELATIONS,
     GENERATION_MODEL,
     EMBEDDING_MODEL,
     SIMILARITY_THRESHOLD,
@@ -161,6 +162,7 @@ def create_ltm_system(
                 llm_base_url=base_url,
                 llm_model=config.get("generation_model", GENERATION_MODEL),
                 enable_auto_consolidation=config.get("enable_auto_consolidation", True),
+                enable_event_relations=config.get("enable_event_relations", ENABLE_EVENT_RELATIONS),
             ),
         )
 
