@@ -122,6 +122,29 @@ class TestExtractionNormalization(unittest.TestCase):
         self.assertNotIn("2023-03-08 08:40", normalized["summary"])
         self.assertEqual(normalized["action"], "QQ音乐播放")
 
+    def test_environment_snapshot_is_dropped_as_non_event(self):
+        episode_text = (
+            '[环境感知数据] 来源: 环境感知 | {"source":"环境感知","payload":'
+            '{"cabin_env":{"light_amb":"dynamic","noise_db":45,"temp_in":55},'
+            '"weather":{"temp_out":35.0,"condition":"sunny"},'
+            '"spatial":{"geo_type":"urban"}}}'
+        )
+        normalized = normalize_event_payload(
+            {
+                "event": {
+                    "summary": episode_text,
+                    "participants": [{"role": "环境感知"}],
+                    "action": "",
+                    "causality": "",
+                }
+            },
+            episode_text=episode_text,
+        )
+
+        self.assertEqual(normalized["summary"], "")
+        self.assertEqual(normalized["action"], "")
+        self.assertEqual(normalized["causality"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

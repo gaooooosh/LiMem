@@ -73,8 +73,9 @@ class LLMExtractor(ABC):
 class TwoStageExtractor(LLMExtractor):
     """两阶段提取器
 
-    Stage 1: 提取最小动态变化事件
-    Stage 2: 提取用于索引的核心实体
+    Stage A: 先对单条 Episode 做最小动态变化切分（segments）
+    Stage B: 对每个 segment 做结构化事件抽取
+    Stage C: 提取用于索引的核心实体
 
     这种分离防止上下文溢出，并允许独立优化。
     """
@@ -109,6 +110,10 @@ class TwoStageExtractor(LLMExtractor):
         dashscope.api_key = self.api_key
 
         # 加载提示词
+        self._event_segment_system_prompt = load_prompt("extract_event_segments_system.txt")
+        self._event_segment_user_prompt = load_prompt("extract_event_segments_user.txt")
+        self._event_struct_system_prompt = load_prompt("extract_event_struct_system.txt")
+        self._event_struct_user_prompt = load_prompt("extract_event_struct_user.txt")
         self._event_system_prompt = load_prompt("extract_event_only_system.txt")
         self._event_user_prompt = load_prompt("extract_event_only_user.txt")
         self._entity_system_prompt = load_prompt("extract_entities_only_system.txt")
@@ -137,7 +142,7 @@ class TwoStageExtractor(LLMExtractor):
         )
 
     def _extract_events(self, text: str) -> list[dict[str, Any]]:
-        """Stage 1: 提取事件信息（支持单次输入多事件）
+        """两阶段事件抽取：先切分，再逐段结构化。
 
         Args:
             text: 原始文本
@@ -145,31 +150,45 @@ class TwoStageExtractor(LLMExtractor):
         Returns:
             事件数据列表
         """
+        try:
+            segments = self._extract_event_segments(text)
+        except Exception as exc:
+            print(f"⚠️ Segment stage failed, fallback to single-pass event extraction: {exc}")
+            segments = []
+
+        if not segments:
+            return self._extract_events_single_pass(text)
+
+        normalized: list[dict[str, Any]] = []
+        for idx, segment in enumerate(segments):
+            raw_payload = self._extract_event_from_segment(
+                episode_text=text,
+                segment_text=segment,
+                segment_index=idx,
+                segment_total=len(segments),
+            )
+            raw_events = self._collect_raw_event_items(raw_payload)
+            if not raw_events and isinstance(raw_payload, dict):
+                raw_events = [raw_payload]
+            for item in raw_events:
+                if not isinstance(item, dict):
+                    continue
+                normalized_item = normalize_event_payload({"event": item}, episode_text=text)
+                if normalized_item:
+                    normalized.append(normalized_item)
+
+        return self._dedupe_events(normalized)
+
+    def _extract_events_single_pass(self, text: str) -> list[dict[str, Any]]:
+        """兼容回退：一次性抽取事件（旧流程）。"""
         user_msg = self._event_user_prompt.format(episode_text=text)
-
-        if self.enable_thinking:
-            print("⚠️ enable_thinking requires stream call; ignoring in non-stream mode.")
-
-        resp = Generation.call(
-            api_key=self.api_key,
-            model=self.generation_model,
-            messages=[
-                {"role": "system", "content": self._event_system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
-            result_format="message",
-            enable_thinking=self.enable_thinking,
+        data = self._call_generation_json(
+            system_prompt=self._event_system_prompt,
+            user_message=user_msg,
+            default={},
         )
-
-        if resp.status_code != 200:
-            print(f"⚠️ LLM call failed: status={resp.status_code}")
-            print(f"⚠️ code={resp.code} message={resp.message}")
-            raise ValueError("LLM call failed. Check model name and API key.")
-
-        content = resp.output.choices[0].message.content
-        data = robust_json_loads(content, {})
         if not data:
-            raise ValueError(f"Failed to parse event data from LLM output: {content[:200]}")
+            return []
 
         normalized: list[dict[str, Any]] = []
         raw_events = self._collect_raw_event_items(data)
@@ -182,10 +201,12 @@ class TwoStageExtractor(LLMExtractor):
             normalized_item = normalize_event_payload({"event": item}, episode_text=text)
             if normalized_item:
                 normalized.append(normalized_item)
+        return self._dedupe_events(normalized)
 
+    def _dedupe_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for item in normalized:
+        for item in events:
             signature = "|".join(
                 [
                     str(item.get("summary", "") or "").strip(),
@@ -199,6 +220,96 @@ class TwoStageExtractor(LLMExtractor):
                 seen.add(signature)
             deduped.append(item)
         return deduped
+
+    def _extract_event_segments(self, text: str) -> list[str]:
+        system_prompt = self._event_segment_system_prompt or self._event_system_prompt
+        user_template = self._event_segment_user_prompt or self._event_user_prompt
+        user_msg = user_template.format(episode_text=text)
+        data = self._call_generation_json(
+            system_prompt=system_prompt,
+            user_message=user_msg,
+            default={},
+        )
+
+        if isinstance(data, dict) and any(key in data for key in ("events", "event")):
+            return [text]
+
+        raw_segments: list[Any] = []
+        if isinstance(data, list):
+            raw_segments = data
+        elif isinstance(data, dict):
+            value = data.get("segments")
+            if isinstance(value, list):
+                raw_segments = value
+
+        segments: list[str] = []
+        seen: set[str] = set()
+        for item in raw_segments:
+            if isinstance(item, dict):
+                span = str(
+                    item.get("span_text", "")
+                    or item.get("segment_text", "")
+                    or item.get("text", "")
+                ).strip()
+            else:
+                span = str(item or "").strip()
+            if not span:
+                continue
+            key = span.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            segments.append(span)
+        return segments
+
+    def _extract_event_from_segment(
+        self,
+        episode_text: str,
+        segment_text: str,
+        segment_index: int,
+        segment_total: int,
+    ) -> Any:
+        system_prompt = self._event_struct_system_prompt or self._event_system_prompt
+        user_template = self._event_struct_user_prompt or self._event_user_prompt
+        user_msg = user_template.format(
+            episode_text=episode_text,
+            segment_text=segment_text,
+            segment_index=segment_index,
+            segment_total=segment_total,
+        )
+        return self._call_generation_json(
+            system_prompt=system_prompt,
+            user_message=user_msg,
+            default={},
+        )
+
+    def _call_generation_json(
+        self,
+        system_prompt: str,
+        user_message: str,
+        default: Any,
+    ) -> Any:
+        if self.enable_thinking:
+            print("⚠️ enable_thinking requires stream call; ignoring in non-stream mode.")
+
+        resp = Generation.call(
+            api_key=self.api_key,
+            model=self.generation_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            result_format="message",
+            enable_thinking=self.enable_thinking,
+        )
+
+        if resp.status_code != 200:
+            print(f"⚠️ LLM call failed: status={resp.status_code}")
+            print(f"⚠️ code={resp.code} message={resp.message}")
+            raise ValueError("LLM call failed. Check model name and API key.")
+
+        content = resp.output.choices[0].message.content
+        return robust_json_loads(content, default)
 
     def _collect_raw_event_items(self, payload: Any) -> list[dict[str, Any]]:
         if payload is None:
@@ -236,27 +347,10 @@ class TwoStageExtractor(LLMExtractor):
             实体名称列表
         """
         user_msg = self._entity_user_prompt.format(episode_text=text)
-
-        if self.enable_thinking:
-            print("⚠️ enable_thinking requires stream call; ignoring in non-stream mode.")
-
-        resp = Generation.call(
-            api_key=self.api_key,
-            model=self.generation_model,
-            messages=[
-                {"role": "system", "content": self._entity_system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
-            result_format="message",
-            enable_thinking=self.enable_thinking,
+        entities = self._call_generation_json(
+            system_prompt=self._entity_system_prompt,
+            user_message=user_msg,
+            default=[],
         )
-
-        if resp.status_code != 200:
-            print(f"⚠️ LLM call failed: status={resp.status_code}")
-            print(f"⚠️ code={resp.code} message={resp.message}")
-            raise ValueError("LLM call failed. Check model name and API key.")
-
-        content = resp.output.choices[0].message.content
-        entities = robust_json_loads(content, [])
 
         return normalize_entity_candidates(entities, source_text=text)

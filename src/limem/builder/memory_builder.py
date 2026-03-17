@@ -126,8 +126,6 @@ class MemoryBuilder:
         extraction = self.extractor.extract(episode.content)
 
         event_payloads = self._collect_event_payloads(extraction)
-        if not event_payloads:
-            event_payloads = [{}]
         print(f"🧠 Extracted Events: {len(event_payloads)}")
 
         # 获取实体
@@ -211,14 +209,39 @@ class MemoryBuilder:
             merged_targets.append(consolidation.target_event_id if not is_new else None)
 
         if not built_events:
-            fallback_event = self._build_event_frame({}, episode, current_time, index=0)
-            fallback_event.id = self._append_first_event_id(fallback_event)
-            fallback_event.embedding = self._get_embedding(fallback_event.summary)
-            self.store.save_event(fallback_event)
-            self.store.link_event_to_episode(fallback_event.id, episode.id)
-            built_events = [fallback_event]
-            is_new_flags = [True]
-            merged_targets = [None]
+            # Do not persist fallback events. If normalization drops all extracted
+            # candidates, this episode is treated as non-eventful for memory graph.
+            ignored_event = Event(
+                id=f"ignored_{episode.id}",
+                summary="",
+                action="",
+                causality="",
+                time_range={
+                    "start": current_time,
+                    "end": current_time,
+                    "display_time_bucket": time_bucket_from_ts(current_time),
+                },
+                last_active=current_time,
+                participants=[],
+                evidence=[],
+                timestamp=current_time,
+                created_at=current_time,
+                updated_at=current_time,
+                valid_from=current_time,
+                payload={
+                    "episode_id": episode.id,
+                    "episode_text": episode.content,
+                    "skip_reason": "no_effective_event_after_normalization",
+                },
+                status="ignored",
+            )
+            return IngestResult(
+                event=ignored_event,
+                is_new=False,
+                merged_with=None,
+                entities_created=0,
+                events=[],
+            )
 
         # Dynamic evolution updates are strictly local and incremental.
         if self.dynamic_engine:
@@ -249,10 +272,8 @@ class MemoryBuilder:
         Returns:
             Event实例
         """
-        # 使用摘要或截取Episode内容作为摘要
+        # 仅使用提取结果中的摘要；空摘要应在上游被判定为无效事件。
         summary = data.get("summary", "")
-        if not summary:
-            summary = episode.content[:120]
 
         # 构建时间范围
         time_range = data.get("time_range", {})

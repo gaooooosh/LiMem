@@ -410,6 +410,33 @@ def _looks_like_raw_record(text: str) -> bool:
     return marker_hits >= 3
 
 
+def _looks_like_telemetry_snapshot(text: str, participants: list[dict[str, str]]) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+
+    telemetry_markers = (
+        "环境感知",
+        "来源: 环境感知",
+        "cabin_env",
+        "weather",
+        "spatial",
+        "noise_db",
+        "temp_in",
+        "temp_out",
+    )
+    marker_hits = sum(1 for marker in telemetry_markers if marker in normalized)
+    if marker_hits < 2:
+        return False
+
+    # Telemetry snapshots typically only involve environment actors and
+    # do not carry an actionable user/system operation.
+    roles = {str(item.get("role", "") or "").strip() for item in participants if isinstance(item, dict)}
+    if not roles:
+        return True
+    return roles.issubset({"环境", "环境感知"})
+
+
 _ENTITY_GENERIC_TERMS = {
     "内容", "歌曲", "歌", "音乐", "视频", "动画片", "电影", "纪录片", "节目", "专辑",
     "路线", "导航", "地址", "位置", "地方", "东西", "事情", "信息", "答案", "问题",
@@ -570,6 +597,20 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
 
     if not action:
         action = result or summary
+
+    telemetry_hint_text = " ".join(
+        [
+            _to_text(summary),
+            _to_text(action),
+            _to_text(causality),
+            _to_text(episode_text),
+            _to_text(event_payload),
+        ]
+    )
+    if _looks_like_telemetry_snapshot(telemetry_hint_text, participants):
+        summary = ""
+        action = ""
+        causality = ""
 
     if not _looks_like_dynamic_change(summary, action):
         action = ""
