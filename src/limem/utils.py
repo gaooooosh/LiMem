@@ -376,6 +376,40 @@ def _looks_like_episode_text(summary: str, episode_text: str) -> bool:
     return len(summary_text) >= 20 and ratio >= 0.85
 
 
+_DATETIME_INLINE_PATTERN = re.compile(r"\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\b")
+_NOISY_RECORD_MARKERS = (
+    '"start_time"',
+    '"end_time"',
+    '"payload"',
+    '"source"',
+    '"screen"',
+    '"app"',
+    "{",
+    "}",
+)
+
+
+def _sanitize_event_field_text(value: Any) -> str:
+    text = _to_text(value)
+    if not text:
+        return ""
+
+    text = re.sub(r"\s+", " ", text)
+    text = _DATETIME_INLINE_PATTERN.sub("", text)
+    text = re.sub(r"(还有[:：]).*$", "", text)
+    text = re.sub(r"(时间[:：]).*$", "", text)
+    text = text.strip(" ，,。；;:：|")
+    return text
+
+
+def _looks_like_raw_record(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    marker_hits = sum(1 for marker in _NOISY_RECORD_MARKERS if marker in normalized)
+    return marker_hits >= 3
+
+
 _ENTITY_GENERIC_TERMS = {
     "内容", "歌曲", "歌", "音乐", "视频", "动画片", "电影", "纪录片", "节目", "专辑",
     "路线", "导航", "地址", "位置", "地方", "东西", "事情", "信息", "答案", "问题",
@@ -514,14 +548,18 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
         participants = _infer_participants_from_text(f"{episode_text} {_to_text(event_payload)}")
     participants = _dedupe_participants(participants)
     time_range = _normalize_time_range(time_value)
-    action = _to_text(action_value)
-    result = _to_text(outcome_value)
-    summary = _to_text(
+    action = _sanitize_event_field_text(action_value)
+    result = _sanitize_event_field_text(outcome_value)
+    summary = _sanitize_event_field_text(
         _pick_first(event_payload, ["summary", "Summary", "event_summary"], "")
     )
 
-    if summary and _looks_like_episode_text(summary, episode_text):
+    if summary and (_looks_like_episode_text(summary, episode_text) or _looks_like_raw_record(summary)):
         summary = ""
+    if action and _looks_like_raw_record(action):
+        action = ""
+    if result and _looks_like_raw_record(result):
+        result = ""
 
     if not summary:
         summary = _build_event_summary(participants, action, time_range, result)

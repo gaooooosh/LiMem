@@ -256,6 +256,9 @@ class MemoryBuilder:
 
         # 构建时间范围
         time_range = data.get("time_range", {})
+        if self._should_reanchor_event_time(time_range, episode, current_time):
+            time_range["start"] = current_time
+            time_range["end"] = current_time
         if time_range.get("start", 0) == 0:
             time_range["start"] = current_time
         if time_range.get("end", 0) == 0:
@@ -286,6 +289,26 @@ class MemoryBuilder:
             payload=payload,
             status=str(data.get("status", "active")),
         )
+
+    def _should_reanchor_event_time(
+        self,
+        time_range: dict[str, Any],
+        episode: Episode,
+        current_time: int,
+    ) -> bool:
+        start_raw = int(time_range.get("start", 0) or 0) if isinstance(time_range, dict) else 0
+        if start_raw <= 0 or current_time <= 0:
+            return False
+        # For telemetry-like episode streams, far-away extracted timestamps are usually noise
+        # from copied payload text rather than the current trip record time.
+        if abs(start_raw - current_time) <= 3 * 24 * 3600:
+            return False
+        metadata = episode.metadata if isinstance(episode.metadata, dict) else {}
+        if not metadata.get("start_time"):
+            return False
+        episode_text = str(episode.content or "")
+        retrospective_hints = ("上次", "之前", "去年", "前年", "历史", "回顾")
+        return not any(token in episode_text for token in retrospective_hints)
 
     def _collect_event_payloads(self, extraction: ExtractionResult) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []

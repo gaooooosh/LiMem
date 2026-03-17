@@ -91,14 +91,14 @@ class AutoMergeRequest(BaseModel):
 class TripsDebuggerConfig:
     trips_path: str
     db_path: str
-    offline_mode: bool = True
+    offline_mode: bool = False
     append_first_mode: bool = True
     snapshot_limit: int = 80
     include_buckets: Optional[set[str]] = None
     max_items: int = 0
     sort_by_time: bool = True
     enable_auto_consolidation: bool = False
-    default_merge_strategy: str = "auto"
+    default_merge_strategy: str = "llm"
     auto_merge_after_write: bool = True
 
 
@@ -415,12 +415,20 @@ class TripsDebuggerSession:
     def _build_state(self) -> dict[str, Any]:
         if self._ltm is None:
             raise RuntimeError("Session is not initialized")
+        context_llm_available = False
+        try:
+            extractor = self._ltm.dynamic_engine.context_extractor if self._ltm.dynamic_engine else None
+            if extractor is not None and hasattr(extractor, "_llm_available"):
+                context_llm_available = bool(extractor._llm_available())
+        except Exception:
+            context_llm_available = False
         snapshot = self._ltm.snapshot(limit=self.config.snapshot_limit, include_inactive=True)
         return {
             "config": {
                 "trips_path": self.config.trips_path,
                 "db_path": self.config.db_path,
                 "offline_mode": self.config.offline_mode,
+                "context_llm_available": context_llm_available,
                 "append_first_mode": self.config.append_first_mode,
                 "snapshot_limit": self.config.snapshot_limit,
                 "episodes_total": len(self._episodes),

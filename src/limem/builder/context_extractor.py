@@ -33,6 +33,7 @@ from ..utils import load_prompt, robust_json_loads, safe_json_dumps
 _HABIT_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯")
 _EVENT_LIKE_MARKERS = (
     "打开", "搜索", "开始", "完成", "成功", "失败", "找到", "支付", "导航", "播放", "推荐", "决定",
+    "说", "回答", "开启", "关闭", "调高", "调低", "前往", "去",
 )
 _STRONG_CONTEXT_SIGNAL_MARKERS = (
     "由于", "因为", "当前", "目前", "此时", "只剩", "仅剩", "不足", "需要", "希望", "目标", "条件",
@@ -371,15 +372,19 @@ class ContextExtractionPipeline:
                 continue
             if self._looks_like_habit_not_context(normalized_text):
                 continue
+            if self._looks_like_event_or_result(normalized_text, event):
+                continue
+            if self._looks_low_reusability_context(normalized_text, span.text, strict=True):
+                continue
             drafts.append(
                 ContextDraft(
                     subtype=normalize_context_subtype(span.subtype_hint),
-                    summary=normalized_text,
+                    summary=self._normalize_context_surface(normalized_text),
                     structured_slots={
                         _FALLBACK_SLOT_KEYS.get(
                             normalize_context_subtype(span.subtype_hint),
                             "condition",
-                        ): normalized_text
+                        ): self._normalize_context_surface(normalized_text)
                     },
                     confidence=0.58,
                     evidence_span=span.text,
@@ -392,33 +397,6 @@ class ContextExtractionPipeline:
                     valid_from=self._event_timestamp(event),
                 )
             )
-
-        if drafts or not record_text:
-            return drafts
-
-        for clause, start, end in self._split_text_clauses(record_text):
-            if len(clause) < 4:
-                continue
-            if self._looks_like_event_or_result(clause, event):
-                continue
-            drafts.append(
-                ContextDraft(
-                    subtype="situation",
-                    summary=self._normalize_free_text(clause),
-                    structured_slots={"situation": self._normalize_free_text(clause)},
-                    confidence=0.4,
-                    evidence_span=clause,
-                    source_refs=self._make_source_refs(
-                        event=event,
-                        evidence_span=clause,
-                        signal="fallback_clause",
-                        source="fallback_context_extraction",
-                    ),
-                    valid_from=self._event_timestamp(event),
-                )
-            )
-            if len(drafts) >= 2:
-                break
         return drafts
 
     def _clean_structured_slots(self, structured_slots: dict[str, Any]) -> dict[str, Any]:

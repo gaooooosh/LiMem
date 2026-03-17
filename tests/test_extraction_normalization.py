@@ -102,6 +102,26 @@ class TestExtractionNormalization(unittest.TestCase):
 
         self.assertEqual(entities, ["孩子", "周杰伦", "QQ音乐", "公司"])
 
+    def test_noisy_record_summary_and_inline_history_time_are_cleaned(self):
+        episode_text = (
+            '[屏幕操作数据] {"start_time":"2026-03-12 17:37:01","source":"屏幕",'
+            '"payload":{"SCREEN":"副驾屏","APP":"QQ音乐。还有：QQ音乐播放；时间:2023-03-08 08:40"}}'
+        )
+        normalized = normalize_event_payload(
+            {
+                "event": {
+                    "summary": episode_text,
+                    "action": "QQ音乐播放；时间:2023-03-08 08:40",
+                    "participants": [],
+                }
+            },
+            episode_text=episode_text,
+        )
+
+        self.assertNotIn("start_time", normalized["summary"])
+        self.assertNotIn("2023-03-08 08:40", normalized["summary"])
+        self.assertEqual(normalized["action"], "QQ音乐播放")
+
 
 if __name__ == "__main__":
     unittest.main()

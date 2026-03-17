@@ -4,17 +4,20 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from limem import Episode
 from limem.utils import parse_time_to_unix
+
+if TYPE_CHECKING:
+    from limem.core.episode import Episode
 
 
 @dataclass
 class TripSplitResult:
-    base_episodes: list[Episode]
-    debug_episodes: list[Episode]
+    base_episodes: list["Episode"]
+    debug_episodes: list["Episode"]
     split_index: int
     split_ratio: float
     total_episodes: int
@@ -25,6 +28,32 @@ def safe_compact_json(data: Any, max_len: int = 220) -> str:
     if len(text) > max_len:
         return text[:max_len] + "..."
     return text
+
+
+_DATETIME_PATTERN = re.compile(r"\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\b")
+
+
+def _clean_text_fragment(value: Any, max_len: int = 80) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    text = _DATETIME_PATTERN.sub("", text)
+    text = text.strip(" ，,。；;:：|")
+    if len(text) > max_len:
+        text = text[:max_len].rstrip() + "..."
+    return text
+
+
+def _extract_primary_app_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("\r", "\n")
+    text = re.split(r"(还有[:：]|时间[:：])", text, maxsplit=1)[0]
+    text = text.split("\n", 1)[0]
+    cleaned = _clean_text_fragment(text, max_len=40)
+    return cleaned
 
 
 def extract_episode_text(record: dict[str, Any], bucket_name: str) -> str:
@@ -42,9 +71,30 @@ def extract_episode_text(record: dict[str, Any], bucket_name: str) -> str:
         parts.append(f"内容: {payload.get('title')}")
     if payload.get("endPoi"):
         parts.append(f"目的地: {payload.get('endPoi')}")
+    if payload.get("SCREEN") or payload.get("screen"):
+        screen_value = payload.get("SCREEN", payload.get("screen"))
+        screen_text = _clean_text_fragment(screen_value, max_len=24)
+        if screen_text:
+            parts.append(f"屏幕: {screen_text}")
+    if payload.get("APP") or payload.get("app"):
+        app_value = payload.get("APP", payload.get("app"))
+        app_text = _extract_primary_app_name(app_value)
+        if app_text:
+            parts.append(f"应用: {app_text}")
 
     if not parts:
-        parts.append(safe_compact_json(record))
+        source = _clean_text_fragment(record.get("source", ""), max_len=20)
+        if source:
+            parts.append(f"来源: {source}")
+        compact_payload = {
+            k: _clean_text_fragment(v, max_len=60)
+            for k, v in payload.items()
+            if isinstance(v, (str, int, float, bool)) and _clean_text_fragment(v, max_len=60)
+        }
+        if compact_payload:
+            parts.append(safe_compact_json(compact_payload))
+        else:
+            parts.append(safe_compact_json({"source": record.get("source", ""), "payload": payload}))
     return f"[{bucket_name}] " + " | ".join(parts)
 
 
@@ -53,8 +103,10 @@ def load_trips_episodes(
     max_items: int = 0,
     include_buckets: Optional[set[str]] = None,
     sort_by_time: bool = True,
-) -> list[Episode]:
+) -> list["Episode"]:
     """Load trips.json and flatten all event-like records into Episode list."""
+    from limem.core.episode import Episode
+
     with open(path, "r", encoding="utf-8") as f:
         trips = json.load(f)
 
@@ -100,7 +152,7 @@ def load_trips_episodes(
 
 
 def split_trips_episodes(
-    episodes: list[Episode],
+    episodes: list["Episode"],
     split_index: int = 0,
     split_ratio: float = 0.7,
     debug_max_items: int = 0,
