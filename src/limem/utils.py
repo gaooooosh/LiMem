@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -180,6 +181,47 @@ def _normalize_participants(actor_value: Any) -> list[dict[str, str]]:
     return participants
 
 
+def _dedupe_participants(participants: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, str]] = []
+    for item in participants:
+        if not isinstance(item, dict):
+            continue
+        role = _to_text(item.get("role", ""))
+        seat = _to_text(item.get("seat", ""))
+        if not role:
+            continue
+        key = (role, seat)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append({"role": role, "seat": seat})
+    return unique
+
+
+def _infer_participants_from_text(text: str) -> list[dict[str, str]]:
+    if not text:
+        return []
+
+    hints = [
+        ("用户", "用户"),
+        ("我", "用户"),
+        ("我们", "用户"),
+        ("车机", "系统"),
+        ("系统", "系统"),
+        ("助手", "agent"),
+        ("agent", "agent"),
+        ("环境", "环境"),
+        ("天气", "环境"),
+        ("路况", "环境"),
+    ]
+    participants: list[dict[str, str]] = []
+    for needle, role in hints:
+        if needle in text:
+            participants.append({"role": role, "seat": ""})
+    return _dedupe_participants(participants)
+
+
 def _normalize_location(context_value: Any) -> dict[str, str]:
     geo_context = ""
     digital_context = ""
@@ -244,19 +286,22 @@ def _normalize_time_range(time_value: Any) -> dict[str, Any]:
     start = 0
     end = 0
     display_time_bucket = ""
+    text_hint = ""
 
     if isinstance(time_value, dict):
         start = _parse_timestamp(_pick_first(time_value, ["start", "begin", "timestamp"], 0))
         end = _parse_timestamp(_pick_first(time_value, ["end", "finish"], 0))
+        text_hint = _to_text(_pick_first(time_value, ["text", "label", "description"], ""))
         display_time_bucket = _to_text(
             _pick_first(time_value, ["display_time_bucket", "bucket", "time_bucket"], "")
         )
         if not display_time_bucket:
-            display_time_bucket = _guess_bucket_from_text(_to_text(time_value))
+            display_time_bucket = _guess_bucket_from_text(text_hint or _to_text(time_value))
     elif isinstance(time_value, (int, float)):
         start = _parse_timestamp(time_value)
     elif isinstance(time_value, str):
         start = _parse_timestamp(time_value)
+        text_hint = time_value
         display_time_bucket = _guess_bucket_from_text(time_value)
 
     if start > 0 and end == 0:
@@ -325,12 +370,207 @@ def _normalize_evidence(evidence_value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+_EVENT_TYPE_ALIASES = {
+    "action": "action",
+    "act": "action",
+    "operation": "action",
+    "command": "action",
+    "observation": "observation",
+    "observe": "observation",
+    "observation_event": "observation",
+    "decision": "decision",
+    "intent": "decision",
+    "plan": "decision",
+    "choice": "decision",
+    "outcome": "outcome",
+    "result": "outcome",
+    "response": "outcome",
+    "effect": "outcome",
+    "state_change": "state_change",
+    "statechange": "state_change",
+    "state-change": "state_change",
+    "status_change": "state_change",
+    "status-change": "state_change",
+    "interaction": "interaction",
+    "dialog": "interaction",
+    "dialogue": "interaction",
+    "conversation": "interaction",
+    "request": "interaction",
+}
+
+
+def _normalize_event_type(value: Any, summary: str = "", action: str = "", result: str = "") -> str:
+    raw = _to_text(value).lower().replace(" ", "_")
+    if raw in _EVENT_TYPE_ALIASES:
+        return _EVENT_TYPE_ALIASES[raw]
+
+    text = f"{summary} {action} {result}".lower()
+    if any(token in text for token in ["看到", "发现", "观察", "监测", "检测", "提醒", "告警", "收到通知"]):
+        return "observation"
+    if any(token in text for token in ["决定", "选择", "计划", "打算", "准备", "想要", "偏好", "意图"]):
+        return "decision"
+    if any(token in text for token in ["已", "开始", "完成", "成功", "失败", "结果", "回复", "响应", "达到", "结束"]):
+        return "outcome"
+    if any(token in text for token in ["开启", "关闭", "切换", "设置", "调高", "调低", "进入", "离开", "变成", "打开", "暂停", "恢复"]):
+        return "state_change"
+    if any(token in text for token in ["说", "问", "告诉", "请求", "请", "帮我", "对话", "沟通", "交互"]):
+        return "interaction"
+    return "action"
+
+
+def _looks_like_dynamic_change(summary: str, action: str, event_type: str) -> bool:
+    if event_type in {"interaction", "decision", "state_change", "outcome", "observation"}:
+        return True
+
+    text = f"{summary} {action}".strip().lower()
+    if not text:
+        return False
+
+    dynamic_hints = [
+        "说", "问", "播放", "导航", "打开", "关闭", "切换", "设置", "开始", "停止",
+        "暂停", "恢复", "提醒", "发现", "检测", "选择", "决定", "请求", "回复", "开始导航",
+    ]
+    return any(token in text for token in dynamic_hints)
+
+
+def _build_event_summary(
+    participants: list[dict[str, str]],
+    action: str,
+    location: dict[str, str],
+    time_range: dict[str, Any],
+    result: str,
+) -> str:
+    actor_text = "、".join(item["role"] for item in participants[:3] if item.get("role"))
+    context_text = " / ".join(
+        text for text in [location.get("geo_context", ""), location.get("digital_context", "")]
+        if text
+    )
+    time_text = ""
+    if time_range.get("start", 0) > 0:
+        time_text = datetime.fromtimestamp(time_range["start"]).strftime("%Y-%m-%d %H:%M")
+    elif time_range.get("display_time_bucket", ""):
+        time_text = time_range["display_time_bucket"]
+
+    parts = []
+    if actor_text and action:
+        parts.append(f"{actor_text}{action}")
+    elif action:
+        parts.append(action)
+    if context_text:
+        parts.append(f"情景:{context_text}")
+    if time_text:
+        parts.append(f"时间:{time_text}")
+    if result:
+        parts.append(f"结果:{result}")
+
+    return "；".join(parts).strip("；")
+
+
+_ENTITY_GENERIC_TERMS = {
+    "内容", "歌曲", "歌", "音乐", "视频", "动画片", "电影", "纪录片", "节目", "专辑",
+    "路线", "导航", "地址", "位置", "地方", "东西", "事情", "信息", "答案", "问题",
+    "用户说", "系统说", "车机回答",
+}
+_ENTITY_TIME_TERMS = {
+    "上次", "上一次", "下次", "通常", "经常", "刚刚", "刚才", "今天", "昨天", "明天",
+    "上午", "下午", "晚上", "夜里", "早上", "随后", "之后", "以前", "现在",
+}
+_ENTITY_ACTION_TERMS = {
+    "播放", "放", "听", "看", "导航", "去", "到", "打开", "开启", "关闭", "切换",
+    "设置", "查看", "查询", "收听", "提醒", "告诉",
+}
+_ENTITY_ACTION_PHRASE_HINTS = {
+    "开会", "勿扰", "开勿扰", "导航去", "导航到", "播放", "暂停", "打开", "关闭",
+    "切换", "设置", "查看", "查询", "收听", "调整", "提醒",
+}
+_ENTITY_STOP_WORDS = {
+    "的", "了", "吗", "呢", "啊", "呀", "吧", "这", "那个", "这个", "一下", "一下子",
+    "用户", "我", "我们", "你", "你们", "他", "她", "它",
+}
+_ENTITY_PREFIXES = (
+    "用户说", "车机回答", "系统提示", "系统说", "帮我", "给我", "给孩子", "给", "帮", "请", "我想", "我要",
+    "我想要", "我需要", "想听", "想看", "想去", "播放", "放", "听", "看", "导航到", "导航去",
+    "导航", "去", "到", "打开", "开启", "关闭", "切换到", "切换", "设置", "查看", "查询",
+)
+_ENTITY_TRAILING_SUFFIXES = (
+    "的歌", "的歌曲", "的音乐", "的专辑", "动画片", "电影", "纪录片", "视频",
+)
+
+
+def _normalize_entity_name(value: Any) -> str:
+    text = _to_text(value)
+    if not text:
+        return ""
+
+    text = re.sub(r"^[\"'“”‘’《》【】\[\]()（）]+|[\"'“”‘’《》【】\[\]()（）]+$", "", text)
+    text = re.sub(r"^(内容|目的地|地点|位置)[:：]", "", text).strip()
+
+    changed = True
+    while changed and text:
+        changed = False
+        for prefix in _ENTITY_PREFIXES:
+            if text.startswith(prefix) and len(text) > len(prefix) + 1:
+                text = text[len(prefix):].strip(" ：:，,的")
+                changed = True
+
+    for suffix in _ENTITY_TRAILING_SUFFIXES:
+        if text.endswith(suffix) and len(text) > len(suffix) + 1:
+            text = text[: -len(suffix)].strip(" 的")
+            break
+
+    text = text.strip(" ，,。：:;；!?？！")
+    if not text or text in _ENTITY_STOP_WORDS:
+        return ""
+    if text in _ENTITY_GENERIC_TERMS or text in _ENTITY_TIME_TERMS or text in _ENTITY_ACTION_TERMS:
+        return ""
+    if text in _ENTITY_ACTION_PHRASE_HINTS:
+        return ""
+    if text.isdigit():
+        return ""
+    if len(text) <= 1:
+        return ""
+
+    if any(term in text for term in _ENTITY_ACTION_TERMS) and any(term in text for term in _ENTITY_GENERIC_TERMS):
+        return ""
+    if any(term in text for term in _ENTITY_TIME_TERMS) and len(text) <= 4:
+        return ""
+    if any(text.startswith(term) for term in _ENTITY_ACTION_PHRASE_HINTS):
+        return ""
+
+    return text
+
+
+def normalize_entity_candidates(payload: Any, source_text: str = "") -> list[str]:
+    if isinstance(payload, dict):
+        raw_entities = payload.get("entities", payload.get("entity", []))
+    else:
+        raw_entities = payload
+
+    if not isinstance(raw_entities, list):
+        raw_entities = [raw_entities]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_entities:
+        if isinstance(item, dict):
+            text = _pick_first(item, ["name", "entity", "id", "label"], "")
+        else:
+            text = item
+        name = _normalize_entity_name(text)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+
+    return normalized
+
+
 def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, Any]:
     """Normalize LLM event output to the system's canonical event schema.
 
     Supports both:
     - Legacy schema fields: summary/participants/time_range/location/action/causality
-    - New tuple schema: Actor/Action/Context/Time/Outcome
+    - Tuple-like schema: Actor/Action/Context/Time/Outcome
     """
     if not isinstance(payload, dict):
         payload = {}
@@ -364,51 +604,48 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
         ["outcome", "Outcome", "result", "impact", "effect"],
         "",
     )
+    event_type_value = _pick_first(
+        event_payload,
+        ["event_type", "EventType", "type", "change_type", "changeType"],
+        "",
+    )
 
     participants = _normalize_participants(actor_value)
+    if not participants:
+        participants = _infer_participants_from_text(f"{episode_text} {_to_text(event_payload)}")
+    participants = _dedupe_participants(participants)
     location = _normalize_location(context_value)
     time_range = _normalize_time_range(time_value)
     action = _to_text(action_value)
-    outcome = _to_text(outcome_value)
+    result = _to_text(outcome_value)
     summary = _to_text(
         _pick_first(event_payload, ["summary", "Summary", "event_summary"], "")
     )
+    event_type = _normalize_event_type(event_type_value, summary=summary, action=action, result=result)
 
     if not summary:
-        actor_text = "、".join(item["role"] for item in participants[:3] if item.get("role"))
-        context_text = " / ".join(
-            text for text in [location.get("geo_context", ""), location.get("digital_context", "")]
-            if text
-        )
-        time_text = ""
-        if time_range.get("start", 0) > 0:
-            time_text = datetime.fromtimestamp(time_range["start"]).strftime("%Y-%m-%d %H:%M")
-        elif time_range.get("display_time_bucket", ""):
-            time_text = time_range["display_time_bucket"]
-
-        parts = []
-        if actor_text and action:
-            parts.append(f"{actor_text}{action}")
-        elif action:
-            parts.append(action)
-        if context_text:
-            parts.append(f"情景:{context_text}")
-        if time_text:
-            parts.append(f"时间:{time_text}")
-        if outcome:
-            parts.append(f"结果:{outcome}")
-
-        summary = "；".join(parts).strip("；")
+        summary = _build_event_summary(participants, action, location, time_range, result)
 
     if not summary and episode_text:
         summary = episode_text[:120]
 
     causality = _to_text(_pick_first(event_payload, ["causality", "cause", "reason"], ""))
     if not causality:
-        causality = outcome
+        causality = result
+
+    if not action:
+        if event_type == "observation":
+            action = result or summary
+        else:
+            action = summary
+
+    if not _looks_like_dynamic_change(summary, action, event_type):
+        action = ""
+        summary = ""
 
     return {
         "summary": summary,
+        "event_type": event_type,
         "participants": participants,
         "time_range": time_range,
         "location": location,
@@ -416,11 +653,6 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
         "causality": causality,
         "evidence": _normalize_evidence(event_payload.get("evidence", [])),
         "consistency": _normalize_consistency(event_payload.get("consistency", "uncertain")),
-        # Keep the new formal tuple fields for traceability/debugging.
-        "actor": participants,
-        "context": location,
-        "time": time_range,
-        "outcome": outcome,
     }
 
 

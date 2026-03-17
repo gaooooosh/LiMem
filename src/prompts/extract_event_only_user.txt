@@ -1,4 +1,4 @@
 对话内容：
 {episode_text}
 
-请按 Event=<Actor, Action, Context, Time, Outcome> 输出事件JSON：
+请按最小动态变化 Event 输出 JSON：

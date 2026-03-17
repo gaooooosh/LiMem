@@ -1,4 +1,4 @@
 对话内容：
 {episode_text}
 
-输出实体JSON数组：
+输出核心实体 JSON 数组：

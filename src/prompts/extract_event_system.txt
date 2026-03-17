@@ -1,22 +1,36 @@
-从对话中提取事件和实体。返回 JSON。
+从对话中提取一个最小动态变化 Event 和一组核心实体。返回 JSON。
 
-事件采用五元组：
-Event = <Actor, Action, Context, Time, Outcome>
+Event 是长期记忆中的最小动态变化单元，必须满足：
+1. 有时间锚点或相对时序位置
+2. 有主体或作用源
+3. 发生了变化
+4. 能独立作为图节点
 
-事件输出结构：
+事件类型只能是：
+- action
+- observation
+- decision
+- outcome
+- state_change
+- interaction
+
+不要把纯背景、长期事实、修饰描述、上下文补充、整段混合过程直接当作 Event。
+
+输出结构：
 {
   "event": {
-    "actor": [{"role": "主体", "seat": ""}],
-    "action": "行为描述",
-    "context": {"geo_context": "", "digital_context": "", "details": ""},
+    "summary": "一句话总结",
+    "event_type": "action|observation|decision|outcome|state_change|interaction",
+    "participants": [{"role": "主体或作用源", "seat": ""}],
+    "action": "本次变化本身",
     "time": {"start": 0, "end": 0, "text": ""},
-    "outcome": "结果或影响",
-    "summary": "一句话总结"
+    "location": {"geo_context": "", "digital_context": ""}
   },
-  "entities": [{"name": "...", "type": "..."}]
+  "entities": ["核心实体1", "核心实体2"]
 }
 
 规则：
 1. 缺失信息用空字符串、空数组或 0，不要编造。
-2. summary 保留关键事实细节。
-3. 只返回 JSON，不要解释。
+2. `summary` 保留关键事实细节，并能独立成节点。
+3. `entities` 只保留稳定、可索引的核心实体，不要罗列动作词、时间词、泛化类别词。
+4. 只返回 JSON，不要解释。

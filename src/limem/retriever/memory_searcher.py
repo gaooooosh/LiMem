@@ -32,7 +32,7 @@ from ..config import (
     SEARCH_MAX_TOKENS,
     SEARCH_TEMPERATURE,
 )
-from ..utils import load_prompt, robust_json_loads
+from ..utils import load_prompt, normalize_entity_candidates, robust_json_loads
 from .entity_matcher import EntityMatcher, MatchResult
 from .ranker import MemoryRanker, RankerConfig
 
@@ -380,63 +380,17 @@ class MemorySearcher:
         if content.startswith("```"):
             content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-        # 解析JSON
         entities = robust_json_loads(content, [])
-
-        if not isinstance(entities, list):
-            entities = [str(entities)] if entities else []
-
-        # 过滤停用词和单字符
-        entities = self._filter_entities(entities)
-
-        return entities
+        return self._filter_entities(entities, source_text=query)
 
     def _extract_entities_fallback(self, query: str) -> list[str]:
         import re
         tokens = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_]{1,20}|\d{2,}", query)
-        return self._filter_entities(tokens)
+        return self._filter_entities(tokens, source_text=query)
 
-    def _filter_entities(self, entities: list[str]) -> list[str]:
-        """过滤实体
-
-        移除停用词和无效的单字符。
-
-        Args:
-            entities: 原始实体列表
-
-        Returns:
-            过滤后的实体列表
-        """
-        stop_words = {
-            'w', 'sha', 'a', 'an', '的', '了', '吗', '呢', '啊',
-            '是', '在', '有', '和', '与', '或', '但', '而', '如', '让', '给', '把', '被'
-        }
-
-        valid_entities = []
-        for e in entities:
-            e_str = str(e).strip()
-            if not e_str or e_str in stop_words:
-                continue
-
-            # 过滤单字符
-            if len(e_str) == 1:
-                # 保留数字、英文字母、特定有意义的单字
-                if e_str.isdigit() or (e_str.isalpha() and e_str.isascii()):
-                    valid_entities.append(e_str)
-                elif e_str in {'歌', '书', '车', '家', '去', '听', '看', '放'}:
-                    valid_entities.append(e_str)
-            else:
-                valid_entities.append(e_str)
-
-        # 去重并保持顺序
-        seen = set()
-        unique = []
-        for entity in valid_entities:
-            if entity not in seen:
-                seen.add(entity)
-                unique.append(entity)
-
-        return unique
+    def _filter_entities(self, entities: Any, source_text: str = "") -> list[str]:
+        """过滤并收敛实体粒度。"""
+        return normalize_entity_candidates(entities, source_text=source_text)
 
     def _fetch_events(
         self, match_results: dict[str, MatchResult]
