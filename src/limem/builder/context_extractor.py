@@ -34,9 +34,9 @@ _HABIT_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯
 _EVENT_LIKE_MARKERS = (
     "打开", "搜索", "开始", "完成", "成功", "失败", "找到", "支付", "导航", "播放", "推荐", "决定",
 )
-_CONTEXT_SIGNAL_MARKERS = (
-    "由于", "因为", "当前", "目前", "此时", "只剩", "仅剩", "不足", "需要", "希望", "目标", "阶段",
-    "环境", "状态", "网络", "电量", "限制", "条件", "情况下", "场景",
+_STRONG_CONTEXT_SIGNAL_MARKERS = (
+    "由于", "因为", "当前", "目前", "此时", "只剩", "仅剩", "不足", "需要", "希望", "目标", "条件",
+    "限制", "状态", "环境", "情况下",
 )
 _GENERIC_CLAUSE_PATTERNS: list[tuple[str, str, str]] = [
     (r"由于[^，。；,;]+", "constraint", "causal_clause"),
@@ -68,6 +68,15 @@ _SUMMARY_PREFIXES = (
     "目标是",
     "正在",
     "处于",
+)
+_LOW_REUSE_TIME_PATTERNS = (
+    r"\d{4}[年/-]\d{1,2}[月/-]\d{1,2}日?",
+    r"(上午|下午|晚上|凌晨|中午)?\d{1,2}点(半|\d{1,2}分)?",
+    r"\d{1,2}:\d{2}",
+)
+_DOMAIN_LITERAL_PATTERNS = (
+    r"《[^》]{1,40}》",  # media titles, often event payload details
+    r"-阶段[A-Za-z0-9一二三四五六七八九十]+",
 )
 
 
@@ -194,7 +203,7 @@ class ContextExtractionPipeline:
         event: Optional[Event],
         candidate_spans: list[ContextSpan],
     ) -> list[ContextDraft]:
-        if not self._llm_available() or not candidate_spans:
+        if not self._llm_available():
             return []
 
         user_msg = self._user_prompt.format(
@@ -284,7 +293,17 @@ class ContextExtractionPipeline:
             evidence_span = draft.evidence_span or draft.summary
             if not self._evidence_matches_text(evidence_span, record_text):
                 continue
+            primary_source = ""
+            if draft.source_refs and isinstance(draft.source_refs[0], dict):
+                primary_source = str(draft.source_refs[0].get("source", "") or "")
+            from_llm = "llm_context_extraction" in primary_source
             if self._looks_like_event_or_result(draft.summary, event):
+                continue
+            if self._looks_low_reusability_context(
+                draft.summary,
+                evidence_span,
+                strict=not from_llm,
+            ):
                 continue
             if self._looks_like_habit_not_context(evidence_span):
                 continue
@@ -292,12 +311,16 @@ class ContextExtractionPipeline:
             cleaned_slots = self._clean_structured_slots(draft.structured_slots)
             if not cleaned_slots:
                 slot_key = _FALLBACK_SLOT_KEYS.get(draft.subtype, "condition")
-                cleaned_slots = {slot_key: self._normalize_free_text(draft.summary)}
+                cleaned_slots = {slot_key: self._normalize_free_text(self._normalize_context_surface(draft.summary))}
+
+            normalized_summary = self._normalize_context_surface(draft.summary)
+            if not normalized_summary:
+                continue
 
             validated.append(
                 ContextDraft(
                     subtype=draft.subtype,
-                    summary=self._normalize_free_text(draft.summary),
+                    summary=self._normalize_free_text(normalized_summary),
                     structured_slots=cleaned_slots,
                     confidence=max(0.1, min(1.0, draft.confidence)),
                     evidence_span=evidence_span,
@@ -538,18 +561,60 @@ class ContextExtractionPipeline:
         normalized = self._normalize_free_text(text)
         if not normalized:
             return True
-        has_context_signal = any(marker in normalized for marker in _CONTEXT_SIGNAL_MARKERS)
-        if any(marker in normalized for marker in _EVENT_LIKE_MARKERS):
-            if not has_context_signal:
+        has_strong_context_signal = any(marker in normalized for marker in _STRONG_CONTEXT_SIGNAL_MARKERS)
+        event_marker_count = sum(1 for marker in _EVENT_LIKE_MARKERS if marker in normalized)
+        if event_marker_count > 0:
+            if not has_strong_context_signal:
                 return True
         if event is not None:
             event_text = " ".join(part for part in [event.summary, event.action, event.causality] if part)
             lexical_sim = self._lexical_similarity(normalized, event_text)
-            if lexical_sim >= (0.90 if has_context_signal else 0.84):
+            similarity_gate = 0.80 if event_marker_count > 0 else 0.88
+            if lexical_sim >= similarity_gate:
                 return True
             if normalized == self._normalize_free_text(event.summary) or normalized == self._normalize_free_text(event.action):
                 return True
         return False
+
+    def _looks_low_reusability_context(self, summary: str, evidence_span: str, strict: bool = True) -> bool:
+        text = self._normalize_free_text(summary or evidence_span)
+        if not text:
+            return True
+        text_lower = text.lower()
+        event_marker_count = sum(1 for marker in _EVENT_LIKE_MARKERS if marker in text)
+
+        if not strict:
+            # LLM path is primary; keep only very coarse guardrails.
+            if len(text) >= 48 and event_marker_count >= 2:
+                return True
+            return False
+
+        for pattern in _LOW_REUSE_TIME_PATTERNS:
+            if re.search(pattern, text):
+                if event_marker_count >= 1:
+                    return True
+        for pattern in _DOMAIN_LITERAL_PATTERNS:
+            if re.search(pattern, text):
+                return True
+        # Overly specific one-shot narration is usually not reusable as Context.
+        if len(text) >= 30 and event_marker_count >= 1:
+            return True
+        if "播放" in text_lower and ("qq音乐" in text_lower or "网易云" in text_lower):
+            return True
+        return False
+
+    def _normalize_context_surface(self, text: str) -> str:
+        normalized = self._normalize_free_text(text)
+        if not normalized:
+            return normalized
+        # Strip leading timeline fragments such as "2026-03-12 下午5点半左右,"
+        normalized = re.sub(
+            r"^\s*(\d{4}[年/-]\d{1,2}[月/-]\d{1,2}日?\s*)?"
+            r"((上午|下午|晚上|凌晨|中午)?\d{1,2}点(半|\d{1,2}分)?\s*(左右)?)?\s*[，,]?",
+            "",
+            normalized,
+        ).strip(" ，,")
+        return self._normalize_free_text(normalized)
 
     def _looks_like_habit_not_context(self, text: str) -> bool:
         normalized = str(text or "").strip()
