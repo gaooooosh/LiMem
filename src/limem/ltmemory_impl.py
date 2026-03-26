@@ -327,3 +327,55 @@ class LTMemoryImpl(LTMemory):
                 f"📉 Decayed weight @t={current_time} | {event.summary} -> {relation.entity_id} | "
                 f"decayed={w:.4f}"
             )
+
+    def visualize(
+        self,
+        output_path: Optional[str] = None,
+        title: str = "LiMem 图拓扑可视化",
+        max_events: int = 100,
+        max_entities: int = 50,
+        max_contexts: int = 20,
+    ) -> str:
+        """生成图拓扑可视化
+
+        Args:
+            output_path: 输出 HTML 文件路径，None 则使用默认路径 (<db_dir>/viz/graph_topology.html)
+            title: 页面标题
+            max_events: 最大事件节点数
+            max_entities: 最大实体节点数
+            max_contexts: 最大上下文节点数
+
+        Returns:
+            输出文件的绝对路径
+
+        Example:
+            ltm = create_ltm(db_path="./my_memory.kz")
+            html_path = ltm.visualize("./viz/graph.html")
+            print(f"可视化已保存: {html_path}")
+        """
+        from .visualization import GraphVisualizer, VisualizationConfig
+
+        config = VisualizationConfig(
+            max_events=max_events,
+            max_entities=max_entities,
+            max_contexts=max_contexts,
+        )
+
+        visualizer = GraphVisualizer(self.store.db_path, config=config)
+
+        if output_path is None:
+            from pathlib import Path
+            output_path = str(Path(self.store.db_path).parent / "viz" / "graph_topology.html")
+
+        return visualizer.export_html(output_path, title=title)
+
+    def get_visualization_stats(self) -> dict[str, Any]:
+        """获取可视化相关的图统计信息
+
+        Returns:
+            包含节点和边统计的字典
+        """
+        from .visualization import GraphVisualizer
+
+        visualizer = GraphVisualizer(self.store.db_path)
+        return visualizer.get_stats()

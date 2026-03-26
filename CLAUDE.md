@@ -1,108 +1,99 @@
 # CLAUDE.md
 
-This repository is centered on the current `create_ltm()` pipeline, not the removed legacy compatibility stack.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-LiMem is a long-term memory system built with Kuzu and LLM-backed extraction/retrieval for conversational AI scenarios.
+LiMem is a long-term memory system built with Kuzu (graph database) and LLM-backed extraction/retrieval for conversational AI scenarios. The system uses DashScope (Aliyun Qwen) for LLM operations.
 
-The current mainline architecture is:
+### Core Data Flow
 
-1. `Episode` ingestion
-2. `Event` extraction and append-first write
-3. incremental `Context` resolution
-4. incremental `Pattern` induction
-5. local `NEXT` linking between events
-6. retrieval that mixes entity, context, pattern, recency, and support signals
-
-## Active Modules
-
-```text
-src/limem/
-├── config.py
-├── factory.py
-├── ltmemory_impl.py
-├── db.py
-├── utils.py
-├── core/
-├── builder/
-├── retriever/
-├── evolution/
-├── migration.py
-└── storage/
+```
+Episode (raw input) → Event (extracted) → Entity/Context/Pattern (derived)
+                                      ↓
+                              NEXT relations (temporal/causal links between events)
 ```
 
-Important entry points:
+The write path follows append-first semantics: events are always written first, then deduplicated/consolidated asynchronously.
 
-- `src/limem/factory.py`: `create_ltm()`
-- `src/limem/ltmemory_impl.py`: unified system interface
-- `src/limem/builder/memory_builder.py`: ingestion/build pipeline
-- `src/limem/retriever/memory_searcher.py`: retrieval pipeline
-- `src/limem/evolution/dynamic_engine.py`: dynamic graph evolution
+### Main Entry Point
 
-## Removed Legacy Surface
+```python
+from limem import create_ltm
 
-The following compatibility modules have been intentionally removed and should not be referenced in new work:
+ltm = create_ltm(db_path="./DB/dynamic_trips.kz", config={"offline_mode": True})
+result = ltm.search("What does the user usually do in meetings?")
+```
 
-- `src/limem/ltm.py`
-- `src/limem/search.py`
-- `src/limem/models.py`
-- `src/limem/data.py`
-- `src/limem/demo.py`
-- `src/limem/viz.py`
-- `src/limem/web_api.py`
+## Architecture
 
-Related scripts removed:
-
-- `src/script/build_ltm_from_example.py`
-- `src/script/web_demo.py`
-- `src/script/batch_test.py`
-
-## Environment Notes
-
-- Use the repository virtual environment if present: `source .venv/bin/activate`
-- Python requirement: 3.12+
-- Dependencies are managed with `uv`
+| Module | Purpose |
+|--------|---------|
+| `factory.py` | `create_ltm()` - system assembly |
+| `ltmemory_impl.py` | Unified interface (ingest, search, write, merge) |
+| `builder/memory_builder.py` | Episode → Event extraction pipeline |
+| `builder/extractor.py` | Two-stage LLM extraction (segments → structured events) |
+| `builder/context_extractor.py` | Context extraction and resolution |
+| `retriever/memory_searcher.py` | Four-stage retrieval pipeline |
+| `evolution/dynamic_engine.py` | Incremental Context/Pattern/NEXT maintenance |
+| `storage/kuzu_store.py` | Graph database operations |
+| `ops.py` | MemoryGraphOps for write/remove/merge/snapshot |
 
 ## Common Commands
 
-Build a DB from `trips.json`:
-
 ```bash
+# Activate environment
 source .venv/bin/activate
+
+# Build DB from trips.json
 python src/script/build_ltm_from_trips.py --clear-db
-```
 
-Interactive search:
-
-```bash
+# Interactive search
 python src/script/search_demo.py
-```
+python src/script/search_demo.py --demo  # preset queries
 
-Dynamic graph validation:
-
-```bash
+# Dynamic graph validation
 python src/script/test_dynamic_trips.py
-```
 
-DB/search diagnostics:
-
-```bash
+# DB/search diagnostics
 python src/script/test_search_fixes.py
+
+# Interactive debugger UI (http://127.0.0.1:8011)
+PYTHONPATH=src uv run python src/script/run_trips_debugger.py
 ```
 
 ## Configuration
 
-Configuration is centralized in `src/limem/config.py`.
+Configuration is in `src/limem/config.py`. Copy `.env.example` to `.env` and set:
 
-Key groups:
+Required:
+- `DASHSCOPE_API_KEY` - Aliyun API key
 
-- write path: `APPEND_FIRST_MODE`, `ENABLE_DYNAMIC_EVOLUTION`
-- retrieval: `SEARCH_TOP_K`, `SEARCH_MAX_TOKENS`, `SEARCH_TEMPERATURE`
-- evolution: `CONTEXT_*`, `PATTERN_*`, `NEXT_*`
-- consolidation: `ENABLE_AUTO_CONSOLIDATION`, `EVENT_CONSOLIDATION_*`
-- runtime: `OFFLINE_MODE`, `DB_PATH`, `DASHSCOPE_API_KEY`
+Key toggles:
+- `APPEND_FIRST_MODE=true` - always write events before consolidation
+- `ENABLE_DYNAMIC_EVOLUTION=true` - enable Context/Pattern/NEXT evolution
+- `ENABLE_AUTO_CONSOLIDATION=true` - automatic event merging
+
+Retrieval:
+- `SEARCH_TOP_K=5` - events to return
+- `SEARCH_ENABLE_VECTOR_MATCH=true` - semantic entity matching
+
+Consolidation:
+- `SIMILARITY_THRESHOLD=0.65` - merge threshold (multi-dimensional score)
+- `EVENT_CONSOLIDATION_THRESHOLD=0.78` - consolidation threshold
 
 ## Prompts
 
-Prompt templates live in `src/prompts/` and are loaded through `src/limem/utils.py`.
+LLM prompt templates are in `src/prompts/` and loaded via `src/limem/utils.py:load_prompt()`.
+
+Key prompts:
+- `extract_event_*.txt` - event extraction (segments, struct, only variants)
+- `extract_context_*.txt` - context extraction
+- `entity_extraction_*.txt` - entity extraction
+- `generate_answer_*.txt` - answer generation
+
+## Removed Legacy Modules
+
+Do not reference these removed files:
+- `src/limem/ltm.py`, `search.py`, `models.py`, `data.py`, `demo.py`, `viz.py`, `web_api.py`
+- `src/script/build_ltm_from_example.py`, `web_demo.py`, `batch_test.py`

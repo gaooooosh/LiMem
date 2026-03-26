@@ -67,6 +67,14 @@ from .migration import migrate_to_dynamic_graph, MigrationReport, LegacyEdgeAdap
 # ==================== 数据库和工具 ====================
 from .db import open_connection, init_db
 
+# ==================== 可视化 ====================
+from .visualization import (
+    GraphVisualizer,
+    VisualizationConfig,
+    visualize_graph,
+    export_graph_html,
+)
+
 # ==================== 配置（从 config.py 重新导出）====================
 from .config import (
     # 实验参数
@@ -175,6 +183,11 @@ __all__ = [
     # ===== 数据库和工具 =====
     "open_connection",
     "init_db",
+    # ===== 可视化 =====
+    "GraphVisualizer",
+    "VisualizationConfig",
+    "visualize_graph",
+    "export_graph_html",
     # ===== 配置 =====
     "SIMILARITY_THRESHOLD",
     "MERGE_WEIGHT_SEMANTIC",

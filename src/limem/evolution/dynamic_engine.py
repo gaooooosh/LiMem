@@ -1323,9 +1323,15 @@ class DynamicEvolutionEngine:
         merged_at: int,
         source_event_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        base = self._merge_payload_values(dict(payload or {}), dict(incoming_payload or {}))
+        import copy
+        # 使用深拷贝彻底切断引用链
+        base = self._merge_payload_values(
+            copy.deepcopy(payload or {}),
+            copy.deepcopy(incoming_payload or {})
+        )
         if incoming_payload:
-            base.setdefault("merge_inputs", []).append(incoming_payload)
+            # 使用深拷贝避免循环引用
+            base.setdefault("merge_inputs", []).append(copy.deepcopy(incoming_payload))
         merge_trace = base.setdefault("merge_trace", [])
         trace_entry = {
             "target_event_id": target_event_id,
@@ -1344,14 +1350,16 @@ class DynamicEvolutionEngine:
         existing: dict[str, Any],
         incoming: dict[str, Any],
     ) -> dict[str, Any]:
-        merged = dict(existing or {})
+        import copy
+        merged = copy.deepcopy(existing or {})
         for key, value in (incoming or {}).items():
             if key not in merged or merged.get(key) in (None, "", [], {}):
-                merged[key] = value
+                # 使用深拷贝避免引用问题
+                merged[key] = copy.deepcopy(value)
                 continue
             current = merged.get(key)
             if isinstance(current, dict) and isinstance(value, dict):
-                merged[key] = self._merge_payload_values(current, value)
+                merged[key] = self._merge_payload_values(current, copy.deepcopy(value))
                 continue
             if isinstance(current, list) and isinstance(value, list):
                 merged[key] = self._merge_list_values(current, value)
