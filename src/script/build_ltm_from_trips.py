@@ -133,9 +133,9 @@ def _episode_to_dict(episode: Any) -> dict[str, Any]:
 
 def _ingest_result_to_dict(result: Any) -> dict[str, Any]:
     return {
-        "event_id": result.event.id,
-        "summary": result.event.summary,
-        "status": result.event.status,
+        "event_id": result.event.id if result.event else "",
+        "summary": result.event.summary if result.event else "",
+        "status": result.event.status if result.event else "",
         "is_new": bool(result.is_new),
         "merged_with": result.merged_with,
         "entities_created": int(result.entities_created),

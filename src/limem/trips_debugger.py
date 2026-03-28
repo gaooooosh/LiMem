@@ -218,20 +218,26 @@ class TripsDebuggerSession:
                 episode = self._episodes[index]
                 ingest_result = self._ltm.ingest(episode)
                 self._written_indices.add(index)
+                event_items = [
+                    event
+                    for event in (ingest_result.events or ([ingest_result.event] if ingest_result.event else []))
+                    if getattr(event, "status", "") != "skipped" and getattr(event, "id", "")
+                ]
                 result = {
                     "index": index,
                     "status": "written" if not already_written else "replayed",
                     "episode": _episode_preview(episode, index, written=True),
                     "ingest_result": {
-                        "event_id": ingest_result.event.id,
-                        "summary": ingest_result.event.summary,
+                        "event_id": ingest_result.event.id if ingest_result.event and ingest_result.event.status != "skipped" else "",
+                        "summary": ingest_result.event.summary if ingest_result.event else "",
                         "is_new": bool(ingest_result.is_new),
                         "merged_with": ingest_result.merged_with,
                         "entities_created": int(ingest_result.entities_created),
-                        "event_count": len(ingest_result.events or [ingest_result.event]),
+                        "status": ingest_result.event.status if ingest_result.event else "",
+                        "event_count": len(event_items),
                         "event_ids": [
                             event.id
-                            for event in (ingest_result.events or [ingest_result.event])
+                            for event in event_items
                         ],
                         "event_items": [
                             {
@@ -239,7 +245,7 @@ class TripsDebuggerSession:
                                 "summary": event.summary,
                                 "status": event.status,
                             }
-                            for event in (ingest_result.events or [ingest_result.event])
+                            for event in event_items
                         ],
                     },
                 }

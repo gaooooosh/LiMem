@@ -60,9 +60,12 @@ class IngestResult:
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
-        all_events = self.events or [self.event]
+        all_events = list(self.events or [])
+        if not all_events and self.event and self.event.status != "skipped":
+            all_events = [self.event]
+        primary_event = self.event
         return {
-            "event_id": self.event.id,
+            "event_id": primary_event.id if primary_event and primary_event.status != "skipped" else "",
             "is_new": self.is_new,
             "merged_with": self.merged_with,
             "entities_created": self.entities_created,

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 import uuid
 import time
+import re
 
 try:
     from dashscope import TextEmbedding
@@ -139,6 +140,7 @@ class MemoryBuilder:
         entities_created_total = 0
 
         for idx, event_payload in enumerate(event_payloads):
+            event_payload = self._refine_event_payload(event_payload, episode, current_time)
             event = self._build_event_frame(event_payload, episode, current_time, index=idx)
             if not self._is_effective_event(event):
                 continue
@@ -211,6 +213,34 @@ class MemoryBuilder:
             merged_targets.append(consolidation.target_event_id if not is_new else None)
 
         if not built_events:
+            if not self._should_persist_fallback_event(episode.content):
+                skipped_event = Event(
+                    id="",
+                    summary=self._skipped_episode_summary(episode),
+                    action="",
+                    causality="",
+                    time_range={"start": current_time, "end": current_time},
+                    timestamp=current_time,
+                    last_active=current_time,
+                    created_at=current_time,
+                    updated_at=current_time,
+                    valid_from=current_time,
+                    status="skipped",
+                    payload={
+                        "episode_id": episode.id,
+                        "episode_text": episode.content,
+                        "episode_metadata": dict(episode.metadata or {}),
+                        "skip_reason": "low_signal_episode",
+                    },
+                )
+                return IngestResult(
+                    event=skipped_event,
+                    is_new=False,
+                    merged_with=None,
+                    entities_created=0,
+                    events=[],
+                )
+
             fallback_event = self._build_event_frame({}, episode, current_time, index=0)
             fallback_event.id = self._append_first_event_id(fallback_event)
             fallback_event.embedding = self._get_embedding(fallback_event.summary)
@@ -251,8 +281,8 @@ class MemoryBuilder:
         """
         # 使用摘要或截取Episode内容作为摘要
         summary = data.get("summary", "")
-        if not summary:
-            summary = episode.content[:120]
+        if not summary and self._should_persist_fallback_event(episode.content):
+            summary = self._fallback_event_summary(episode.content)
 
         # 构建时间范围
         time_range = data.get("time_range", {})
@@ -287,6 +317,23 @@ class MemoryBuilder:
             status=str(data.get("status", "active")),
         )
 
+    def _refine_event_payload(
+        self,
+        data: dict[str, Any],
+        episode: Episode,
+        current_time: int,
+    ) -> dict[str, Any]:
+        payload = dict(data or {})
+        payload["time_range"] = self._sanitize_extracted_time_range(
+            payload.get("time_range", {}),
+            current_time=current_time,
+        )
+        payload["summary"] = self._refine_extracted_summary(
+            payload=payload,
+            episode=episode,
+        )
+        return payload
+
     def _collect_event_payloads(self, extraction: ExtractionResult) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
         if isinstance(extraction.events_data, list):
@@ -315,6 +362,149 @@ class MemoryBuilder:
         if (event.causality or "").strip():
             return True
         return False
+
+    def _should_persist_fallback_event(self, text: str) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        if normalized.startswith("{") or normalized.startswith("[{"):
+            return False
+        lowered = normalized.lower()
+        if any(marker in lowered for marker in ['{"start_time"', '"payload"', '"body_status"', '"seat_and_thermal"']):
+            return False
+        signal_hints = [
+            "用户说", "车机回答", "导航", "播放", "打开", "关闭", "开启", "停止",
+            "切换", "设置", "开始", "暂停", "恢复", "提醒", "请求", "检测到",
+        ]
+        if any(token in normalized for token in signal_hints):
+            return True
+        return False
+
+    def _sanitize_extracted_time_range(
+        self,
+        time_range: Any,
+        current_time: int,
+    ) -> dict[str, Any]:
+        data = dict(time_range or {}) if isinstance(time_range, dict) else {}
+        min_valid_ts = 946684800  # 2000-01-01
+        max_delta = 86400 * 30
+
+        start = int(data.get("start", 0) or 0)
+        end = int(data.get("end", 0) or 0)
+        if start <= 0 or start < min_valid_ts or abs(start - current_time) > max_delta:
+            start = current_time
+        if end <= 0 or end < min_valid_ts or abs(end - current_time) > max_delta:
+            end = start
+        display = str(data.get("display_time_bucket", "") or "").strip()
+        if not display:
+            display = time_bucket_from_ts(start)
+        return {
+            "start": start,
+            "end": end,
+            "display_time_bucket": display,
+        }
+
+    def _refine_extracted_summary(
+        self,
+        payload: dict[str, Any],
+        episode: Episode,
+    ) -> str:
+        summary = str(payload.get("summary", "") or "").strip()
+        original_summary = summary
+        if summary:
+            summary = re.sub(r"[；;]\s*时间[:：][^；;]+$", "", summary).strip("；; ")
+
+        bucket = str((episode.metadata or {}).get("bucket_name", "") or "").strip()
+        content = str(episode.content or "")
+
+        if bucket == "媒体播放数据":
+            media_summary = self._media_event_summary_from_text(content)
+            if media_summary and (
+                not summary
+                or summary.endswith("播放")
+                or "时间:" in original_summary
+                or len(summary) <= 10
+            ):
+                summary = media_summary
+
+        if bucket == "车机对话数据":
+            dialog_summary = self._dialog_event_summary_from_text(content)
+            if dialog_summary and (not summary or len(summary) > 48):
+                summary = dialog_summary
+
+        if not summary and self._should_persist_fallback_event(content):
+            summary = self._fallback_event_summary(content)
+
+        return summary
+
+    def _media_event_summary_from_text(self, text: str) -> str:
+        normalized = str(text or "")
+        title_match = re.search(r"《([^》]+)》", normalized)
+        app_match = re.search(r"(QQ音乐|喜马拉雅|网易云音乐|酷狗音乐|酷我音乐)", normalized)
+        title = title_match.group(1).strip() if title_match else ""
+        app = app_match.group(1).strip() if app_match else ""
+        if app and title:
+            return f"{app}播放《{title}》"
+        if title:
+            return f"播放《{title}》"
+        return ""
+
+    def _dialog_event_summary_from_text(self, text: str) -> str:
+        normalized = str(text or "")
+        normalized = re.sub(r"^\[[^\]]+\]\s*", "", normalized)
+        match = re.search(r"用户说[:：]\s*(.+?)(?:\s*\|\s*车机回答[:：]|\s*->|$)", normalized)
+        if not match:
+            return ""
+        query = match.group(1).strip()
+        query = re.sub(r"^(理想同学|小爱同学|你好|你好啊)[，,\s]*", "", query).strip()
+        if not query:
+            return ""
+        return f"用户请求{query}"[:120]
+
+    def _fallback_event_summary(self, text: str) -> str:
+        normalized = str(text or "").strip()
+        normalized = re.sub(r"^\[[^\]]+\]\s*", "", normalized)
+        dialog_summary = self._dialog_event_summary_from_text(normalized)
+        if dialog_summary:
+            return dialog_summary
+        media_summary = self._media_event_summary_from_text(normalized)
+        if media_summary:
+            return media_summary
+        parts = [part.strip() for part in normalized.split("|") if part.strip()]
+        informative = self._pick_informative_summary_part(parts)
+        if informative:
+            normalized = informative
+        elif parts:
+            normalized = parts[0]
+        normalized = re.sub(r"\s+", " ", normalized).strip(" ，,；;")
+        return normalized[:120]
+
+    def _pick_informative_summary_part(self, parts: list[str]) -> str:
+        if not parts:
+            return ""
+
+        def score(part: str) -> tuple[int, int]:
+            text = str(part or "").strip()
+            dynamic_hints = [
+                "打开", "关闭", "开启", "停止", "暂停", "恢复", "播放", "导航",
+                "设置", "切换", "开始", "请求", "进入", "触发", "提醒", "检测",
+            ]
+            low_signal_nouns = {
+                "副驾屏", "中控屏", "主驾屏", "后排屏", "会议模式", "QQ音乐", "喜马拉雅",
+            }
+            dynamic_score = sum(1 for hint in dynamic_hints if hint in text)
+            if text in low_signal_nouns:
+                dynamic_score -= 2
+            return dynamic_score, len(text)
+
+        best = max(parts, key=score)
+        return best if score(best)[0] > 0 else ""
+
+    def _skipped_episode_summary(self, episode: Episode) -> str:
+        bucket = str((episode.metadata or {}).get("bucket_name", "") or "").strip()
+        if bucket:
+            return f"skipped: {bucket} low-signal record"
+        return "skipped: low-signal record"
 
     def _merge_event(
         self,
