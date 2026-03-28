@@ -66,6 +66,7 @@ from ..utils import hash_summary, robust_json_loads, safe_json_dumps, safe_json_
 
 @dataclass
 class DynamicEvolutionConfig:
+    offline_mode: bool = False
     append_first_mode: bool = APPEND_FIRST_MODE
     merge_decision_strategy: str = "auto"
     llm_api_key: str = DASHSCOPE_API_KEY
@@ -119,7 +120,7 @@ class DynamicEvolutionEngine:
             api_key=self.config.llm_api_key,
             base_url=self.config.llm_base_url,
             generation_model=self.config.llm_model,
-            offline_mode=False,
+            offline_mode=self.config.offline_mode,
         )
 
     # -------------------------------------------------------------------------
@@ -187,7 +188,10 @@ class DynamicEvolutionEngine:
                 record=record,
             )
         if self.config.enable_auto_consolidation:
-            ts = int(time.time())
+            ts = max(
+                int(event.last_active or event.timestamp or now)
+                for event in new_events
+            )
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
                 self.run_consolidation(current_time=ts)
 
@@ -214,7 +218,10 @@ class DynamicEvolutionEngine:
                 record=None,
             )
         if self.config.enable_auto_consolidation:
-            ts = int(time.time())
+            ts = max(
+                int(event.last_active or event.timestamp or int(time.time()))
+                for event in events
+            )
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
                 self.run_consolidation(current_time=ts)
 
@@ -810,7 +817,11 @@ class DynamicEvolutionEngine:
                     self._ensure_event_embedding(event),
                     self._ensure_event_embedding(candidate),
                 )
-                gate = llm_gate
+                gate = self._event_merge_gate(
+                    resolved_strategy=resolved_strategy,
+                    embedding_similarity=embedding_similarity,
+                    fallback_gate=llm_gate,
+                )
                 if resolved_strategy != "llm" and score < gate:
                     continue
 
@@ -974,7 +985,11 @@ class DynamicEvolutionEngine:
                     self._ensure_event_embedding(event),
                     self._ensure_event_embedding(candidate),
                 )
-                gate = llm_gate
+                gate = self._event_merge_gate(
+                    resolved_strategy=resolved_strategy,
+                    embedding_similarity=embedding_similarity,
+                    fallback_gate=llm_gate,
+                )
                 if resolved_strategy != "llm" and score < gate:
                     continue
 
@@ -1229,7 +1244,10 @@ class DynamicEvolutionEngine:
         event_b: Event,
         now: int,
     ) -> tuple[float, str]:
-        text_similarity = self._lexical_similarity(event_a.summary, event_b.summary)
+        text_similarity = self._lexical_similarity(
+            self._event_similarity_text(event_a),
+            self._event_similarity_text(event_b),
+        )
         context_similarity = self._context_overlap_for_events(event_a.id, event_b.id)
         payload_similarity = self._payload_similarity(event_a, event_b)
         time_similarity = self._time_similarity(event_a, event_b, now)
@@ -1249,6 +1267,22 @@ class DynamicEvolutionEngine:
         if time_similarity >= 0.5:
             reasons.append("time_window")
         return score, ",".join(reasons) or "local_similarity"
+
+    def _event_merge_gate(
+        self,
+        resolved_strategy: str,
+        embedding_similarity: float,
+        fallback_gate: float,
+    ) -> float:
+        gate = float(fallback_gate or 0.0)
+        if resolved_strategy != "heuristic":
+            return gate
+        gate = min(gate, 0.28)
+        if embedding_similarity >= 0.95:
+            return min(gate, 0.50)
+        if embedding_similarity >= 0.90:
+            return min(gate, 0.53)
+        return gate
 
     def _pick_canonical_event(self, event_a: Event, event_b: Event) -> tuple[Event, Event]:
         def rank_key(event: Event) -> tuple[int, float, int]:
@@ -1711,7 +1745,9 @@ class DynamicEvolutionEngine:
             return None
 
     def _infer_scene_hint(self, event: Event) -> str:
-        text = f"{event.summary} {event.action} {safe_json_dumps(event.payload)}".lower()
+        text = self._normalize_similarity_text(
+            f"{event.summary} {event.action} {self._event_payload_text(event)}"
+        )
         keyword_map = {
             "会议": "会议场景",
             "开会": "会议场景",
@@ -1729,6 +1765,42 @@ class DynamicEvolutionEngine:
             if keyword in text:
                 return label
         return ""
+
+    def _event_payload_text(self, event: Event) -> str:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        parts: list[str] = []
+        for value in payload.values():
+            if isinstance(value, dict):
+                parts.extend(str(item).strip() for item in value.values() if str(item).strip())
+            elif isinstance(value, list):
+                parts.extend(str(item).strip() for item in value if str(item).strip())
+            elif value not in (None, ""):
+                parts.append(str(value).strip())
+        return " ".join(parts)
+
+    def _event_similarity_text(self, event: Event) -> str:
+        return self._normalize_similarity_text(
+            " ".join(
+                [
+                    str(event.summary or "").strip(),
+                    str(event.action or "").strip(),
+                    self._event_payload_text(event),
+                ]
+            )
+        )
+
+    def _normalize_similarity_text(self, text: str) -> str:
+        normalized = str(text or "").lower()
+        replacements = [
+            ("免打扰模式", "勿扰模式"),
+            ("免打扰", "勿扰"),
+            ("勿打扰", "勿扰"),
+            ("开启", "打开"),
+            ("开会", "会议"),
+        ]
+        for source, target in replacements:
+            normalized = normalized.replace(source, target)
+        return normalized
 
     def _core_context_slot_keys(self) -> list[str]:
         return [
@@ -1771,6 +1843,8 @@ class DynamicEvolutionEngine:
                 continue
             role = str(item.get("role", "") or "").strip()
             seat = str(item.get("seat", "") or "").strip()
+            if role:
+                labels.append(role)
             label = "/".join([part for part in [role, seat] if part])
             if label:
                 labels.append(label)
@@ -1812,18 +1886,49 @@ class DynamicEvolutionEngine:
             return 0.0
         return len(left & right) / len(left | right)
 
+    def _entity_overlap_for_events(self, event_a_id: str, event_b_id: str) -> float:
+        left = set(self.store.get_event_entities(event_a_id))
+        right = set(self.store.get_event_entities(event_b_id))
+        if not left and not right:
+            return 0.0
+        return len(left & right) / len(left | right)
+
     def _payload_similarity(self, event_a: Event, event_b: Event) -> float:
+        slots_a = self._extract_context_slots(event_a)
+        slots_b = self._extract_context_slots(event_b)
         participant_similarity = self._value_similarity(
             self._participant_labels(event_a.participants),
             self._participant_labels(event_b.participants),
         )
-        location_similarity = self._value_similarity(
-            self._extract_context_slots(event_a).get("place", []),
-            self._extract_context_slots(event_b).get("place", []),
+        entity_similarity = self._entity_overlap_for_events(event_a.id, event_b.id)
+        scene_similarity = self._value_similarity(
+            slots_a.get("scene", ""),
+            slots_b.get("scene", ""),
         )
-        action_similarity = 1.0 if event_a.action and event_a.action == event_b.action else 0.0
-        causality_similarity = 1.0 if event_a.causality and event_a.causality == event_b.causality else 0.0
-        return 0.35 * participant_similarity + 0.30 * location_similarity + 0.20 * action_similarity + 0.15 * causality_similarity
+        location_similarity = self._value_similarity(
+            slots_a.get("place", []),
+            slots_b.get("place", []),
+        )
+        action_similarity = 0.0
+        if event_a.action and event_b.action:
+            action_similarity = max(
+                1.0 if event_a.action == event_b.action else 0.0,
+                self._lexical_similarity(event_a.action, event_b.action),
+            )
+        causality_similarity = 0.0
+        if event_a.causality and event_b.causality:
+            causality_similarity = max(
+                1.0 if event_a.causality == event_b.causality else 0.0,
+                self._lexical_similarity(event_a.causality, event_b.causality),
+            )
+        return (
+            0.18 * participant_similarity
+            + 0.24 * entity_similarity
+            + 0.18 * scene_similarity
+            + 0.12 * location_similarity
+            + 0.18 * action_similarity
+            + 0.10 * causality_similarity
+        )
 
     def _time_similarity(self, event_a: Event, event_b: Event, now: int) -> float:
         ts_a = event_a.last_active or event_a.timestamp or now
@@ -2017,15 +2122,19 @@ class DynamicEvolutionEngine:
 
     def _resolve_merge_strategy(self, strategy: str) -> str:
         requested = (strategy or self.config.merge_decision_strategy or "auto").strip().lower()
-        if requested not in {"auto", "llm"}:
+        if requested not in {"auto", "llm", "heuristic"}:
             requested = "auto"
+        if requested == "heuristic":
+            return "heuristic"
         if requested == "llm":
             return "llm" if self._llm_merge_available() else "disabled"
-        return "llm" if self._llm_merge_available() else "disabled"
+        return "llm" if self._llm_merge_available() else "heuristic"
 
     def _llm_merge_available(self) -> bool:
         api_key = str(self.config.llm_api_key or "").strip()
         return bool(
+            not self.config.offline_mode
+            and
             dashscope is not None
             and Generation is not None
             and api_key

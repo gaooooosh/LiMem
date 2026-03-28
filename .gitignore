@@ -27,3 +27,8 @@ memory/*
 test_results.json
 trips.json
 DB/demo_db.kz
+
+# Local-only development artifacts
+.vscode/
+trips_merge_repro.json
+车载 Agent 长期记忆图数据库.md

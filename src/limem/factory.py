@@ -109,6 +109,7 @@ def create_ltm_system(
     config = config or {}
     api_key = api_key or DASHSCOPE_API_KEY
     base_url = base_url or DASHSCOPE_BASE_URL
+    offline_mode = bool(config.get("offline_mode", False))
     # 1. 创建嵌入客户端
     embedding_client = EmbeddingClient(
         api_key=api_key,
@@ -156,6 +157,7 @@ def create_ltm_system(
         dynamic_engine = DynamicEvolutionEngine(
             store=store,
             config=DynamicEvolutionConfig(
+                offline_mode=offline_mode,
                 append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
                 merge_decision_strategy=config.get("merge_decision_strategy", "auto"),
                 llm_api_key=api_key,
@@ -219,7 +221,7 @@ def create_ltm_system(
         base_url=base_url,
         generation_model=config.get("generation_model", GENERATION_MODEL),
         dynamic_engine=dynamic_engine,
-        offline_mode=False,
+        offline_mode=offline_mode,
     )
 
     # 7. 组装系统

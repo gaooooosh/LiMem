@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -55,6 +56,12 @@ def load_trips_episodes(
     sort_by_time: bool = True,
 ) -> list[Episode]:
     """Load trips.json and flatten all event-like records into Episode list."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"trips.json not found: {path}. "
+            "Place a compatible trips.json at the repo root or pass --trips-path /path/to/trips.json."
+        )
+
     with open(path, "r", encoding="utf-8") as f:
         trips = json.load(f)
 

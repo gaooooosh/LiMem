@@ -138,6 +138,89 @@ class TestDynamicEvolution(unittest.TestCase):
             self.assertEqual(ltm.store.get_context(second_context["id"]).status, "merged")
             self.assertEqual(ltm.store.get_context(first_context["id"]).status, "active")
 
+    def test_auto_merge_auto_falls_back_to_heuristic_without_llm(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_dynamic_auto_heuristic.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            ts = int(time.time())
+            ltm.write(
+                {
+                    "id": "evt_auto_a",
+                    "summary": "用户在会议场景打开勿扰模式",
+                    "action": "开启勿扰",
+                    "timestamp": ts,
+                    "last_active": ts,
+                    "participants": [{"role": "用户"}],
+                },
+                kind="event",
+                evolve=False,
+            )
+            ltm.write(
+                {
+                    "id": "evt_auto_b",
+                    "summary": "会议场景下用户开启勿扰模式",
+                    "action": "开启勿扰",
+                    "timestamp": ts + 10,
+                    "last_active": ts + 10,
+                    "participants": [{"role": "用户"}],
+                },
+                kind="event",
+                evolve=False,
+            )
+
+            context = ltm.write(
+                {
+                    "id": "ctx_auto_merge",
+                    "summary": "context:会议场景",
+                    "subtype": "会议场景",
+                    "structured_slots": {"scene": "会议场景"},
+                },
+                kind="context",
+            )["item"]
+            ltm.store.link_event_to_context(
+                event_id="evt_auto_a",
+                context_id=context["id"],
+                confidence=0.9,
+                weight=1.0,
+                original_signal="unit_test",
+                evidence_span="meeting",
+                timestamp=ts,
+            )
+            ltm.store.link_event_to_context(
+                event_id="evt_auto_b",
+                context_id=context["id"],
+                confidence=0.9,
+                weight=1.0,
+                original_signal="unit_test",
+                evidence_span="meeting",
+                timestamp=ts + 10,
+            )
+
+            report = ltm.auto_merge(
+                scope="event",
+                strategy="auto",
+                dry_run=False,
+                max_pairs=5,
+            )
+
+            self.assertEqual(report["resolved_strategy"], "heuristic")
+            self.assertEqual(report["merged_events"], 1)
+            statuses = {
+                "evt_auto_a": ltm.get_event("evt_auto_a").status,
+                "evt_auto_b": ltm.get_event("evt_auto_b").status,
+            }
+            self.assertEqual(sorted(statuses.values()), ["active", "merged"])
+
     def test_event_relations_are_extracted_via_llm_with_session_scope(self):
         with tempfile.TemporaryDirectory() as td:
             db_path = os.path.join(td, "test_event_relations.kz")

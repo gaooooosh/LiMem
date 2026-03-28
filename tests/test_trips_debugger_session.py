@@ -94,6 +94,61 @@ class TestTripsDebuggerSession(unittest.TestCase):
             )
             self.assertGreaterEqual(len(merge_result["state"]["operation_log"]), 1)
 
+    def test_session_auto_merge_uses_written_event_time_for_historical_samples(self):
+        sample = [
+            {
+                "trip_meta": {"trip_id": "trip_merge"},
+                "车机对话数据": [
+                    {
+                        "start_time": "2026-03-20 08:06:00",
+                        "source": "车机对话",
+                        "payload": {"query": "导航去公司"},
+                        "detail": "",
+                    },
+                    {
+                        "start_time": "2026-03-20 08:07:00",
+                        "source": "车机对话",
+                        "payload": {"query": "用户再次发起去公司的导航请求"},
+                        "detail": "用户再次发起去公司的导航请求",
+                    },
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            trips_path = os.path.join(td, "trips.json")
+            db_path = os.path.join(td, "debugger.kz")
+            with open(trips_path, "w", encoding="utf-8") as f:
+                json.dump(sample, f, ensure_ascii=False)
+
+            session = TripsDebuggerSession(
+                TripsDebuggerConfig(
+                    trips_path=trips_path,
+                    db_path=db_path,
+                    offline_mode=True,
+                    append_first_mode=True,
+                    snapshot_limit=20,
+                    auto_merge_after_write=False,
+                )
+            )
+
+            session.write_selected([0, 1], auto_merge=False, merge_strategy="auto")
+            preview = session.auto_merge(
+                scope="event",
+                strategy="auto",
+                dry_run=True,
+                max_pairs=10,
+            )
+            apply_result = session.auto_merge(
+                scope="event",
+                strategy="auto",
+                dry_run=False,
+                max_pairs=10,
+            )
+
+            self.assertEqual(preview["result"]["resolved_strategy"], "heuristic")
+            self.assertGreaterEqual(preview["result"]["event_candidates"], 1)
+            self.assertGreaterEqual(apply_result["result"]["merged_events"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

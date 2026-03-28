@@ -320,11 +320,13 @@ class TripsDebuggerSession:
         with self._lock:
             if self._ltm is None:
                 raise RuntimeError("Session is not initialized")
+            reference_time = self._merge_reference_time_locked()
             result = self._ltm.auto_merge(
                 scope=scope,
                 strategy=strategy,
                 dry_run=dry_run,
                 max_pairs=max_pairs,
+                current_time=reference_time,
             )
             result["trigger"] = "manual_auto_merge"
             self._latest_auto_merge = result
@@ -401,16 +403,39 @@ class TripsDebuggerSession:
     ) -> Optional[dict[str, Any]]:
         if not enabled or self._ltm is None:
             return None
+        reference_time = self._merge_reference_time_locked()
         result = self._ltm.auto_merge(
             scope="all",
             strategy=strategy,
             dry_run=False,
             max_pairs=12,
+            current_time=reference_time,
         )
         result["trigger"] = trigger
         self._latest_auto_merge = result
         self._append_log(action="auto_merge", detail=result)
         return result
+
+    def _merge_reference_time_locked(self) -> Optional[int]:
+        if self._ltm is None:
+            return None
+        latest = 0
+        try:
+            events = self._ltm.store.list_events(limit=2000, statuses=["active"])
+        except Exception:
+            events = []
+        for event in events:
+            latest = max(
+                latest,
+                int(getattr(event, "last_active", 0) or 0),
+                int(getattr(event, "timestamp", 0) or 0),
+            )
+        if latest > 0:
+            return latest
+        for index in self._written_indices:
+            episode = self._episodes[index]
+            latest = max(latest, int(getattr(episode, "timestamp", 0) or 0))
+        return latest or None
 
     def _build_state(self) -> dict[str, Any]:
         if self._ltm is None:

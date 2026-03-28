@@ -146,6 +146,14 @@ def _capture_snapshot(ltm, limit: int) -> dict[str, Any]:
     return ltm.snapshot(limit=limit, include_inactive=True)
 
 
+def _latest_episode_timestamp(*episode_groups: list[Any]) -> int:
+    latest = 0
+    for group in episode_groups:
+        for episode in group:
+            latest = max(latest, int(getattr(episode, "timestamp", 0) or 0))
+    return latest
+
+
 def _run_phase(
     ltm,
     episodes: list[Any],
@@ -563,8 +571,13 @@ def main() -> None:
         print("Migration applied:", migration_run)
 
     consolidation_report: dict[str, Any] = {}
-    if args.run_consolidation:
-        consolidation_report = ltm.run_consolidation()
+    should_run_final_consolidation = (not args.legacy_merge) or bool(args.run_consolidation)
+    if should_run_final_consolidation:
+        consolidation_time = _latest_episode_timestamp(
+            split_result.base_episodes,
+            split_result.debug_episodes,
+        ) or None
+        consolidation_report = ltm.run_consolidation(current_time=consolidation_time)
         print("Consolidation report:", consolidation_report)
 
     final_stats = ltm.get_stats()

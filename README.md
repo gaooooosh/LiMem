@@ -86,10 +86,18 @@ python src/script/build_ltm_from_trips.py --clear-db
 
 默认会：
 
-- 读取 `trips.json`
+- 读取仓库根目录自带的示例 `trips.json`
 - 按时间顺序切分为“基础阶段 + 调试阶段”
 - 先构建 `./DB/dynamic_trips.kz`
 - 再回放第二段数据并输出 `json + html` 调试报告到 `./outputs/`
+
+如果你要使用自己的数据文件，可以显式传入路径：
+
+```bash
+python src/script/build_ltm_from_trips.py \
+  --clear-db \
+  --trips-path /path/to/your/trips.json
+```
 
 自定义切分点和调试快照频率：
 
@@ -217,6 +225,16 @@ python src/script/build_ltm_from_trips.py --clear-db
 
 设置 `.env` 中的 `OFFLINE_MODE=true`，或在脚本/代码里传入 `config={"offline_mode": True}`。
 
+**Q: `trips.json` 需要什么格式？**
+
+顶层是一个 list；每个 trip 是一个 dict；dict 里每个 bucket 对应一个记录 list。每条记录至少建议包含：
+
+- `start_time`
+- `source`
+- `detail` 或 `payload`
+
+仓库根目录的示例 `trips.json` 就是一个最小可运行格式，也可以直接通过 `--trips-path` 指向你自己的文件。
+
 **Q: 现在还有旧版 `ResearchLTM` / `LTMSearcher` / Web demo 吗？**
 
 没有。这些兼容模块已经下线，仓库只保留当前的 `create_ltm()` 主路径。
@@ -242,6 +260,8 @@ Build a DB from `trips.json`:
 source .venv/bin/activate
 python src/script/build_ltm_from_trips.py --clear-db
 ```
+
+The repository ships with a small demo `trips.json` at the project root. To use your own dataset, pass `--trips-path /path/to/trips.json`.
 
 Build with split-phase debugging and HTML report output:
 

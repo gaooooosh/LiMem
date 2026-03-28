@@ -14,7 +14,6 @@ def _normalize_db_path(db_path):
         os.makedirs(parent, exist_ok=True)
     return db_path
 
-
 def open_connection(db_path):
     db_path = _normalize_db_path(db_path)
     print(f"📁 Using Kuzu DB file: {db_path}")
