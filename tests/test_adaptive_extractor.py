@@ -229,6 +229,29 @@ class TestAdaptiveExtractor(unittest.TestCase):
         self.assertEqual(result.event_data["summary"], "Team plans Acme Summit launch")
         self.assertEqual(result.entities, ["Acme Summit", "Berlin"])
 
+    def test_unstructured_extractor_ignores_list_payload_for_entities(self):
+        def fake_llm(system_prompt, user_message, default):
+            del system_prompt, user_message, default
+            return [
+                {
+                    "id": "evt-1",
+                    "summary": "Team reviews launch plan",
+                    "action": "review launch plan",
+                    "participants": [{"role": "team"}],
+                    "causality": "",
+                }
+            ]
+
+        extractor = UnstructuredExtractor(
+            llm_caller=fake_llm,
+            system_prompt="SYSTEM",
+            user_prompt="{episode_text}",
+        )
+        result = extractor.extract("The team reviewed the launch plan.")
+
+        self.assertEqual(result.event_data["summary"], "Team reviews launch plan")
+        self.assertEqual(result.entities, [])
+
     def test_adaptive_extractor_routes_without_extra_llm_calls(self):
         llm_calls = []
 
@@ -311,6 +334,100 @@ class TestAdaptiveExtractor(unittest.TestCase):
         self.assertIn(("a", "b", "temporal_next"), relation_signatures)
         self.assertIn(("a", "b", "causality"), relation_signatures)
         self.assertIn(("c", "d", "parallel"), relation_signatures)
+
+    def test_relationship_inferrer_skips_causality_without_timestamps(self):
+        inferrer = RelationshipInferrer()
+        events = [
+            Event(
+                id="a",
+                summary="User submits order",
+                action="submit order",
+                participants=[{"role": "user", "seat": ""}],
+            ),
+            Event(
+                id="b",
+                summary="System confirms order",
+                action="confirm order",
+                causality="after submit order",
+                participants=[{"role": "system", "seat": ""}],
+            ),
+        ]
+
+        relations = inferrer.infer(events)
+        relation_signatures = {(item.from_event_id, item.to_event_id, item.relation_type) for item in relations}
+
+        self.assertIn(("a", "b", "temporal_next"), relation_signatures)
+        self.assertNotIn(("a", "b", "causality"), relation_signatures)
+
+    def test_adaptive_extractor_handles_english_chat_log(self):
+        extractor = AdaptiveExtractor()
+        result = extractor.extract(
+            '2026-03-31 09:00 | Alice: Can you book "Atlas" for tomorrow\'s standup? -> Bob: Yes, I booked "Atlas".'
+        )
+
+        self.assertEqual(len(result.events_data), 2)
+        self.assertEqual(result.events_data[0]["participants"], [{"role": "Alice", "seat": ""}])
+        self.assertEqual(result.events_data[1]["participants"], [{"role": "Bob", "seat": ""}])
+        self.assertIn("Atlas", result.entities)
+
+    def test_adaptive_extractor_handles_chinese_meeting_minutes(self):
+        extractor = AdaptiveExtractor()
+        result = extractor.extract(
+            "2026-03-31 14:00\n王敏: 讨论Q2路线图，决定优先做搜索优化。\n李雷: 下周补充用户画像方案。"
+        )
+
+        self.assertEqual(len(result.events_data), 2)
+        self.assertEqual(result.events_data[0]["participants"], [{"role": "王敏", "seat": ""}])
+        self.assertEqual(result.events_data[1]["participants"], [{"role": "李雷", "seat": ""}])
+        self.assertIn("搜索优化", result.events_data[0]["action"])
+
+    def test_adaptive_extractor_handles_iot_json_record(self):
+        extractor = AdaptiveExtractor()
+        result = extractor.extract(
+            '{"product":"Greenhouse Sensor A1","operation":"report temperature spike","result":"fan turned on","timestamp":"2026-03-31 08:15:00","location":"Zone 3"}'
+        )
+
+        self.assertEqual(result.event_data["action"], "report temperature spike")
+        self.assertEqual(result.event_data["causality"], "fan turned on")
+        self.assertIn("Greenhouse Sensor A1", result.entities)
+        self.assertIn("Zone 3", result.entities)
+
+    def test_adaptive_extractor_handles_mixed_language_dialogue(self):
+        extractor = AdaptiveExtractor()
+        result = extractor.extract(
+            '2026-03-31 16:30 | Alice: 请帮我 reserve "Atlas" for tomorrow -> System: Atlas booked for tomorrow standup'
+        )
+
+        self.assertEqual(len(result.events_data), 2)
+        self.assertEqual(result.events_data[0]["participants"], [{"role": "Alice", "seat": ""}])
+        self.assertEqual(result.events_data[1]["participants"], [{"role": "System", "seat": ""}])
+        self.assertIn("Atlas", result.entities)
+
+    def test_adaptive_extractor_handles_nested_json_records(self):
+        extractor = AdaptiveExtractor()
+        result = extractor.extract(
+            '{"envelope":{"payload":{"actor":"OpsBot","operation":"restart search service","result":"service recovered","product":"Search API","location":"cluster-a","timestamp":"2026-03-31 11:20:00"}}}'
+        )
+
+        self.assertEqual(result.event_data["participants"], [{"role": "OpsBot", "seat": ""}])
+        self.assertEqual(result.event_data["action"], "restart search service")
+        self.assertEqual(result.event_data["causality"], "service recovered")
+        self.assertIn("Search API", result.entities)
+        self.assertIn("cluster-a", result.entities)
+
+    def test_adaptive_extractor_handles_noise_and_edge_inputs(self):
+        extractor = AdaptiveExtractor()
+        cases = {
+            "": ([], []),
+            "7": ([], []),
+            "lorem ipsum " * 2000: ([], []),
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text[:20]):
+                result = extractor.extract(text)
+                self.assertEqual(result.events_data, expected[0])
+                self.assertEqual(result.entities, expected[1])
 
     def test_memory_builder_passes_metadata_and_persists_rule_relations(self):
         extractor = _FakeExtractor()

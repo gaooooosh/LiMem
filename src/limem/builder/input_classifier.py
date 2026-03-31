@@ -27,6 +27,7 @@ _KV_PATTERN = re.compile(
     r"(?:^|[\n\r|;,])\s*[\w\-.:\u4e00-\u9fff]{1,40}\s*(?:[:=])\s*[^:=\n\r|;,]{1,160}",
     re.MULTILINE,
 )
+_JSON_START_PATTERN = re.compile(r"[\[{]")
 
 
 class StructureLevel(Enum):
@@ -96,12 +97,40 @@ class InputClassifier:
         if not content:
             return None
         stripped = content.lstrip()
-        if not stripped.startswith(("{", "[")):
+        if stripped.startswith(("{", "[")):
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+        return self._try_extract_embedded_json(content)
+
+    def _try_extract_embedded_json(self, content: str) -> Any:
+        trimmed = content.strip()
+        if not trimmed:
             return None
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
+
+        decoder = json.JSONDecoder()
+        best_payload: Any = None
+        best_length = 0
+
+        for match in _JSON_START_PATTERN.finditer(content):
+            candidate = content[match.start():]
+            try:
+                parsed, end_index = decoder.raw_decode(candidate)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, (dict, list)):
+                continue
+            candidate_length = len(candidate[:end_index].strip())
+            if candidate_length > best_length:
+                best_payload = parsed
+                best_length = candidate_length
+
+        if best_payload is None:
             return None
+        if best_length / max(len(trimmed), 1) <= 0.4:
+            return None
+        return best_payload
 
     def _count_dialogue_hits(self, content: str) -> int:
         hits = len(_DIALOGUE_COLON_PATTERN.findall(content))

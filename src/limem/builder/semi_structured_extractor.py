@@ -45,6 +45,25 @@ _QUOTED_ENTITY_PATTERNS = (
     re.compile(r"[\'‘’]([^\'‘’]{1,80})[\'‘’]"),
     re.compile(r"\b(?:[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)+)\b"),
 )
+_MEDIA_PLAY_PATTERN = re.compile(
+    r"在(?P<app>\S{1,20})播放(?:(?P<descriptor>[^《「\",，。\n]{0,24})[《「\"](?P<quoted_title>[^》」\"\n]{1,60})[》」\"]|(?P<title>[^,，。\n]{1,60}))"
+)
+_NAVIGATION_PATTERN = re.compile(
+    r"(?:从(?P<origin>[^,，。\n]{1,20}))?导航到(?P<dest>[^,，。\n]{1,40})"
+)
+_GENERIC_NARRATIVE_PATTERN = re.compile(
+    r"(?P<actor>用户|车主|司机|乘客|主驾|副驾|后排乘客|系统|车机|助手|User|user|Assistant|assistant|System|system|Driver|driver|Passenger|passenger|[A-Z][a-z]{1,12})"
+    r"(?P<verb>发起|开始|打开|关闭|设置|搜索|选择|切换|调整|启动|停止|暂停)"
+    r"(?P<object>[^,，。！？!? \n][^,，。！？!\?\n]{0,39})"
+)
+_ACTION_GATE_HINTS = (
+    "说", "问", "播放", "导航", "打开", "关闭", "设置", "搜索",
+    "选择", "发起", "开始", "停止", "暂停", "切换", "提醒", "预约",
+    "参加", "前往", "创建", "更新", "said", "asked", "play", "played",
+    "navigate", "navigated", "open", "opened", "close", "closed", "create",
+    "created", "start", "started", "stop", "stopped", "pause", "paused",
+    "appointment", "meeting",
+)
 
 
 class SemiStructuredExtractor:
@@ -70,7 +89,6 @@ class SemiStructuredExtractor:
     ):
         from .extractor import ExtractionResult
 
-        del detected_patterns
         events = self._extract_dialogue_events(text)
         entities = self._extract_pattern_entities(text)
 
@@ -78,6 +96,11 @@ class SemiStructuredExtractor:
         if kv_result.events_data:
             events.extend(kv_result.events_data)
             entities.extend(kv_result.entities)
+
+        narrative_events, narrative_entities = self._extract_narrative_events(text)
+        if narrative_events:
+            events.extend(narrative_events)
+            entities.extend(narrative_entities)
 
         deduped_events = self._dedupe_events(events)
         deduped_entities = normalize_entity_candidates(entities, source_text=text)
@@ -87,6 +110,14 @@ class SemiStructuredExtractor:
                 events_data=deduped_events,
                 entities=deduped_entities,
                 confidence=0.9,
+            )
+
+        if detected_patterns and not self._has_actionable_content(text):
+            return ExtractionResult(
+                event_data={},
+                events_data=[],
+                entities=deduped_entities,
+                confidence=0.0,
             )
 
         if self.fallback_extractor is not None:
@@ -147,6 +178,127 @@ class SemiStructuredExtractor:
                     candidates.append(str(match).strip())
         return candidates
 
+    def _extract_narrative_events(self, text: str) -> tuple[list[dict[str, Any]], list[str]]:
+        events: list[dict[str, Any]] = []
+        entities: list[str] = []
+
+        for match in _MEDIA_PLAY_PATTERN.finditer(text):
+            event, event_entities = self._build_media_event(text, match)
+            if self._has_event(event):
+                events.append(event)
+                entities.extend(event_entities)
+
+        for match in _NAVIGATION_PATTERN.finditer(text):
+            event, event_entities = self._build_navigation_event(text, match)
+            if self._has_event(event):
+                events.append(event)
+                entities.extend(event_entities)
+
+        if events:
+            return events, entities
+
+        for match in _GENERIC_NARRATIVE_PATTERN.finditer(text):
+            event, event_entities = self._build_generic_narrative_event(text, match)
+            if self._has_event(event):
+                events.append(event)
+                entities.extend(event_entities)
+        return events, entities
+
+    def _build_media_event(
+        self,
+        text: str,
+        match: re.Match[str],
+    ) -> tuple[dict[str, Any], list[str]]:
+        app = self._clean_narrative_value(match.group("app"))
+        descriptor = self._clean_narrative_value(match.group("descriptor"))
+        quoted_title = self._clean_narrative_value(match.group("quoted_title"))
+        plain_title = self._clean_narrative_value(match.group("title"))
+        title = quoted_title or plain_title
+        quoted = bool(quoted_title)
+
+        action = "播放"
+        if descriptor and title:
+            title_text = f"《{title}》" if quoted else title
+            action = f"播放{descriptor}{title_text}"
+        elif title:
+            title_text = f"《{title}》" if quoted else title
+            action = f"播放{title_text}"
+
+        return self._build_narrative_event(
+            text=text,
+            summary=match.group(0),
+            action=action,
+            entities=[app, title],
+        )
+
+    def _build_navigation_event(
+        self,
+        text: str,
+        match: re.Match[str],
+    ) -> tuple[dict[str, Any], list[str]]:
+        origin = self._clean_narrative_value(match.group("origin"))
+        dest = self._clean_narrative_value(match.group("dest"))
+        action = f"导航到{dest}" if dest else "导航"
+        if origin and dest:
+            action = f"从{origin}导航到{dest}"
+
+        return self._build_narrative_event(
+            text=text,
+            summary=match.group(0),
+            action=action,
+            entities=[origin, dest],
+        )
+
+    def _build_generic_narrative_event(
+        self,
+        text: str,
+        match: re.Match[str],
+    ) -> tuple[dict[str, Any], list[str]]:
+        actor = self._clean_narrative_value(match.group("actor"))
+        verb = self._clean_narrative_value(match.group("verb"))
+        obj = self._clean_narrative_value(match.group("object"))
+        action = f"{verb}{obj}" if obj else verb
+
+        return self._build_narrative_event(
+            text=text,
+            summary=f"{actor}{action}",
+            action=action,
+            actor=actor,
+            entities=[obj],
+        )
+
+    def _build_narrative_event(
+        self,
+        *,
+        text: str,
+        summary: str,
+        action: str,
+        actor: str = "",
+        entities: list[str] | None = None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        inline_time = self._extract_inline_time(text)
+        payload = normalize_event_payload(
+            {
+                "event": {
+                    "summary": self._normalize_content(summary),
+                    "participants": [{"role": actor}] if actor else [],
+                    "action": self._normalize_content(action),
+                    "time": {"text": inline_time} if inline_time else {},
+                }
+            },
+            episode_text=text,
+            dynamic_hints=_SKIP_DYNAMIC_CHECK if self.skip_dynamic_change_filter else None,
+            telemetry_markers=(),
+            passive_screen_prefix="",
+            passive_screen_markers=(),
+            passive_screen_dynamic_hints=(),
+        )
+        return payload, [item for item in (entities or []) if item]
+
+    def _clean_narrative_value(self, value: Any) -> str:
+        cleaned = self._normalize_content(str(value or ""))
+        return cleaned.strip("《》「」\"'“”‘’")
+
     def _extract_inline_time(self, text: str) -> str:
         match = _DATE_OR_TIME_PATTERN.search(text)
         return str(match.group(1)).strip() if match else ""
@@ -162,6 +314,10 @@ class SemiStructuredExtractor:
 
     def _has_event(self, payload: dict[str, Any]) -> bool:
         return any(str(payload.get(field, "") or "").strip() for field in ("summary", "action", "causality"))
+
+    def _has_actionable_content(self, text: str) -> bool:
+        lowered = str(text or "").lower()
+        return any(hint in text or hint in lowered for hint in _ACTION_GATE_HINTS)
 
     def _dedupe_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []

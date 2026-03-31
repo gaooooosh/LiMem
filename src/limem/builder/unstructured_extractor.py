@@ -62,7 +62,7 @@ class UnstructuredExtractor:
                 events.append(normalized)
 
         deduped_events = self._dedupe_events(events)
-        raw_entities = payload.get("entities", []) if isinstance(payload, dict) else payload
+        raw_entities = payload.get("entities", []) if isinstance(payload, dict) else []
         entities = normalize_entity_candidates(raw_entities, source_text=text)
         return ExtractionResult(
             event_data=deduped_events[0] if deduped_events else {},

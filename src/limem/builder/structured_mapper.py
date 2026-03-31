@@ -15,7 +15,8 @@ from ..utils import (
 )
 
 
-_SUMMARY_KEYS = ("summary", "description", "detail", "details", "headline")
+_SUMMARY_KEYS = ("summary", "description", "detail", "details", "headline", "subject", "cal_evt")
+_EMPTYISH_TEXT_VALUES = frozenset({"none", "null", "nil", "n/a", "na", "unknown", "无", "空"})
 
 
 @dataclass
@@ -164,7 +165,7 @@ class StructuredFieldMapper:
     def _build_time_value(self, flattened: list[tuple[str, Any]]) -> Any:
         time_payload: dict[str, Any] = {}
         for key, value in flattened:
-            if value in (None, "", [], {}):
+            if self._is_emptyish(value):
                 continue
             normalized_key = self._normalize_key(key)
             if not self._matches_any(normalized_key, self.config.time_keys):
@@ -182,7 +183,7 @@ class StructuredFieldMapper:
     def _collect_entity_values(self, flattened: list[tuple[str, Any]]) -> list[Any]:
         values: list[Any] = []
         for key, value in flattened:
-            if value in (None, "", [], {}):
+            if self._is_emptyish(value):
                 continue
             if self._matches_any(self._normalize_key(key), self.config.entity_keys):
                 values.append(value)
@@ -192,7 +193,7 @@ class StructuredFieldMapper:
         best_score = -1
         best_value: Any = ""
         for key, value in flattened:
-            if value in (None, "", [], {}):
+            if self._is_emptyish(value):
                 continue
             score = self._match_score(self._normalize_key(key), patterns)
             if score > best_score:
@@ -202,6 +203,8 @@ class StructuredFieldMapper:
 
     def _pick_fallback_value(self, flattened: list[tuple[str, Any]], patterns: tuple[str, ...]) -> Any:
         for key, value in flattened:
+            if self._is_emptyish(value):
+                continue
             normalized_key = self._normalize_key(key)
             if any(pattern in normalized_key for pattern in patterns):
                 return value
@@ -230,6 +233,16 @@ class StructuredFieldMapper:
 
     def _normalize_key(self, key: str) -> str:
         return re.sub(r"[^a-z0-9.]+", "_", str(key).lower()).strip("_.")
+
+    def _is_emptyish(self, value: Any) -> bool:
+        if value in (None, "", [], {}):
+            return True
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if not normalized:
+                return True
+            return normalized in _EMPTYISH_TEXT_VALUES
+        return False
 
     def _has_event(self, payload: dict[str, Any]) -> bool:
         return any(str(payload.get(field, "") or "").strip() for field in ("summary", "action", "causality"))

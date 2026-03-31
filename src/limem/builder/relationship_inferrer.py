@@ -122,7 +122,7 @@ class RelationshipInferrer:
         left_end = self._event_end(left)
         right_start = self._event_start(right)
         if left_end <= 0 or right_start <= 0:
-            return True
+            return False
         return 0 <= right_start - left_end <= self.causal_time_window_seconds
 
     def _time_ranges_overlap(self, left: Event, right: Event) -> bool:
