@@ -51,6 +51,7 @@ _DEFAULT_PASSIVE_SCREEN_DYNAMIC_HINTS = (
     "搜索", "输入", "导航", "发起", "开始", "停止", "暂停", "恢复",
     "调到", "调整", "启动", "提醒",
 )
+_SKIP_DYNAMIC_CHECK = object()
 _DEFAULT_ENTITY_GENERIC_TERMS = {
     "内容", "歌曲", "歌", "音乐", "视频", "动画片", "电影", "纪录片", "节目", "专辑",
     "路线", "导航", "地址", "位置", "地方", "东西", "事情", "信息", "答案", "问题",
@@ -571,6 +572,8 @@ def _looks_like_passive_screen_app_metadata(
 ) -> bool:
     text = str(episode_text or "").strip()
     resolved_prefix = _DEFAULT_PASSIVE_SCREEN_PREFIX if prefix is None else prefix
+    if not resolved_prefix:
+        return False
     resolved_markers = (
         _DEFAULT_PASSIVE_SCREEN_METADATA_MARKERS
         if metadata_markers is None
@@ -708,7 +711,7 @@ def normalize_event_payload(
     episode_text: str = "",
     *,
     participant_hints: tuple[tuple[str, str], ...] | None = None,
-    dynamic_hints: tuple[str, ...] | None = None,
+    dynamic_hints: Any = None,
     structured_dialogue_markers: tuple[str, ...] | None = None,
     telemetry_markers: tuple[str, ...] | None = None,
     telemetry_roles: set[str] | frozenset[str] | None = None,
@@ -829,9 +832,10 @@ def normalize_event_payload(
         action = ""
         causality = ""
 
-    if not _looks_like_dynamic_change(summary, action, dynamic_hints=dynamic_hints):
-        action = ""
-        summary = ""
+    if dynamic_hints is not _SKIP_DYNAMIC_CHECK:
+        if not _looks_like_dynamic_change(summary, action, dynamic_hints=dynamic_hints):
+            action = ""
+            summary = ""
 
     return {
         "summary": summary,

@@ -28,3 +28,4 @@ test_results.json
 trips.json
 DB/demo_db.kz
 experiments/*
+session_v1.json

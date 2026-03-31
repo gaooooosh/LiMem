@@ -11,7 +11,7 @@ from .ltmemory_impl import LTMemoryImpl
 from .storage.kuzu_store import KuzuStore
 from .storage.graph_store import GraphStore
 from .builder.memory_builder import MemoryBuilder, BuilderConfig
-from .builder.extractor import TwoStageExtractor
+from .builder.extractor import AdaptiveExtractor, TwoStageExtractor
 from .builder.consolidator import Consolidator
 from .retriever.memory_searcher import MemorySearcher, SearcherConfig
 from .retriever.entity_matcher import EntityMatcher
@@ -24,6 +24,7 @@ from .config import (
     DASHSCOPE_BASE_URL,
     ENABLE_DYNAMIC_EVOLUTION,
     ENABLE_EVENT_RELATIONS,
+    EXTRACTOR_TYPE,
     GENERATION_MODEL,
     EMBEDDING_MODEL,
     SIMILARITY_THRESHOLD,
@@ -122,13 +123,24 @@ def create_ltm_system(
         embedding_client=embedding_client,
     )
 
-    # 3. 创建提取器（仅 LLM 抽取）
-    extractor = TwoStageExtractor(
-        api_key=api_key,
-        base_url=base_url,
-        generation_model=config.get("generation_model", GENERATION_MODEL),
-        enable_thinking=config.get("enable_thinking", False),
-    )
+    # 3. 创建提取器
+    extractor_type = str(config.get("extractor_type", EXTRACTOR_TYPE) or "adaptive").strip().lower()
+    if extractor_type == "two_stage":
+        extractor = TwoStageExtractor(
+            api_key=api_key,
+            base_url=base_url,
+            generation_model=config.get("generation_model", GENERATION_MODEL),
+            enable_thinking=config.get("enable_thinking", False),
+        )
+    else:
+        extractor = AdaptiveExtractor(
+            api_key=api_key,
+            base_url=base_url,
+            generation_model=config.get("generation_model", GENERATION_MODEL),
+            enable_thinking=config.get("enable_thinking", False),
+            field_config=config.get("field_config"),
+            plugins=config.get("extractor_plugins"),
+        )
 
     # 4. 创建合并器
     consolidator = Consolidator(

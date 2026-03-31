@@ -10,6 +10,7 @@
 """
 
 from dataclasses import dataclass
+import inspect
 from typing import Any, Optional
 import uuid
 import time
@@ -35,6 +36,7 @@ from ..config import (
 from ..utils import hash_summary, time_bucket_from_ts
 from .extractor import LLMExtractor, ExtractionResult
 from .consolidator import Consolidator, ConsolidationResult
+from .relationship_inferrer import RelationshipInferrer
 
 
 @dataclass
@@ -82,6 +84,7 @@ class MemoryBuilder:
         base_url: Optional[str] = None,
         embedding_model: Optional[str] = None,
         dynamic_engine=None,
+        relationship_inferrer: Optional[RelationshipInferrer] = None,
     ):
         """初始化记忆构建器
 
@@ -104,6 +107,7 @@ class MemoryBuilder:
         self.base_url = base_url or DASHSCOPE_BASE_URL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
         self.dynamic_engine = dynamic_engine
+        self.relationship_inferrer = relationship_inferrer or RelationshipInferrer()
 
     def build(self, episode: Episode) -> IngestResult:
         """从Episode构建记忆
@@ -123,7 +127,7 @@ class MemoryBuilder:
         print(f"📝 Saved Episode: {episode.id} at t={current_time}")
 
         # Step 2: LLM提取
-        extraction = self.extractor.extract(episode.content)
+        extraction = self._extract_episode(episode)
 
         event_payloads = self._collect_event_payloads(extraction)
         print(f"🧠 Extracted Events: {len(event_payloads)}")
@@ -242,6 +246,8 @@ class MemoryBuilder:
                 entities_created=0,
                 events=[],
             )
+
+        self._persist_inferred_relations(built_events, episode)
 
         # Dynamic evolution updates are strictly local and incremental.
         if self.dynamic_engine:
@@ -541,3 +547,36 @@ class MemoryBuilder:
         base = event.id or hash_summary(event.summary or uuid.uuid4().hex)
         ts = event.timestamp or event.last_active or int(time.time())
         return f"{base[:20]}_{ts}_{uuid.uuid4().hex[:6]}"
+
+    def _extract_episode(self, episode: Episode) -> ExtractionResult:
+        extract_fn = self.extractor.extract
+        try:
+            parameters = inspect.signature(extract_fn).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "metadata" in parameters:
+            return extract_fn(episode.content, metadata=episode.metadata)
+        return extract_fn(episode.content)
+
+    def _persist_inferred_relations(self, events: list[Event], episode: Episode) -> None:
+        if not self.relationship_inferrer or len(events) < 2:
+            return
+        metadata = episode.metadata if isinstance(episode.metadata, dict) else {}
+        session_id = str(
+            metadata.get("session_id")
+            or metadata.get("sessionId")
+            or metadata.get("conversation_id")
+            or ""
+        )
+        for relation in self.relationship_inferrer.infer(events):
+            self.store.upsert_event_relation(
+                from_event_id=relation.from_event_id,
+                to_event_id=relation.to_event_id,
+                relation_type=relation.relation_type,
+                description=relation.description,
+                confidence=relation.confidence,
+                evidence_span=relation.evidence_span,
+                source_episode_id=episode.id,
+                source_session_id=session_id,
+                timestamp=episode.timestamp,
+            )

@@ -75,6 +75,8 @@ DASHSCOPE_BASE_URL = os.getenv(
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "qwen3-1.7b")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v2")
 ENABLE_THINKING = env_bool("ENABLE_THINKING", False)
+EXTRACTOR_TYPE = os.getenv("EXTRACTOR_TYPE", "adaptive").strip().lower()
+SKIP_DYNAMIC_CHANGE_FILTER = env_bool("SKIP_DYNAMIC_CHANGE_FILTER", True)
 
 # Dataset knobs.
 TEST_DATA_PATH = os.getenv("TEST_DATA_PATH", "./example.json")

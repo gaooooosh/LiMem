@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from limem.utils import normalize_entity_candidates, normalize_event_payload
+from limem.utils import _SKIP_DYNAMIC_CHECK, normalize_entity_candidates, normalize_event_payload
 
 
 class TestExtractionNormalization(unittest.TestCase):
@@ -211,6 +211,26 @@ class TestExtractionNormalization(unittest.TestCase):
         self.assertEqual(normalized["summary"], "")
         self.assertEqual(normalized["action"], "")
         self.assertEqual(normalized["causality"], "")
+
+    def test_skip_dynamic_check_preserves_domain_neutral_event(self):
+        normalized = normalize_event_payload(
+            {
+                "event": {
+                    "summary": "Alice has a dentist appointment",
+                    "participants": [{"role": "Alice"}],
+                    "action": "has a dentist appointment",
+                }
+            },
+            episode_text="Alice has a dentist appointment",
+            dynamic_hints=_SKIP_DYNAMIC_CHECK,
+            telemetry_markers=(),
+            passive_screen_prefix="",
+            passive_screen_markers=(),
+            passive_screen_dynamic_hints=(),
+        )
+
+        self.assertEqual(normalized["summary"], "Alice has a dentist appointment")
+        self.assertEqual(normalized["action"], "has a dentist appointment")
 
 
 if __name__ == "__main__":

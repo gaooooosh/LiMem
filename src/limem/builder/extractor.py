@@ -27,6 +27,11 @@ from ..utils import (
     normalize_event_payload,
     robust_json_loads,
 )
+from .input_classifier import InputClassifier, StructureLevel
+from .plugin import ExtractorPlugin
+from .semi_structured_extractor import SemiStructuredExtractor
+from .structured_mapper import FieldMappingConfig, StructuredFieldMapper
+from .unstructured_extractor import UnstructuredExtractor
 
 
 @dataclass
@@ -58,11 +63,16 @@ class LLMExtractor(ABC):
     """
 
     @abstractmethod
-    def extract(self, text: str) -> ExtractionResult:
+    def extract(
+        self,
+        text: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> ExtractionResult:
         """执行提取
 
         Args:
             text: 原始文本（Episode内容）
+            metadata: Episode元数据
 
         Returns:
             ExtractionResult 包含事件数据和实体列表
@@ -119,7 +129,11 @@ class TwoStageExtractor(LLMExtractor):
         self._entity_system_prompt = load_prompt("extract_entities_only_system.txt")
         self._entity_user_prompt = load_prompt("extract_entities_only_user.txt")
 
-    def extract(self, text: str) -> ExtractionResult:
+    def extract(
+        self,
+        text: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> ExtractionResult:
         """执行两阶段提取
 
         Args:
@@ -128,6 +142,7 @@ class TwoStageExtractor(LLMExtractor):
         Returns:
             ExtractionResult
         """
+        del metadata
         # Stage 1: 提取事件
         events_data = self._extract_events(text)
         event_data = events_data[0] if events_data else {}
@@ -358,3 +373,91 @@ class TwoStageExtractor(LLMExtractor):
         )
 
         return normalize_entity_candidates(entities, source_text=text)
+
+
+class AdaptiveExtractor(LLMExtractor):
+    """Adaptive extractor that routes by structure instead of domain."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        generation_model: Optional[str] = None,
+        enable_thinking: bool = False,
+        field_config: Optional[FieldMappingConfig] = None,
+        plugins: Optional[list[ExtractorPlugin]] = None,
+        llm_caller=None,
+    ):
+        self.api_key = api_key or DASHSCOPE_API_KEY
+        self.base_url = base_url or DASHSCOPE_BASE_URL
+        self.generation_model = generation_model or GENERATION_MODEL
+        self.enable_thinking = enable_thinking or ENABLE_THINKING
+        self._custom_llm_caller = llm_caller
+
+        self.classifier = InputClassifier()
+        self.structured_mapper = StructuredFieldMapper(field_config)
+        self._extract_combined_system_prompt = load_prompt("extract_combined_system.txt")
+        self._extract_combined_user_prompt = load_prompt("extract_combined_user.txt")
+        self.unstructured = UnstructuredExtractor(
+            llm_caller=self._call_generation_json_optional,
+            system_prompt=self._extract_combined_system_prompt,
+            user_prompt=self._extract_combined_user_prompt,
+        )
+        self.semi_structured = SemiStructuredExtractor(
+            field_mapper=self.structured_mapper,
+            fallback_extractor=self.unstructured,
+        )
+        self.plugins = list(plugins or [])
+
+    def extract(
+        self,
+        text: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> ExtractionResult:
+        classification = self.classifier.classify(text, metadata)
+
+        if classification.level == StructureLevel.STRUCTURED:
+            result = self.structured_mapper.extract(classification.parsed_json, text)
+        elif classification.level == StructureLevel.SEMI_STRUCTURED:
+            result = self.semi_structured.extract(text, classification.detected_patterns)
+        else:
+            result = self.unstructured.extract(text)
+
+        for plugin in self.plugins:
+            if plugin.can_handle(text, metadata, classification):
+                result = plugin.enhance(text, metadata, result)
+        return result
+
+    def _call_generation_json_optional(
+        self,
+        system_prompt: str,
+        user_message: str,
+        default: Any,
+    ) -> Any:
+        if self._custom_llm_caller is not None:
+            return self._custom_llm_caller(system_prompt, user_message, default)
+
+        if dashscope is None or Generation is None:
+            return default
+        if not self.api_key or self.api_key in {"YOUR_API_KEY", "sk-xxx"}:
+            return default
+        if self.enable_thinking:
+            print("⚠️ enable_thinking requires stream call; ignoring in non-stream mode.")
+
+        dashscope.base_http_api_url = self.base_url
+        dashscope.api_key = self.api_key
+        resp = Generation.call(
+            api_key=self.api_key,
+            model=self.generation_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            result_format="message",
+            enable_thinking=self.enable_thinking,
+        )
+        if resp.status_code != 200:
+            print(f"⚠️ Adaptive LLM call failed: status={resp.status_code}")
+            return default
+        content = resp.output.choices[0].message.content
+        return robust_json_loads(content, default)

@@ -9,6 +9,7 @@
 """
 
 from .extractor import (
+    AdaptiveExtractor,
     LLMExtractor,
     TwoStageExtractor,
     ExtractionResult,
@@ -16,13 +17,28 @@ from .extractor import (
 from .context_extractor import ContextExtractionPipeline
 from .consolidator import Consolidator, ConsolidationResult
 from .memory_builder import MemoryBuilder, BuilderConfig
+from .relationship_inferrer import RelationshipInferrer
+from .structured_mapper import FieldMappingConfig, StructuredFieldMapper
+from .input_classifier import InputClassifier, StructureLevel
+from .semi_structured_extractor import SemiStructuredExtractor
+from .unstructured_extractor import UnstructuredExtractor
+from .plugin import ExtractorPlugin
 
 __all__ = [
     # Extractor
+    "AdaptiveExtractor",
     "LLMExtractor",
     "TwoStageExtractor",
     "ExtractionResult",
     "ContextExtractionPipeline",
+    "InputClassifier",
+    "StructureLevel",
+    "StructuredFieldMapper",
+    "FieldMappingConfig",
+    "SemiStructuredExtractor",
+    "UnstructuredExtractor",
+    "RelationshipInferrer",
+    "ExtractorPlugin",
     # Consolidator
     "Consolidator",
     "ConsolidationResult",

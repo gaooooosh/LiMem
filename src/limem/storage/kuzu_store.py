@@ -1604,6 +1604,7 @@ class KuzuStore(GraphStore):
 
         resp = self.conn.execute("MATCH ()-[r:IN_REL]->() RETURN count(r)")
         stats["in_count"] = resp.get_next()[0] if resp.has_next() else 0
+        stats["abstract_to_count"] = stats["in_count"]
 
         resp = self.conn.execute("MATCH ()-[r:EVENT_MERGE_TRACE]->() RETURN count(r)")
         stats["event_merge_trace_count"] = resp.get_next()[0] if resp.has_next() else 0
