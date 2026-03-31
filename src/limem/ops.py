@@ -198,6 +198,8 @@ class MemoryGraphOps:
         strategy: str = "auto",
         dry_run: bool = False,
         max_pairs: int = 10,
+        focus_event_ids: Optional[list[str]] = None,
+        event_same_scope_only: bool = False,
     ) -> dict[str, Any]:
         if not self.dynamic_engine:
             raise RuntimeError("Dynamic evolution engine is required for auto merge")
@@ -206,6 +208,8 @@ class MemoryGraphOps:
             strategy=strategy,
             dry_run=dry_run,
             max_pairs=max_pairs,
+            focus_event_ids=focus_event_ids,
+            event_same_scope_only=event_same_scope_only,
         )
         result["snapshot"] = self.snapshot(limit=max(20, max_pairs * 8), include_inactive=True)
         return result

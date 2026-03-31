@@ -717,8 +717,11 @@ class DynamicEvolutionEngine:
         dry_run: bool = False,
         current_time: Optional[int] = None,
         max_pairs: int = 10,
+        focus_event_ids: Optional[list[str]] = None,
+        event_same_scope_only: bool = False,
     ) -> dict[str, Any]:
-        now = int(current_time or time.time())
+        operation_time = int(current_time or time.time())
+        reference_time = self._resolve_event_reference_time(current_time)
         normalized_scope = (scope or "all").strip().lower()
         if normalized_scope not in {"all", "event", "events", "context", "contexts"}:
             raise ValueError(f"Unsupported auto merge scope: {scope}")
@@ -726,12 +729,14 @@ class DynamicEvolutionEngine:
         include_events = normalized_scope in {"all", "event", "events"}
         include_contexts = normalized_scope in {"all", "context", "contexts"}
         event_plans = self.detect_event_merges(
-            current_time=now,
+            current_time=reference_time,
             strategy=strategy,
             max_pairs=max_pairs,
+            focus_event_ids=focus_event_ids,
+            same_scope_only=event_same_scope_only,
         ) if include_events else []
         context_merge_result = self.merge_all_contexts(
-            current_time=now,
+            current_time=operation_time,
             strategy=strategy,
             dry_run=True,
             max_pairs=max_pairs,
@@ -742,12 +747,12 @@ class DynamicEvolutionEngine:
         applied_contexts = 0
         if not dry_run:
             for plan in event_plans:
-                if self._apply_event_merge_plan(plan, merged_at=now):
+                if self._apply_event_merge_plan(plan, merged_at=operation_time):
                     applied_events += 1
             if include_contexts:
                 applied_contexts = int(
                     self.merge_all_contexts(
-                        current_time=now,
+                        current_time=operation_time,
                         strategy=strategy,
                         dry_run=False,
                         max_pairs=max_pairs,
@@ -773,22 +778,38 @@ class DynamicEvolutionEngine:
         current_time: Optional[int] = None,
         strategy: str = "auto",
         max_pairs: int = 10,
+        focus_event_ids: Optional[list[str]] = None,
+        same_scope_only: bool = False,
     ) -> list[dict[str, Any]]:
-        now = int(current_time or time.time())
+        now = self._resolve_event_reference_time(current_time)
         resolved_strategy = self._resolve_merge_strategy(strategy)
         if resolved_strategy == "disabled":
             return []
-        events = self.store.get_recent_events(
-            current_time=now,
-            window_seconds=self.config.event_consolidation_window_seconds,
-            limit=300,
-        )
+        focus_set = {
+            str(event_id or "").strip()
+            for event_id in (focus_event_ids or [])
+            if str(event_id or "").strip()
+        }
+        if focus_set:
+            events = self.store.list_events(limit=300, statuses=["active"])
+        else:
+            events = self.store.get_recent_events(
+                current_time=now,
+                window_seconds=self.config.event_consolidation_window_seconds,
+                limit=300,
+            )
         if not events:
             return []
 
         event_map = {event.id: event for event in events}
+        if focus_set:
+            events = [event for event in events if event.id in focus_set]
+            events.sort(key=lambda item: item.last_active or item.timestamp or 0, reverse=True)
+            if not events:
+                return []
         merged_sources: set[str] = set()
         visited_pairs: set[tuple[str, str]] = set()
+        planned_canonicals: set[str] = set()
         plans: list[dict[str, Any]] = []
         llm_gate = self.config.event_consolidation_threshold * 0.72
 
@@ -799,6 +820,8 @@ class DynamicEvolutionEngine:
             candidates = self._retrieve_event_consolidation_candidates(event, event_map, now)
             for candidate in candidates:
                 if candidate.id == event.id or candidate.id in merged_sources:
+                    continue
+                if self._should_skip_event_merge_pair(event, candidate, same_scope_only=same_scope_only):
                     continue
                 pair_key = tuple(sorted([event.id, candidate.id]))
                 if pair_key in visited_pairs:
@@ -850,6 +873,16 @@ class DynamicEvolutionEngine:
                     )
                     confidence = max(score, float(decision.get("confidence", score) or score))
 
+                stabilized_pair = self._stabilize_event_merge_pair(
+                    canonical=canonical,
+                    merged=merged,
+                    merged_sources=merged_sources,
+                    planned_canonicals=planned_canonicals,
+                )
+                if stabilized_pair is None:
+                    continue
+                canonical, merged = stabilized_pair
+
                 plans.append(
                     {
                         "kind": "event",
@@ -864,11 +897,86 @@ class DynamicEvolutionEngine:
                     }
                 )
                 merged_sources.add(merged.id)
+                planned_canonicals.add(canonical.id)
                 break
 
             if len(plans) >= max_pairs:
                 break
         return plans[:max_pairs]
+
+    def _resolve_event_reference_time(self, current_time: Optional[int] = None) -> int:
+        if current_time is not None and int(current_time) > 0:
+            return int(current_time)
+        try:
+            latest_events = self.store.list_events(limit=1, statuses=["active"])
+        except Exception:
+            latest_events = []
+        if latest_events:
+            latest_event = latest_events[0]
+            latest_ts = int(latest_event.last_active or latest_event.timestamp or 0)
+            if latest_ts > 0:
+                return latest_ts
+        return int(time.time())
+
+    def _is_aggregated_event(self, event: Optional[Event]) -> bool:
+        if event is None:
+            return False
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        merge_inputs = payload.get("merge_inputs", [])
+        merge_trace = payload.get("merge_trace", [])
+        if isinstance(merge_inputs, list) and merge_inputs:
+            return True
+        if isinstance(merge_trace, list) and merge_trace:
+            return True
+        return int(event.support_count or 1) > 1
+
+    def _should_skip_event_merge_pair(
+        self,
+        left: Event,
+        right: Event,
+        same_scope_only: bool = False,
+    ) -> bool:
+        if same_scope_only and not self._same_event_scope(left, right):
+            return True
+        left_aggregated = self._is_aggregated_event(left)
+        right_aggregated = self._is_aggregated_event(right)
+        if left_aggregated and right_aggregated:
+            return True
+        if (left_aggregated or right_aggregated) and not self._same_event_scope(left, right):
+            return True
+        return False
+
+    def _same_event_scope(self, left: Event, right: Event) -> bool:
+        left_payload = left.payload if isinstance(left.payload, dict) else {}
+        right_payload = right.payload if isinstance(right.payload, dict) else {}
+        left_session = str(left_payload.get("session_id", "") or "").strip()
+        right_session = str(right_payload.get("session_id", "") or "").strip()
+        if left_session and right_session:
+            return left_session == right_session
+        left_episode = str(left_payload.get("episode_id", "") or "").strip()
+        right_episode = str(right_payload.get("episode_id", "") or "").strip()
+        if left_episode and right_episode:
+            return left_episode == right_episode
+        return False
+
+    def _stabilize_event_merge_pair(
+        self,
+        canonical: Event,
+        merged: Event,
+        merged_sources: set[str],
+        planned_canonicals: set[str],
+    ) -> Optional[tuple[Event, Event]]:
+        if canonical.id == merged.id:
+            return None
+        if canonical.id in merged_sources and merged.id not in merged_sources:
+            canonical, merged = merged, canonical
+        if merged.id in planned_canonicals and canonical.id not in planned_canonicals:
+            canonical, merged = merged, canonical
+        if canonical.id in merged_sources or merged.id in merged_sources:
+            return None
+        if merged.id in planned_canonicals:
+            return None
+        return canonical, merged
 
     def detect_context_merges(
         self,
@@ -963,6 +1071,8 @@ class DynamicEvolutionEngine:
             for candidate in candidates:
                 if candidate.id == event.id or candidate.id in merged_sources:
                     continue
+                if self._should_skip_event_merge_pair(event, candidate):
+                    continue
                 pair_key = tuple(sorted([event.id, candidate.id]))
                 if pair_key in visited_pairs:
                     continue
@@ -1009,6 +1119,15 @@ class DynamicEvolutionEngine:
                         strategy="llm",
                     )
                     score = max(score, float(decision.get("confidence", score) or score))
+                stabilized_pair = self._stabilize_event_merge_pair(
+                    canonical=canonical,
+                    merged=merged,
+                    merged_sources=merged_sources,
+                    planned_canonicals=planned_canonicals,
+                )
+                if stabilized_pair is None:
+                    continue
+                canonical, merged = stabilized_pair
                 if not dry_run:
                     self._merge_event_pair(
                         canonical=canonical,
@@ -1019,6 +1138,7 @@ class DynamicEvolutionEngine:
                         merged_at=now,
                     )
                 merged_sources.add(merged.id)
+                planned_canonicals.add(canonical.id)
                 report["merged_events"] += 1
                 report["archived_events"] += 1
                 break
@@ -1088,6 +1208,8 @@ class DynamicEvolutionEngine:
 
         threshold = max(self.config.context_reuse_threshold, 0.58)
         conflict_skip_threshold = min(0.95, self.config.context_conflict_threshold + 0.20)
+        llm_min_score = 0.30
+        llm_cross_subtype_min_score = 0.45
         candidates: list[tuple[float, dict[str, Any]]] = []
         for i in range(len(contexts)):
             for j in range(i + 1, len(contexts)):
@@ -1103,6 +1225,11 @@ class DynamicEvolutionEngine:
                 score = self._context_merge_score(left, right)
                 if resolved_strategy != "llm" and score < threshold:
                     continue
+                if resolved_strategy == "llm":
+                    if score < llm_min_score:
+                        continue
+                    if self._context_subtype(left) != self._context_subtype(right) and score < llm_cross_subtype_min_score:
+                        continue
 
                 canonical, merged = self._pick_canonical_context(left, right)
                 reason = "context_similarity"
@@ -1272,9 +1399,6 @@ class DynamicEvolutionEngine:
         embedding_similarity: Optional[float] = None,
     ) -> None:
         canonical.support_count += max(1, merged.support_count)
-        canonical.summary = self._merge_event_summary(canonical.summary, merged.summary)
-        canonical.action = canonical.action or merged.action
-        canonical.causality = canonical.causality or merged.causality
         canonical.time_range = self._merge_slots(
             canonical.time_range if isinstance(canonical.time_range, dict) else {},
             merged.time_range if isinstance(merged.time_range, dict) else {},
@@ -1285,6 +1409,14 @@ class DynamicEvolutionEngine:
         canonical.evidence = self._merge_list_values(canonical.evidence, merged.evidence)
         canonical.embedding = canonical.embedding or merged.embedding
         canonical.payload = self._merge_event_payload(canonical.payload, merged.payload, merged.id, merged_at)
+        semantics = self._rewrite_merged_event_semantics(canonical, merged)
+        canonical.summary = semantics["summary"] or canonical.summary or merged.summary
+        canonical.action = semantics["action"] or canonical.action or merged.action
+        canonical.causality = semantics["causality"] or canonical.causality or merged.causality
+        if isinstance(canonical.payload, dict):
+            canonical.payload["summary"] = canonical.summary
+            canonical.payload["action"] = canonical.action
+            canonical.payload["causality"] = canonical.causality
         self.store.update_event(canonical)
         self.store.relink_event_references(
             source_event_id=merged.id,
@@ -1373,6 +1505,389 @@ class DynamicEvolutionEngine:
         if not right or right in left:
             return left
         return f"{left}；{right}"
+
+    def _rewrite_merged_event_semantics(self, canonical: Event, merged: Event) -> dict[str, str]:
+        fragments = self._collect_event_summary_fragments(canonical, merged)
+        entities = sorted(set(self.store.get_event_entities(canonical.id)) | set(self.store.get_event_entities(merged.id)))
+        actor = self._primary_event_actor_label(canonical.participants)
+
+        summary = self._rewrite_merged_event_summary(canonical, merged)
+        action = self._rewrite_merged_event_action(
+            canonical,
+            merged,
+            summary=summary,
+            entities=entities,
+            actor=actor,
+        )
+        causality = self._rewrite_merged_event_causality(
+            canonical,
+            merged,
+            summary=summary,
+            action=action,
+            fragments=fragments,
+            actor=actor,
+        )
+        return {
+            "summary": summary,
+            "action": action,
+            "causality": causality,
+        }
+
+    def _rewrite_merged_event_summary(self, canonical: Event, merged: Event) -> str:
+        fragments = self._collect_event_summary_fragments(canonical, merged)
+        if not fragments:
+            return self._merge_event_summary(canonical.summary, merged.summary)
+
+        entities = sorted(set(self.store.get_event_entities(canonical.id)) | set(self.store.get_event_entities(merged.id)))
+        actor = self._primary_event_actor_label(canonical.participants)
+        main_fragment = self._select_main_event_fragment(fragments, entities=entities, actor=actor)
+        if not main_fragment:
+            return self._merge_event_summary(canonical.summary, merged.summary)
+
+        summary = self._normalize_main_event_fragment(main_fragment, actor=actor)
+        detail_fragments = self._select_detail_fragments(
+            fragments,
+            main_fragment=main_fragment,
+            actor=actor,
+        )
+        details: list[str] = []
+        detail_signatures: set[str] = set()
+        for fragment in detail_fragments:
+            normalized = self._normalize_detail_fragment(fragment, actor=actor, main_summary=summary)
+            signature = self._detail_signature(normalized)
+            if not normalized or normalized == summary or signature in detail_signatures:
+                continue
+            details.append(normalized)
+            if signature:
+                detail_signatures.add(signature)
+            if len(details) >= 2:
+                break
+        if details:
+            summary = f"{summary}，{'，'.join(details)}"
+        return summary[:180]
+
+    def _rewrite_merged_event_action(
+        self,
+        canonical: Event,
+        merged: Event,
+        summary: str,
+        entities: list[str],
+        actor: str,
+    ) -> str:
+        action_candidates = self._collect_event_action_fragments(canonical, merged)
+        if self._looks_like_navigation_cluster(summary, action_candidates, entities):
+            return f"导航到{entities[0]}"[:120]
+
+        best = self._select_best_action_fragment(action_candidates, summary=summary, actor=actor)
+        if best:
+            return best[:120]
+
+        fallback = self._action_from_summary(summary=summary, actor=actor)
+        return fallback[:120]
+
+    def _rewrite_merged_event_causality(
+        self,
+        canonical: Event,
+        merged: Event,
+        summary: str,
+        action: str,
+        fragments: list[str],
+        actor: str,
+    ) -> str:
+        explicit_candidates = self._collect_event_causality_fragments(canonical, merged)
+        for candidate in explicit_candidates:
+            normalized = self._normalize_causality_fragment(candidate, actor=actor, action=action)
+            if normalized:
+                return normalized[:120]
+
+        main_fragment = summary.split("，", 1)[0].strip()
+        detail_candidates = self._select_detail_fragments(
+            fragments,
+            main_fragment=main_fragment,
+            actor=actor,
+        )
+        for fragment in detail_candidates:
+            normalized = self._normalize_causality_fragment(fragment, actor=actor, action=action)
+            if normalized:
+                return normalized[:120]
+        return ""
+
+    def _collect_event_summary_fragments(self, canonical: Event, merged: Event) -> list[str]:
+        fragments: list[str] = []
+
+        def add_fragment(value: Any) -> None:
+            text = str(value or "").strip()
+            if not text or text in fragments:
+                return
+            fragments.append(text)
+
+        add_fragment(canonical.summary)
+        add_fragment(merged.summary)
+
+        payloads: list[dict[str, Any]] = []
+        if isinstance(canonical.payload, dict):
+            payloads.append(canonical.payload)
+            merge_inputs = canonical.payload.get("merge_inputs", [])
+            if isinstance(merge_inputs, list):
+                payloads.extend(item for item in merge_inputs if isinstance(item, dict))
+        if isinstance(merged.payload, dict):
+            payloads.append(merged.payload)
+
+        for payload in payloads:
+            add_fragment(payload.get("summary", ""))
+            add_fragment(payload.get("action", ""))
+            add_fragment(payload.get("causality", ""))
+
+        return fragments
+
+    def _collect_event_action_fragments(self, canonical: Event, merged: Event) -> list[str]:
+        fragments: list[str] = []
+
+        def add_fragment(value: Any) -> None:
+            text = str(value or "").strip()
+            if not text or text in fragments:
+                return
+            fragments.append(text)
+
+        add_fragment(canonical.action)
+        add_fragment(merged.action)
+        if isinstance(canonical.payload, dict):
+            add_fragment(canonical.payload.get("action", ""))
+            merge_inputs = canonical.payload.get("merge_inputs", [])
+            if isinstance(merge_inputs, list):
+                for payload in merge_inputs:
+                    if isinstance(payload, dict):
+                        add_fragment(payload.get("action", ""))
+                        add_fragment(payload.get("summary", ""))
+        return fragments
+
+    def _collect_event_causality_fragments(self, canonical: Event, merged: Event) -> list[str]:
+        fragments: list[str] = []
+
+        def add_fragment(value: Any) -> None:
+            text = str(value or "").strip()
+            if not text or text in fragments:
+                return
+            fragments.append(text)
+
+        add_fragment(canonical.causality)
+        add_fragment(merged.causality)
+
+        for payload in [canonical.payload, merged.payload]:
+            if not isinstance(payload, dict):
+                continue
+            add_fragment(payload.get("causality", ""))
+            merge_inputs = payload.get("merge_inputs", [])
+            if isinstance(merge_inputs, list):
+                for item in merge_inputs:
+                    if isinstance(item, dict):
+                        add_fragment(item.get("causality", ""))
+                        add_fragment(item.get("summary", ""))
+        return fragments
+
+    def _primary_event_actor_label(self, participants: list[Any]) -> str:
+        if not isinstance(participants, list):
+            return ""
+        for item in participants:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "") or "").strip()
+            if role:
+                return role
+        return ""
+
+    def _event_fragment_kind(self, fragment: str) -> str:
+        text = str(fragment or "").strip()
+        if not text:
+            return "empty"
+        if re.search(r"(耗时|用时|时长|历时|持续)\s*\d*", text) or re.search(r"\d+\s*(分钟|小时|秒|公里|米|次)", text):
+            return "metric"
+        if any(token in text for token in ["发起", "请求", "准备", "提出", "尝试", "要求"]):
+            return "trigger"
+        if text.startswith(("已", "已经")) or (
+            any(token in text for token in ["车机", "系统"])
+            and any(token in text for token in ["启动", "开启", "关闭", "切换", "设置", "调整", "开始", "停止"])
+        ):
+            return "result"
+        if any(token in text for token in ["导航到", "导航去", "前往", "去往", "播放", "开启", "打开", "关闭", "切换", "设置", "调整", "启动", "停止", "暂停", "恢复", "提醒"]):
+            return "main"
+        return "generic"
+
+    def _select_main_event_fragment(
+        self,
+        fragments: list[str],
+        entities: list[str],
+        actor: str,
+    ) -> str:
+        best_fragment = ""
+        best_score = float("-inf")
+        for fragment in fragments:
+            kind = self._event_fragment_kind(fragment)
+            score = 0.0
+            if kind == "main":
+                score += 6.0
+            elif kind == "result":
+                score += 4.0
+            elif kind == "generic":
+                score += 3.0
+            elif kind == "trigger":
+                score += 1.0
+            elif kind == "metric":
+                score -= 2.0
+            if 6 <= len(fragment) <= 28:
+                score += 1.5
+            if actor and actor in fragment:
+                score += 0.5
+            if any(entity and entity in fragment for entity in entities):
+                score += 2.0
+            if any(token in fragment for token in ["导航到", "导航去", "前往", "去往", "到", "去"]):
+                score += 1.5
+            if re.search(r"\d+\s*(分钟|小时|秒)", fragment):
+                score -= 1.0
+            if score > best_score:
+                best_score = score
+                best_fragment = fragment
+        return best_fragment
+
+    def _normalize_main_event_fragment(self, fragment: str, actor: str) -> str:
+        text = str(fragment or "").strip(" ，,。；;")
+        if not text:
+            return ""
+        if actor and actor not in {"车机", "系统"} and not text.startswith(("用户", "车机", "系统", "环境")):
+            text = f"{actor}{text}"
+        return text
+
+    def _detail_signature(self, text: str) -> str:
+        value = str(text or "").strip(" ，,。；;")
+        if not value:
+            return ""
+        value = re.sub(r"^(用户|车机|系统|环境)", "", value).strip(" ：:，,。；;")
+        if self._event_fragment_kind(value) == "metric":
+            metric_match = re.search(r"(耗时|用时|时长|历时|持续).*$", value)
+            if metric_match:
+                value = metric_match.group(0)
+        return value
+
+    def _select_detail_fragments(
+        self,
+        fragments: list[str],
+        main_fragment: str,
+        actor: str,
+    ) -> list[str]:
+        metric_fragments = []
+        result_fragments = []
+        auxiliary_fragments = []
+        for fragment in fragments:
+            if fragment == main_fragment:
+                continue
+            kind = self._event_fragment_kind(fragment)
+            if kind == "metric":
+                metric_fragments.append(fragment)
+                continue
+            if kind == "result":
+                result_fragments.append(fragment)
+                continue
+            if kind == "main" and fragment != main_fragment:
+                normalized = self._normalize_main_event_fragment(fragment, actor=actor)
+                if normalized != self._normalize_main_event_fragment(main_fragment, actor=actor):
+                    auxiliary_fragments.append(fragment)
+        return metric_fragments + result_fragments + auxiliary_fragments
+
+    def _normalize_detail_fragment(self, fragment: str, actor: str, main_summary: str) -> str:
+        text = str(fragment or "").strip(" ，,。；;")
+        if not text:
+            return ""
+        if self._event_fragment_kind(text) == "metric":
+            metric_match = re.search(r"(耗时|用时|时长|历时|持续).*$", text)
+            if metric_match:
+                text = metric_match.group(0)
+        if actor and main_summary.startswith(actor) and text.startswith(actor):
+            text = text[len(actor):].strip(" ，,。；;")
+        detail_signature = self._detail_signature(text)
+        if main_summary and text and (
+            text in main_summary or (detail_signature and detail_signature in self._detail_signature(main_summary))
+        ):
+            return ""
+        return text
+
+    def _looks_like_navigation_cluster(
+        self,
+        summary: str,
+        action_candidates: list[str],
+        entities: list[str],
+    ) -> bool:
+        if not entities:
+            return False
+        combined = " ".join([summary] + list(action_candidates)).strip()
+        return "导航" in combined or "前往" in combined or "去往" in combined
+
+    def _action_from_summary(self, summary: str, actor: str) -> str:
+        head = str(summary or "").split("，", 1)[0].split("；", 1)[0].strip(" ，,。；;")
+        if actor and head.startswith(actor):
+            head = head[len(actor):].strip(" ，,。；;")
+        return head
+
+    def _normalize_action_candidate(self, candidate: str, actor: str) -> str:
+        text = str(candidate or "").strip(" ，,。；;")
+        if not text:
+            return ""
+        if actor and text.startswith(actor):
+            text = text[len(actor):].strip(" ，,。；;")
+        return text
+
+    def _select_best_action_fragment(
+        self,
+        candidates: list[str],
+        summary: str,
+        actor: str,
+    ) -> str:
+        summary_head = self._action_from_summary(summary, actor)
+        best = ""
+        best_score = float("-inf")
+        for candidate in candidates:
+            normalized = self._normalize_action_candidate(candidate, actor)
+            if not normalized:
+                continue
+            kind = self._event_fragment_kind(normalized)
+            score = 0.0
+            if kind == "main":
+                score += 4.0
+            elif kind == "generic":
+                score += 2.5
+            elif kind == "trigger":
+                score += 1.0
+            elif kind == "result":
+                score += 0.5
+            elif kind == "metric":
+                score -= 3.0
+            if normalized == summary_head:
+                score += 2.0
+            elif normalized and normalized in summary_head:
+                score += 1.5
+            if 2 <= len(normalized) <= 16:
+                score += 1.0
+            elif len(normalized) <= 24:
+                score += 0.5
+            if score > best_score:
+                best = normalized
+                best_score = score
+        return best
+
+    def _normalize_causality_fragment(self, fragment: str, actor: str, action: str) -> str:
+        text = str(fragment or "").strip(" ，,。；;")
+        if not text:
+            return ""
+        if self._event_fragment_kind(text) == "trigger":
+            return ""
+        if actor and text.startswith(actor):
+            text = text[len(actor):].strip(" ，,。；;")
+        if self._detail_signature(text) == self._detail_signature(action):
+            return ""
+        if self._event_fragment_kind(text) == "metric":
+            metric_match = re.search(r"(耗时|用时|时长|历时|持续).*$", text)
+            if metric_match:
+                text = metric_match.group(0)
+        return text
 
     def _merge_list_values(self, left: Any, right: Any) -> list[Any]:
         result: list[Any] = []
@@ -2048,14 +2563,30 @@ class DynamicEvolutionEngine:
         local_reason: str,
     ) -> Optional[dict[str, Any]]:
         prompt = {
-            "task": "Decide whether two memory events should be merged into one canonical event.",
+            "task": (
+                "Decide whether two atomic memory events should stay separate or be aggregated "
+                "into one canonical main event."
+            ),
             "rules": [
-                "Only merge if they describe the same user memory or a direct duplicate.",
-                "If one event is more complete or has stronger support, choose it as canonical.",
+                (
+                    "Merge if they are direct duplicates, or if they are complementary atomic sub-events "
+                    "from the same episode/session that together describe one higher-level user interaction."
+                ),
+                "Never merge two events when both are already aggregated main events produced by previous merges.",
+                (
+                    "Prefer merge when they share the same episode/session, time anchor, context, participants, "
+                    "or one event refines the trigger/request and the other adds target/result/duration details."
+                ),
+                (
+                    "Do not merge if they express different intents or should remain independently retrievable "
+                    "as separate memories."
+                ),
+                "If merging, choose the more informative or more supported event as canonical.",
                 "Return strict JSON only.",
             ],
             "similarity_score": round(float(similarity_score), 4),
             "local_reason": local_reason,
+            "pair_features": self._event_pair_features(left, right),
             "left": self._event_prompt_payload(left),
             "right": self._event_prompt_payload(right),
             "output_schema": {
@@ -2127,6 +2658,8 @@ class DynamicEvolutionEngine:
             return None
 
     def _event_prompt_payload(self, event: Event) -> dict[str, Any]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        merge_inputs = payload.get("merge_inputs", [])
         return {
             "id": event.id,
             "summary": event.summary,
@@ -2134,9 +2667,65 @@ class DynamicEvolutionEngine:
             "timestamp": event.timestamp,
             "last_active": event.last_active,
             "participants": event.participants,
-            "payload": event.payload,
+            "payload": payload,
             "support_count": event.support_count,
+            "is_aggregated_main_event": self._is_aggregated_event(event),
+            "merge_input_count": len(merge_inputs) if isinstance(merge_inputs, list) else 0,
             "context_ids": [context.id for context in self.store.get_event_contexts(event.id)],
+        }
+
+    def _event_pair_features(self, left: Event, right: Event) -> dict[str, Any]:
+        left_payload = left.payload if isinstance(left.payload, dict) else {}
+        right_payload = right.payload if isinstance(right.payload, dict) else {}
+
+        left_episode_id = str(left_payload.get("episode_id", "") or "").strip()
+        right_episode_id = str(right_payload.get("episode_id", "") or "").strip()
+        left_session_id = str(left_payload.get("session_id", "") or "").strip()
+        right_session_id = str(right_payload.get("session_id", "") or "").strip()
+
+        left_episode_text = str(left_payload.get("episode_text", "") or "").strip()
+        right_episode_text = str(right_payload.get("episode_text", "") or "").strip()
+        shared_episode_text = left_episode_text if left_episode_text and left_episode_text == right_episode_text else ""
+
+        left_context_ids = {context.id for context in self.store.get_event_contexts(left.id)}
+        right_context_ids = {context.id for context in self.store.get_event_contexts(right.id)}
+        left_entity_ids = set(self.store.get_event_entities(left.id))
+        right_entity_ids = set(self.store.get_event_entities(right.id))
+        left_participants = set(self._participant_labels(left.participants))
+        right_participants = set(self._participant_labels(right.participants))
+
+        left_index = left_payload.get("event_index")
+        right_index = right_payload.get("event_index")
+        try:
+            left_index = int(left_index) if left_index not in (None, "") else None
+        except (TypeError, ValueError):
+            left_index = None
+        try:
+            right_index = int(right_index) if right_index not in (None, "") else None
+        except (TypeError, ValueError):
+            right_index = None
+
+        return {
+            "same_episode": bool(left_episode_id and left_episode_id == right_episode_id),
+            "same_session": bool(left_session_id and left_session_id == right_session_id),
+            "shared_episode_id": left_episode_id if left_episode_id and left_episode_id == right_episode_id else "",
+            "shared_session_id": left_session_id if left_session_id and left_session_id == right_session_id else "",
+            "shared_episode_text_excerpt": shared_episode_text[:240],
+            "left_event_index": left_index,
+            "right_event_index": right_index,
+            "event_index_distance": (
+                abs(left_index - right_index)
+                if left_index is not None and right_index is not None
+                else None
+            ),
+            "shared_context_ids": sorted(left_context_ids & right_context_ids)[:4],
+            "shared_entity_ids": sorted(left_entity_ids & right_entity_ids)[:6],
+            "shared_participants": sorted(left_participants & right_participants)[:4],
+            "left_is_aggregated_main_event": self._is_aggregated_event(left),
+            "right_is_aggregated_main_event": self._is_aggregated_event(right),
+            "both_are_aggregated_main_events": (
+                self._is_aggregated_event(left) and self._is_aggregated_event(right)
+            ),
         }
 
     def _context_prompt_payload(self, context: Context) -> dict[str, Any]:

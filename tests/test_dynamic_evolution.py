@@ -337,8 +337,8 @@ class TestDynamicEvolution(unittest.TestCase):
             self.assertIsNotNone(canonical)
             self.assertIsNotNone(merged)
             self.assertEqual(merged.status, "merged")
-            self.assertIn("用户在会议中开启勿扰", canonical.summary)
-            self.assertIn("会议里打开勿扰模式", canonical.summary)
+            self.assertIn("开启勿扰", canonical.summary)
+            self.assertNotIn("；", canonical.summary)
             self.assertEqual(canonical.action, "开启勿扰")
             self.assertEqual(canonical.causality, "防打扰")
             self.assertGreaterEqual(len(canonical.participants), 2)
@@ -358,6 +358,898 @@ class TestDynamicEvolution(unittest.TestCase):
                     for edge in snapshot["edges"]["event_context"]
                 )
             )
+
+    def test_auto_merge_llm_payload_exposes_same_episode_atomic_aggregation_signals(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_event_atomic_aggregation.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            ts = int(time.time())
+            episode_id = "episode_nav_1"
+            episode_text = "用户发起导航，从当前位置导航到儿童医院停车场，用时20分钟"
+            ltm.write(
+                {
+                    "id": "evt_nav_a",
+                    "summary": "用户发起导航",
+                    "action": "发起导航",
+                    "timestamp": ts,
+                    "last_active": ts,
+                    "participants": [{"role": "用户"}],
+                    "payload": {
+                        "episode_id": episode_id,
+                        "episode_text": episode_text,
+                        "event_index": 0,
+                    },
+                },
+                kind="event",
+                entity_ids=["儿童医院停车场"],
+                evolve=False,
+            )
+            ltm.write(
+                {
+                    "id": "evt_nav_b",
+                    "summary": "导航到儿童医院停车场",
+                    "action": "导航到儿童医院停车场",
+                    "timestamp": ts + 1,
+                    "last_active": ts + 1,
+                    "participants": [{"role": "用户"}],
+                    "payload": {
+                        "episode_id": episode_id,
+                        "episode_text": episode_text,
+                        "event_index": 1,
+                    },
+                },
+                kind="event",
+                entity_ids=["儿童医院停车场"],
+                evolve=False,
+            )
+
+            context = ltm.write(
+                {
+                    "id": "ctx_nav_main",
+                    "summary": "context:出行导航场景",
+                    "subtype": "出行导航",
+                    "structured_slots": {"scene": "出行导航场景"},
+                },
+                kind="context",
+            )["item"]
+            ltm.store.link_event_to_context(
+                event_id="evt_nav_a",
+                context_id=context["id"],
+                confidence=0.92,
+                weight=1.0,
+                original_signal="unit_test",
+                evidence_span=episode_text,
+                timestamp=ts,
+            )
+            ltm.store.link_event_to_context(
+                event_id="evt_nav_b",
+                context_id=context["id"],
+                confidence=0.92,
+                weight=1.0,
+                original_signal="unit_test",
+                evidence_span=episode_text,
+                timestamp=ts + 1,
+            )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+
+            captured_payloads: list[dict[str, object]] = []
+
+            def fake_merge_call(payload):
+                captured_payloads.append(payload)
+                rules_text = " ".join(str(item) for item in payload.get("rules", []))
+                self.assertIn("higher-level user interaction", rules_text)
+                pair_features = payload.get("pair_features", {})
+                self.assertTrue(pair_features.get("same_episode"))
+                self.assertEqual(pair_features.get("event_index_distance"), 1)
+                self.assertEqual(pair_features.get("shared_episode_id"), episode_id)
+                self.assertIn(context["id"], pair_features.get("shared_context_ids", []))
+                self.assertIn("儿童医院停车场", pair_features.get("shared_entity_ids", []))
+                self.assertIn("用户", "".join(pair_features.get("shared_participants", [])))
+                self.assertIn("儿童医院停车场", pair_features.get("shared_episode_text_excerpt", ""))
+                return {
+                    "should_merge": True,
+                    "canonical_id": "evt_nav_a",
+                    "reason": "same_navigation_main_event",
+                    "confidence": 0.96,
+                }
+
+            engine._call_merge_llm = fake_merge_call
+
+            report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=True,
+                max_pairs=5,
+            )
+            self.assertTrue(captured_payloads)
+            self.assertGreaterEqual(report["event_candidates"], 1)
+            self.assertTrue(report["event_plans"])
+            self.assertEqual(report["event_plans"][0]["canonical_event_id"], "evt_nav_a")
+            self.assertEqual(report["event_plans"][0]["merged_event_id"], "evt_nav_b")
+
+    def test_auto_merge_uses_graph_local_time_anchor_for_historical_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_event_historical_anchor.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            historical_ts = 1773337414
+            episode_id = "episode_nav_hist"
+            episode_text = "2026-03-13 晚上1点半左右,用户发起导航,从当前位置导航到儿童医院停车场,用时20分钟"
+            first = ltm.write(
+                {
+                    "id": "evt_hist_a",
+                    "summary": "用户发起导航",
+                    "action": "发起导航",
+                    "timestamp": historical_ts,
+                    "last_active": historical_ts,
+                    "participants": [{"role": "用户"}],
+                    "payload": {
+                        "episode_id": episode_id,
+                        "episode_text": episode_text,
+                        "event_index": 0,
+                    },
+                },
+                kind="event",
+                entity_ids=["儿童医院停车场"],
+                evolve=False,
+            )["item"]
+            second = ltm.write(
+                {
+                    "id": "evt_hist_b",
+                    "summary": "导航到儿童医院停车场",
+                    "action": "导航到儿童医院停车场",
+                    "timestamp": historical_ts,
+                    "last_active": historical_ts,
+                    "participants": [{"role": "用户"}],
+                    "payload": {
+                        "episode_id": episode_id,
+                        "episode_text": episode_text,
+                        "event_index": 1,
+                    },
+                },
+                kind="event",
+                entity_ids=["儿童医院停车场"],
+                evolve=False,
+            )["item"]
+            context = ltm.write(
+                {
+                    "id": "ctx_hist_nav",
+                    "summary": "context:出行导航场景",
+                    "subtype": "出行导航",
+                    "structured_slots": {"scene": "出行导航场景"},
+                },
+                kind="context",
+            )["item"]
+            for event_id in [first["id"], second["id"]]:
+                ltm.store.link_event_to_context(
+                    event_id=event_id,
+                    context_id=context["id"],
+                    confidence=0.9,
+                    weight=1.0,
+                    original_signal="unit_test",
+                    evidence_span=episode_text,
+                    timestamp=historical_ts,
+                )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+            engine._call_merge_llm = lambda payload: {
+                "should_merge": True,
+                "canonical_id": "evt_hist_a",
+                "reason": "same_navigation_main_event",
+                "confidence": 0.94,
+            }
+
+            report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=True,
+                max_pairs=5,
+            )
+            self.assertGreaterEqual(report["event_candidates"], 1)
+            self.assertTrue(report["event_plans"])
+            self.assertEqual(report["event_plans"][0]["canonical_event_id"], "evt_hist_a")
+            self.assertEqual(report["event_plans"][0]["merged_event_id"], "evt_hist_b")
+
+    def test_auto_merge_reuses_existing_canonical_for_multi_event_aggregation(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_event_multi_plan_stability.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            ts = 1773337414
+            episode_id = "episode_nav_cluster"
+            episode_text = "用户发起导航，从当前位置导航到儿童医院停车场，用时20分钟"
+            event_specs = [
+                ("evt_root", "用户发起导航", "发起导航", 0),
+                ("evt_target", "导航到儿童医院停车场", "导航到儿童医院停车场", 1),
+                ("evt_duration", "导航耗时20分钟", "导航耗时20分钟", 2),
+            ]
+            for event_id, summary, action, index in event_specs:
+                ltm.write(
+                    {
+                        "id": event_id,
+                        "summary": summary,
+                        "action": action,
+                        "timestamp": ts,
+                        "last_active": ts,
+                        "participants": [{"role": "用户"}],
+                        "payload": {
+                            "episode_id": episode_id,
+                            "episode_text": episode_text,
+                            "event_index": index,
+                        },
+                    },
+                    kind="event",
+                    entity_ids=["儿童医院停车场"],
+                    evolve=False,
+                )
+
+            context = ltm.write(
+                {
+                    "id": "ctx_nav_cluster",
+                    "summary": "context:出行导航场景",
+                    "subtype": "出行导航",
+                    "structured_slots": {"scene": "出行导航场景"},
+                },
+                kind="context",
+            )["item"]
+            for event_id, *_rest in event_specs:
+                ltm.store.link_event_to_context(
+                    event_id=event_id,
+                    context_id=context["id"],
+                    confidence=0.9,
+                    weight=1.0,
+                    original_signal="unit_test",
+                    evidence_span=episode_text,
+                    timestamp=ts,
+                )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+
+            def fake_merge_call(payload):
+                return {
+                    "should_merge": True,
+                    "canonical_id": str(payload.get("left", {}).get("id", "") or ""),
+                    "reason": "same_navigation_main_event",
+                    "confidence": 0.93,
+                }
+
+            engine._call_merge_llm = fake_merge_call
+
+            report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=True,
+                max_pairs=10,
+            )
+            self.assertEqual(report["event_candidates"], 2)
+            self.assertTrue(report["event_plans"])
+            self.assertEqual(
+                {plan["canonical_event_id"] for plan in report["event_plans"]},
+                {"evt_root"},
+            )
+            self.assertEqual(
+                {plan["merged_event_id"] for plan in report["event_plans"]},
+                {"evt_target", "evt_duration"},
+            )
+
+    def test_auto_merge_rewrites_canonical_summary_into_main_event_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_event_main_summary_rewrite.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            ts = 1773337414
+            episode_id = "episode_nav_summary"
+            episode_text = "用户发起导航，从当前位置导航到儿童医院停车场，用时20分钟"
+            specs = [
+                ("evt_main_a", "用户发起导航", "发起导航", 0),
+                ("evt_main_b", "用户导航到儿童医院停车场", "导航到儿童医院停车场", 1),
+                ("evt_main_c", "导航耗时20分钟", "导航耗时20分钟", 2),
+            ]
+            for event_id, summary, action, index in specs:
+                ltm.write(
+                    {
+                        "id": event_id,
+                        "summary": summary,
+                        "action": action,
+                        "timestamp": ts,
+                        "last_active": ts,
+                        "participants": [{"role": "用户"}],
+                        "payload": {
+                            "episode_id": episode_id,
+                            "episode_text": episode_text,
+                            "event_index": index,
+                        },
+                    },
+                    kind="event",
+                    entity_ids=["儿童医院停车场"],
+                    evolve=False,
+                )
+
+            context = ltm.write(
+                {
+                    "id": "ctx_main_nav",
+                    "summary": "context:出行导航场景",
+                    "subtype": "出行导航",
+                    "structured_slots": {"scene": "出行导航场景"},
+                },
+                kind="context",
+            )["item"]
+            for event_id, *_rest in specs:
+                ltm.store.link_event_to_context(
+                    event_id=event_id,
+                    context_id=context["id"],
+                    confidence=0.9,
+                    weight=1.0,
+                    original_signal="unit_test",
+                    evidence_span=episode_text,
+                    timestamp=ts,
+                )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+            engine._call_merge_llm = lambda payload: {
+                "should_merge": True,
+                "canonical_id": "evt_main_a",
+                "reason": "same_navigation_main_event",
+                "confidence": 0.95,
+            }
+
+            report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=False,
+                max_pairs=10,
+            )
+            self.assertEqual(report["merged_events"], 2)
+
+            canonical = ltm.get_event("evt_main_a")
+            self.assertIsNotNone(canonical)
+            self.assertEqual(canonical.summary, "用户导航到儿童医院停车场，耗时20分钟")
+            self.assertEqual(canonical.action, "导航到儿童医院停车场")
+            self.assertEqual(canonical.causality, "耗时20分钟")
+            self.assertEqual(canonical.payload.get("summary"), canonical.summary)
+            self.assertEqual(canonical.payload.get("action"), canonical.action)
+            self.assertEqual(canonical.payload.get("causality"), canonical.causality)
+
+    def test_auto_merge_rewrites_action_and_causality_for_climate_main_event(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_event_climate_semantics.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            ts = 1773337705
+            episode_id = "episode_climate_semantics"
+            episode_text = "用户把后排温度调到26度，车机启动安抚模式"
+            specs = [
+                ("evt_climate_a", "用户将后排温度调整为26度", "调整后排温度", "", 0),
+                ("evt_climate_b", "车机启动安抚模式", "启动安抚模式", "", 1),
+            ]
+            for event_id, summary, action, causality, index in specs:
+                ltm.write(
+                    {
+                        "id": event_id,
+                        "summary": summary,
+                        "action": action,
+                        "causality": causality,
+                        "timestamp": ts,
+                        "last_active": ts,
+                        "participants": (
+                            [{"role": "用户", "seat": "主驾"}]
+                            if event_id == "evt_climate_a"
+                            else [{"role": "车机"}]
+                        ),
+                        "payload": {
+                            "episode_id": episode_id,
+                            "episode_text": episode_text,
+                            "event_index": index,
+                        },
+                    },
+                    kind="event",
+                    entity_ids=["后排温度", "26度", "安抚模式"],
+                    evolve=False,
+                )
+
+            context = ltm.write(
+                {
+                    "id": "ctx_climate_semantics",
+                    "summary": "context:车内温控场景",
+                    "subtype": "温控场景",
+                    "structured_slots": {"scene": "车内温控场景"},
+                },
+                kind="context",
+            )["item"]
+            for event_id, *_rest in specs:
+                ltm.store.link_event_to_context(
+                    event_id=event_id,
+                    context_id=context["id"],
+                    confidence=0.9,
+                    weight=1.0,
+                    original_signal="unit_test",
+                    evidence_span=episode_text,
+                    timestamp=ts,
+                )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+            engine._call_merge_llm = lambda payload: {
+                "should_merge": True,
+                "canonical_id": "evt_climate_a",
+                "reason": "same_climate_main_event",
+                "confidence": 0.94,
+            }
+
+            report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=False,
+                max_pairs=10,
+            )
+            self.assertEqual(report["merged_events"], 1)
+
+            canonical = ltm.get_event("evt_climate_a")
+            self.assertIsNotNone(canonical)
+            self.assertEqual(canonical.summary, "用户将后排温度调整为26度，车机启动安抚模式")
+            self.assertEqual(canonical.action, "调整后排温度")
+            self.assertEqual(canonical.causality, "车机启动安抚模式")
+
+    def test_auto_merge_does_not_merge_two_existing_main_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_event_no_main_to_main_merge.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            ts_nav = 1773337414
+            ts_climate = 1773337705
+            ltm.write(
+                {
+                    "id": "evt_nav_root",
+                    "summary": "用户发起导航",
+                    "action": "发起导航",
+                    "timestamp": ts_nav,
+                    "last_active": ts_nav,
+                    "participants": [{"role": "用户"}],
+                    "payload": {"episode_id": "episode_nav_bug", "event_index": 0},
+                },
+                kind="event",
+                entity_ids=["儿童医院停车场"],
+                evolve=False,
+            )
+            ltm.write(
+                {
+                    "id": "evt_nav_target",
+                    "summary": "导航到儿童医院停车场",
+                    "action": "导航到儿童医院停车场",
+                    "timestamp": ts_nav,
+                    "last_active": ts_nav,
+                    "participants": [{"role": "用户"}],
+                    "payload": {"episode_id": "episode_nav_bug", "event_index": 1},
+                },
+                kind="event",
+                entity_ids=["儿童医院停车场"],
+                evolve=False,
+            )
+            nav_context = ltm.write(
+                {
+                    "id": "ctx_nav_bug",
+                    "summary": "context:出行导航场景",
+                    "subtype": "出行导航",
+                    "structured_slots": {"scene": "出行导航场景"},
+                },
+                kind="context",
+            )["item"]
+            for event_id in ["evt_nav_root", "evt_nav_target"]:
+                ltm.store.link_event_to_context(
+                    event_id=event_id,
+                    context_id=nav_context["id"],
+                    confidence=0.9,
+                    weight=1.0,
+                    original_signal="unit_test",
+                    evidence_span="navigation",
+                    timestamp=ts_nav,
+                )
+            ltm.merge_event(
+                canonical_event_id="evt_nav_root",
+                merged_event_id="evt_nav_target",
+                merged_at=ts_nav + 1,
+                merge_reason="unit_test_main_event",
+            )
+
+            ltm.write(
+                {
+                    "id": "evt_climate_root",
+                    "summary": "用户将后排温度调整为26度",
+                    "action": "调整后排温度",
+                    "timestamp": ts_climate,
+                    "last_active": ts_climate,
+                    "participants": [{"role": "用户", "seat": "主驾"}],
+                    "payload": {"episode_id": "episode_climate_bug", "event_index": 0},
+                },
+                kind="event",
+                entity_ids=["后排温度", "26度"],
+                evolve=False,
+            )
+            ltm.write(
+                {
+                    "id": "evt_climate_mode",
+                    "summary": "车机启动安抚模式",
+                    "action": "启动安抚模式",
+                    "timestamp": ts_climate,
+                    "last_active": ts_climate,
+                    "participants": [{"role": "车机"}],
+                    "payload": {"episode_id": "episode_climate_bug", "event_index": 1},
+                },
+                kind="event",
+                entity_ids=["车机"],
+                evolve=False,
+            )
+            climate_context = ltm.write(
+                {
+                    "id": "ctx_climate_bug",
+                    "summary": "context:车内温控场景",
+                    "subtype": "温控场景",
+                    "structured_slots": {"scene": "车内温控场景"},
+                },
+                kind="context",
+            )["item"]
+            for event_id in ["evt_climate_root", "evt_climate_mode"]:
+                ltm.store.link_event_to_context(
+                    event_id=event_id,
+                    context_id=climate_context["id"],
+                    confidence=0.9,
+                    weight=1.0,
+                    original_signal="unit_test",
+                    evidence_span="climate",
+                    timestamp=ts_climate,
+                )
+            ltm.merge_event(
+                canonical_event_id="evt_climate_root",
+                merged_event_id="evt_climate_mode",
+                merged_at=ts_climate + 1,
+                merge_reason="unit_test_main_event",
+            )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+            engine._call_merge_llm = lambda payload: {
+                "should_merge": True,
+                "canonical_id": str(payload.get("left", {}).get("id", "") or ""),
+                "reason": "should_have_been_blocked_locally",
+                "confidence": 0.99,
+            }
+
+            report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=True,
+                max_pairs=10,
+            )
+            self.assertEqual(report["event_candidates"], 0)
+            self.assertEqual(report["event_plans"], [])
+
+    def test_auto_merge_allows_main_event_to_absorb_remaining_atomic_event(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_event_main_absorbs_atomic.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            ts = 1773337414
+            episode_id = "episode_nav_repeat_click"
+            episode_text = "用户发起导航，从当前位置导航到儿童医院停车场，用时20分钟"
+            specs = [
+                ("evt_repeat_root", "用户发起导航", "发起导航", 0),
+                ("evt_repeat_target", "导航到儿童医院停车场", "导航到儿童医院停车场", 1),
+                ("evt_repeat_duration", "导航耗时20分钟", "导航耗时20分钟", 2),
+            ]
+            for event_id, summary, action, index in specs:
+                ltm.write(
+                    {
+                        "id": event_id,
+                        "summary": summary,
+                        "action": action,
+                        "timestamp": ts,
+                        "last_active": ts,
+                        "participants": [{"role": "用户"}],
+                        "payload": {
+                            "episode_id": episode_id,
+                            "episode_text": episode_text,
+                            "event_index": index,
+                        },
+                    },
+                    kind="event",
+                    entity_ids=["儿童医院停车场"],
+                    evolve=False,
+                )
+
+            context = ltm.write(
+                {
+                    "id": "ctx_repeat_nav",
+                    "summary": "context:出行导航场景",
+                    "subtype": "出行导航",
+                    "structured_slots": {"scene": "出行导航场景"},
+                },
+                kind="context",
+            )["item"]
+            for event_id, *_rest in specs:
+                ltm.store.link_event_to_context(
+                    event_id=event_id,
+                    context_id=context["id"],
+                    confidence=0.9,
+                    weight=1.0,
+                    original_signal="unit_test",
+                    evidence_span=episode_text,
+                    timestamp=ts,
+                )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+            engine._call_merge_llm = lambda payload: {
+                "should_merge": True,
+                "canonical_id": "evt_repeat_root",
+                "reason": "same_navigation_main_event",
+                "confidence": 0.95,
+            }
+
+            first_report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=False,
+                max_pairs=1,
+            )
+            self.assertEqual(first_report["merged_events"], 1)
+
+            second_report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=True,
+                max_pairs=10,
+            )
+            self.assertEqual(second_report["event_candidates"], 1)
+            self.assertEqual(second_report["event_plans"][0]["canonical_event_id"], "evt_repeat_root")
+            self.assertEqual(second_report["event_plans"][0]["merged_event_id"], "evt_repeat_duration")
+
+    def test_auto_merge_does_not_absorb_cross_episode_atomic_event_into_main_event(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_event_main_scope_guard.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            nav_ts = 1773389632
+            nav_episode = "episode_nav_scope"
+            for event_id, summary, action, index in [
+                ("evt_nav_scope_root", "用户发起导航", "发起导航", 0),
+                ("evt_nav_scope_target", "导航到公共充电站", "导航到公共充电站", 1),
+            ]:
+                ltm.write(
+                    {
+                        "id": event_id,
+                        "summary": summary,
+                        "action": action,
+                        "timestamp": nav_ts,
+                        "last_active": nav_ts,
+                        "participants": [{"role": "用户"}],
+                        "payload": {
+                            "episode_id": nav_episode,
+                            "episode_text": "用户发起导航，从当前位置导航到公共充电站",
+                            "event_index": index,
+                        },
+                    },
+                    kind="event",
+                    entity_ids=["公共充电站"],
+                    evolve=False,
+                )
+
+            ctx = ltm.write(
+                {
+                    "id": "ctx_scope_shared",
+                    "summary": "context:出行导航场景",
+                    "subtype": "出行导航",
+                    "structured_slots": {"scene": "出行导航场景"},
+                },
+                kind="context",
+            )["item"]
+            for event_id in ["evt_nav_scope_root", "evt_nav_scope_target"]:
+                ltm.store.link_event_to_context(
+                    event_id=event_id,
+                    context_id=ctx["id"],
+                    confidence=0.9,
+                    weight=1.0,
+                    original_signal="unit_test",
+                    evidence_span="navigation",
+                    timestamp=nav_ts,
+                )
+
+            ltm.merge_event(
+                canonical_event_id="evt_nav_scope_root",
+                merged_event_id="evt_nav_scope_target",
+                merged_at=nav_ts + 1,
+                merge_reason="unit_test_main_event",
+            )
+
+            cinema_ts = 1773389887
+            ltm.write(
+                {
+                    "id": "evt_cinema_atomic",
+                    "summary": "车机已为用户打开影院模式",
+                    "action": "打开影院模式",
+                    "timestamp": cinema_ts,
+                    "last_active": cinema_ts,
+                    "participants": [{"role": "车机"}],
+                    "payload": {
+                        "episode_id": "episode_cinema_scope",
+                        "episode_text": "车机已为用户打开影院模式",
+                        "event_index": 0,
+                    },
+                },
+                kind="event",
+                entity_ids=["车机"],
+                evolve=False,
+            )
+            ltm.store.link_event_to_context(
+                event_id="evt_cinema_atomic",
+                context_id=ctx["id"],
+                confidence=0.9,
+                weight=1.0,
+                original_signal="unit_test",
+                evidence_span="cinema",
+                timestamp=cinema_ts,
+            )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+            engine._call_merge_llm = lambda payload: {
+                "should_merge": True,
+                "canonical_id": str(payload.get("left", {}).get("id", "") or ""),
+                "reason": "should_have_been_blocked_by_scope_guard",
+                "confidence": 0.99,
+            }
+
+            report = ltm.auto_merge(
+                scope="event",
+                strategy="llm",
+                dry_run=True,
+                max_pairs=10,
+            )
+            self.assertEqual(report["event_candidates"], 0)
+            self.assertEqual(report["event_plans"], [])
+
+    def test_llm_context_merge_requires_minimum_local_score(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_context_llm_local_gate.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            first_context = ltm.write(
+                {
+                    "id": "ctx_nav_llm_gate",
+                    "summary": "出行导航场景",
+                    "subtype": "state",
+                    "structured_slots": {
+                        "navigation_started": True,
+                        "navigation_status": "进行中",
+                        "state": "出行导航场景",
+                    },
+                },
+                kind="context",
+            )["item"]
+            second_context = ltm.write(
+                {
+                    "id": "ctx_cinema_llm_gate",
+                    "summary": "坐在副驾的用户说:充电这会儿想看一集剧 -> 车机回答:已为你",
+                    "subtype": "situation",
+                    "structured_slots": {
+                        "situation": "坐在副驾的用户说:充电这会儿想看一集剧 -> 车机回答:已为你",
+                    },
+                },
+                kind="context",
+            )["item"]
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._llm_merge_available = lambda: True
+            engine._call_merge_llm = lambda payload: {
+                "should_merge": True,
+                "canonical_id": first_context["id"],
+                "reason": "should_have_been_blocked_by_local_context_gate",
+                "confidence": 0.99,
+            }
+
+            preview = ltm.auto_merge(
+                scope="context",
+                strategy="llm",
+                dry_run=True,
+                max_pairs=10,
+            )
+            self.assertEqual(preview["context_candidates"], 0)
+            self.assertEqual(preview["context_plans"], [])
 
 
 if __name__ == "__main__":

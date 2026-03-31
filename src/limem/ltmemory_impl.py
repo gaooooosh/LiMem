@@ -267,12 +267,16 @@ class LTMemoryImpl(LTMemory):
         strategy: str = "auto",
         dry_run: bool = False,
         max_pairs: int = 10,
+        focus_event_ids: Optional[list[str]] = None,
+        event_same_scope_only: bool = False,
     ) -> dict[str, Any]:
         return self.ops.auto_merge(
             scope=scope,
             strategy=strategy,
             dry_run=dry_run,
             max_pairs=max_pairs,
+            focus_event_ids=focus_event_ids,
+            event_same_scope_only=event_same_scope_only,
         )
 
     # ==================== 便捷方法 ====================

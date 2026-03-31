@@ -174,7 +174,7 @@ class TwoStageExtractor(LLMExtractor):
                 if not isinstance(item, dict):
                     continue
                 normalized_item = normalize_event_payload({"event": item}, episode_text=text)
-                if normalized_item:
+                if self._has_event_semantics(normalized_item):
                     normalized.append(normalized_item)
 
         return self._dedupe_events(normalized)
@@ -199,24 +199,28 @@ class TwoStageExtractor(LLMExtractor):
             if not isinstance(item, dict):
                 continue
             normalized_item = normalize_event_payload({"event": item}, episode_text=text)
-            if normalized_item:
+            if self._has_event_semantics(normalized_item):
                 normalized.append(normalized_item)
         return self._dedupe_events(normalized)
 
+    def _has_event_semantics(self, payload: dict[str, Any]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        return any(str(payload.get(field, "") or "").strip() for field in ("summary", "action", "causality"))
+
     def _dedupe_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str, str]] = set()
         for item in events:
-            signature = "|".join(
-                [
-                    str(item.get("summary", "") or "").strip(),
-                    str(item.get("action", "") or "").strip(),
-                    str(item.get("causality", "") or "").strip(),
-                ]
+            parts = (
+                str(item.get("summary", "") or "").strip(),
+                str(item.get("action", "") or "").strip(),
+                str(item.get("causality", "") or "").strip(),
             )
-            if signature and signature in seen:
+            signature = parts if any(parts) else None
+            if signature is not None and signature in seen:
                 continue
-            if signature:
+            if signature is not None:
                 seen.add(signature)
             deduped.append(item)
         return deduped

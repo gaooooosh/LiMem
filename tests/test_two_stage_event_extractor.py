@@ -105,6 +105,124 @@ class TestTwoStageEventExtractor(unittest.TestCase):
         self.assertEqual(events[0]["summary"], "用户发起导航请求")
         self.assertEqual(events[0]["action"], "发起导航请求")
 
+    def test_two_stage_pipeline_keeps_vehicle_control_events(self):
+        extractor = _make_extractor()
+
+        def fake_call_generation_json(system_prompt, user_message, default):
+            if system_prompt == "SEGMENT_SYSTEM":
+                return {
+                    "segments": [
+                        {"order": 1, "span_text": "把后排温度调到26度"},
+                        {"order": 2, "span_text": "已调整后排温度到26度并启动安抚模式"},
+                    ]
+                }
+            if system_prompt == "STRUCT_SYSTEM":
+                if "把后排温度调到26度" in user_message:
+                    return {
+                        "event": {
+                            "summary": "用户将后排温度调整为26度",
+                            "participants": [{"role": "用户", "seat": "主驾"}],
+                            "action": "调整后排温度",
+                            "time": {"text": "晚上2点左右"},
+                            "causality": "",
+                        }
+                    }
+                return {
+                    "event": {
+                        "summary": "车机启动安抚模式",
+                        "participants": [{"role": "车机系统", "seat": ""}],
+                        "action": "启动安抚模式",
+                        "time": {"text": "晚上2点左右"},
+                        "causality": "",
+                    }
+                }
+            raise AssertionError(f"unexpected system prompt: {system_prompt}")
+
+        extractor._call_generation_json = fake_call_generation_json
+
+        episode_text = (
+            "2026-03-13 晚上2点左右,坐在主驾的用户说:把后排温度调到26度 -> "
+            "车机回答:已调整后排温度到26度并启动安抚模式。（触发前确认）"
+        )
+        events = extractor._extract_events(episode_text)
+
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["summary"], "用户将后排温度调整为26度")
+        self.assertEqual(events[0]["action"], "调整后排温度")
+        self.assertEqual(events[1]["summary"], "车机启动安抚模式")
+        self.assertEqual(events[1]["action"], "启动安抚模式")
+
+    def test_dedupe_keeps_blank_signature_events_for_debugging(self):
+        extractor = _make_extractor()
+
+        deduped = extractor._dedupe_events(
+            [
+                {
+                    "summary": "",
+                    "action": "",
+                    "causality": "",
+                    "participants": [{"role": "用户", "seat": ""}],
+                },
+                {
+                    "summary": "",
+                    "action": "",
+                    "causality": "",
+                    "participants": [{"role": "系统", "seat": ""}],
+                },
+            ]
+        )
+
+        self.assertEqual(len(deduped), 2)
+
+    def test_single_pass_metadata_false_positive_is_filtered_out(self):
+        extractor = _make_extractor()
+
+        def fake_call_generation_json(system_prompt, user_message, default):
+            if system_prompt == "SEGMENT_SYSTEM":
+                return {"segments": []}
+            if system_prompt == "LEGACY_EVENT_SYSTEM":
+                return {
+                    "event": {
+                        "summary": "系统设置",
+                        "participants": [{"role": "系统"}],
+                        "action": "设置",
+                        "causality": "",
+                    }
+                }
+            raise AssertionError(f"unexpected system prompt: {system_prompt}")
+
+        extractor._call_generation_json = fake_call_generation_json
+
+        events = extractor._extract_events("[屏幕操作数据] 屏幕: 副驾屏 | 应用: QQ音乐")
+        self.assertEqual(events, [])
+
+    def test_single_pass_media_title_summary_is_preserved(self):
+        extractor = _make_extractor()
+
+        def fake_call_generation_json(system_prompt, user_message, default):
+            if system_prompt == "SEGMENT_SYSTEM":
+                return {"segments": []}
+            if system_prompt == "LEGACY_EVENT_SYSTEM":
+                return {
+                    "events": [
+                        {
+                            "summary": "在芒果TV播放视频《纪录片：城市切片-阶段A》",
+                            "participants": [{"role": "芒果TV"}],
+                            "action": "播放",
+                            "time": {"text": "2026-03-13 下午4点半左右"},
+                            "causality": "",
+                        }
+                    ]
+                }
+            raise AssertionError(f"unexpected system prompt: {system_prompt}")
+
+        extractor._call_generation_json = fake_call_generation_json
+
+        events = extractor._extract_events("2026-03-13 下午4点半左右,在芒果TV播放视频《纪录片：城市切片-阶段A》")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["summary"], "在芒果TV播放视频《纪录片：城市切片-阶段A》")
+        self.assertEqual(events[0]["action"], "播放")
+
 
 if __name__ == "__main__":
     unittest.main()

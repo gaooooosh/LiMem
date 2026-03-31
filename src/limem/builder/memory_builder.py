@@ -343,13 +343,12 @@ class MemoryBuilder:
         return payloads
 
     def _event_payload_signature(self, payload: dict[str, Any]) -> str:
-        return "|".join(
-            [
-                str(payload.get("summary", "") or "").strip(),
-                str(payload.get("action", "") or "").strip(),
-                str(payload.get("causality", "") or "").strip(),
-            ]
-        )
+        parts = [
+            str(payload.get("summary", "") or "").strip(),
+            str(payload.get("action", "") or "").strip(),
+            str(payload.get("causality", "") or "").strip(),
+        ]
+        return "|".join(parts) if any(parts) else ""
 
     def _is_effective_event(self, event: Event) -> bool:
         if (event.summary or "").strip():

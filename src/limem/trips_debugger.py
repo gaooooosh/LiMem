@@ -115,6 +115,7 @@ class TripsDebuggerSession:
             sort_by_time=config.sort_by_time,
         )
         self._written_indices: set[int] = set()
+        self._last_written_event_ids: list[str] = []
         self._operation_log: list[dict[str, Any]] = []
         self._latest_auto_merge: dict[str, Any] | None = None
         self._ltm = None
@@ -124,6 +125,7 @@ class TripsDebuggerSession:
         with self._lock:
             self._dispose_ltm(clear_db=clear_db)
             self._written_indices = set()
+            self._last_written_event_ids = []
             self._operation_log = []
             self._latest_auto_merge = None
             self._ltm = create_ltm(
@@ -202,6 +204,7 @@ class TripsDebuggerSession:
             if self._ltm is None:
                 raise RuntimeError("Session is not initialized")
             results = []
+            written_event_ids: list[str] = []
             for index in episode_indexes:
                 if index < 0 or index >= len(self._episodes):
                     raise ValueError(f"Episode index out of range: {index}")
@@ -244,11 +247,18 @@ class TripsDebuggerSession:
                     },
                 }
                 results.append(result)
+                for event in (ingest_result.events or [ingest_result.event]):
+                    event_id = str(getattr(event, "id", "") or "").strip()
+                    if event_id and not event_id.startswith("ignored_"):
+                        written_event_ids.append(event_id)
+            self._last_written_event_ids = list(written_event_ids)
+            for result in results:
                 self._append_log(action="write_episode", detail=result)
             merge_report = self._run_auto_merge_locked(
                 enabled=self.config.auto_merge_after_write if auto_merge is None else bool(auto_merge),
                 strategy=merge_strategy,
                 trigger="write_selected",
+                focus_event_ids=written_event_ids,
             )
             return {
                 "results": results,
@@ -291,6 +301,9 @@ class TripsDebuggerSession:
                 entity_ids=entity_ids or [],
                 evolve=evolve,
             )
+            if str(result.get("kind", "") or "") == "event":
+                event_id = str((result.get("item") or {}).get("id", "") or "").strip()
+                self._last_written_event_ids = [event_id] if event_id else []
             self._append_log(
                 action="manual_write",
                 detail={
@@ -320,11 +333,18 @@ class TripsDebuggerSession:
         with self._lock:
             if self._ltm is None:
                 raise RuntimeError("Session is not initialized")
+            focus_event_ids = (
+                list(self._last_written_event_ids)
+                if scope.strip().lower() in {"all", "event", "events"} and self._last_written_event_ids
+                else None
+            )
             result = self._ltm.auto_merge(
                 scope=scope,
                 strategy=strategy,
                 dry_run=dry_run,
                 max_pairs=max_pairs,
+                focus_event_ids=focus_event_ids,
+                event_same_scope_only=bool(focus_event_ids),
             )
             result["trigger"] = "manual_auto_merge"
             self._latest_auto_merge = result
@@ -398,6 +418,7 @@ class TripsDebuggerSession:
         enabled: bool,
         strategy: str,
         trigger: str,
+        focus_event_ids: Optional[list[str]] = None,
     ) -> Optional[dict[str, Any]]:
         if not enabled or self._ltm is None:
             return None
@@ -406,6 +427,8 @@ class TripsDebuggerSession:
             strategy=strategy,
             dry_run=False,
             max_pairs=12,
+            focus_event_ids=focus_event_ids,
+            event_same_scope_only=bool(focus_event_ids),
         )
         result["trigger"] = trigger
         self._latest_auto_merge = result
@@ -439,6 +462,7 @@ class TripsDebuggerSession:
                 "written_count": len(self._written_indices),
                 "pending_count": len(self._episodes) - len(self._written_indices),
                 "written_indexes": sorted(self._written_indices),
+                "last_written_event_ids": list(self._last_written_event_ids),
                 "next_pending_indexes": [
                     index for index in range(len(self._episodes)) if index not in self._written_indices
                 ][:20],

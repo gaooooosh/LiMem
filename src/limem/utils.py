@@ -326,7 +326,9 @@ def _looks_like_dynamic_change(summary: str, action: str) -> bool:
     dynamic_hints = [
         "说", "问", "播放", "导航", "打开", "开启", "关闭", "切换", "设置", "开始", "停止",
         "暂停", "恢复", "提醒", "发现", "检测", "选择", "决定", "请求", "回复", "开始导航",
-        "调高", "调低", "拉满",
+        "调高", "调低", "拉满", "调整", "调节", "启动", "升高", "降低", "增大", "减小",
+        "增加", "减少", "升温", "降温", "调到", "调为", "切到", "切为", "进入", "退出",
+        "激活", "取消", "确认", "执行", "解锁", "锁定",
     ]
     return any(token in text for token in dynamic_hints)
 
@@ -365,6 +367,15 @@ def _looks_like_episode_text(summary: str, episode_text: str) -> bool:
 
     normalized_summary = summary_text.replace(" ", "")
     normalized_episode = episode.replace(" ", "")
+
+    stripped_episode = _strip_leading_temporal_prefix(episode)
+    normalized_stripped_episode = stripped_episode.replace(" ", "")
+    if (
+        normalized_summary == normalized_stripped_episode
+        and not _looks_like_structured_dialogue_or_record(episode)
+    ):
+        return False
+
     if normalized_summary == normalized_episode:
         return True
 
@@ -374,7 +385,42 @@ def _looks_like_episode_text(summary: str, episode_text: str) -> bool:
 
     overlap = len(set(normalized_summary) & set(normalized_episode))
     ratio = overlap / max(1, len(set(normalized_summary)))
-    return len(summary_text) >= 20 and ratio >= 0.85
+    length_ratio = len(normalized_summary) / max(1, len(normalized_episode))
+    if (
+        len(summary_text) >= 20
+        and ratio >= 0.92
+        and length_ratio >= 0.88
+        and _looks_like_structured_dialogue_or_record(episode)
+    ):
+        return True
+    return False
+
+
+def _looks_like_structured_dialogue_or_record(text: str) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    markers = (
+        "用户说:", "用户说：", "车机回答:", "车机回答：", "->", "|",
+        "[", "]", "{", "}", "来源:", "屏幕:", "应用:", "payload", "source",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+_LEADING_TEMPORAL_PREFIX_PATTERN = re.compile(
+    r"^\s*(?:20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s*)?"
+    r"(?:(?:凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜里|深夜)"
+    r"(?:\d+(?:点半|点左右|点\d+分|点)?)?"
+    r"(?:左右)?\s*[，,]?\s*)+"
+)
+
+
+def _strip_leading_temporal_prefix(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    stripped = _LEADING_TEMPORAL_PREFIX_PATTERN.sub("", normalized, count=1)
+    return stripped.strip(" ，,")
 
 
 _DATETIME_INLINE_PATTERN = re.compile(r"\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\b")
@@ -436,6 +482,22 @@ def _looks_like_telemetry_snapshot(text: str, participants: list[dict[str, str]]
     if not roles:
         return True
     return roles.issubset({"环境", "环境感知"})
+
+
+def _looks_like_passive_screen_app_metadata(episode_text: str) -> bool:
+    text = str(episode_text or "").strip()
+    if not text.startswith("[屏幕操作数据]"):
+        return False
+    if not any(marker in text for marker in ("屏幕:", "应用:")):
+        return False
+
+    # Metadata-only screen snapshots should not become memory events.
+    dynamic_hints = (
+        "用户说", "车机回答", "播放", "打开", "开启", "关闭", "切换", "点击", "选择",
+        "搜索", "输入", "导航", "发起", "开始", "停止", "暂停", "恢复",
+        "调到", "调整", "启动", "提醒",
+    )
+    return not any(token in text for token in dynamic_hints)
 
 
 _ENTITY_GENERIC_TERMS = {
@@ -609,6 +671,11 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
         ]
     )
     if _looks_like_telemetry_snapshot(telemetry_hint_text, participants):
+        summary = ""
+        action = ""
+        causality = ""
+
+    if _looks_like_passive_screen_app_metadata(episode_text):
         summary = ""
         action = ""
         causality = ""
