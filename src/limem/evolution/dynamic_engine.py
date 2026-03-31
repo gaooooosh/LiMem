@@ -575,8 +575,10 @@ class DynamicEvolutionEngine:
                 best_score = score
         if best is None:
             return None
-        cross_reuse_gate = min(0.88, self.config.context_reuse_threshold + 0.08)
-        return best if best_score >= cross_reuse_gate else None
+        # Cross-subtype reuse: same base threshold is sufficient because
+        # _context_similarity already penalises subtype mismatches via its
+        # subtype_sim component.
+        return best if best_score >= self.config.context_reuse_threshold else None
 
     def update_context_with_evidence(
         self,
@@ -1143,6 +1145,7 @@ class DynamicEvolutionEngine:
 
         event_map = {event.id: event for event in events}
         merged_sources: set[str] = set()
+        planned_canonicals: set[str] = set()
         visited_pairs: set[tuple[str, str]] = set()
 
         for event in events:
@@ -1255,7 +1258,7 @@ class DynamicEvolutionEngine:
     # -------------------------------------------------------------------------
     def detect_conflict(self, node: Context, new_evidence: ContextDraft) -> bool:
         overlap_count = self._context_overlap_key_count(node, new_evidence)
-        if overlap_count < 2:
+        if overlap_count < 1:
             return False
         return self._context_conflict_ratio(node, new_evidence) >= self.config.context_conflict_threshold
 
@@ -2427,8 +2430,8 @@ class DynamicEvolutionEngine:
             self._extract_context_slots(event_a).get("place", []),
             self._extract_context_slots(event_b).get("place", []),
         )
-        action_similarity = 1.0 if event_a.action and event_a.action == event_b.action else 0.0
-        causality_similarity = 1.0 if event_a.causality and event_a.causality == event_b.causality else 0.0
+        action_similarity = self._text_token_similarity(event_a.action, event_b.action)
+        causality_similarity = self._text_token_similarity(event_a.causality, event_b.causality)
         return 0.35 * participant_similarity + 0.30 * location_similarity + 0.20 * action_similarity + 0.15 * causality_similarity
 
     def _time_similarity(self, event_a: Event, event_b: Event, now: int) -> float:
@@ -2444,6 +2447,27 @@ class DynamicEvolutionEngine:
         if not left_set and not right_set:
             return 0.0
         return len(left_set & right_set) / len(left_set | right_set)
+
+    @staticmethod
+    def _text_token_similarity(a: Optional[str], b: Optional[str]) -> float:
+        """Character-level token overlap similarity for short Chinese/mixed texts."""
+        a_str = (a or "").strip()
+        b_str = (b or "").strip()
+        if not a_str or not b_str:
+            return 0.0
+        if a_str == b_str:
+            return 1.0
+        # Use character-level bigrams for Chinese text robustness
+        def _bigrams(s: str) -> set[str]:
+            s = s.lower()
+            if len(s) < 2:
+                return {s}
+            return {s[i : i + 2] for i in range(len(s) - 1)}
+        bg_a = _bigrams(a_str)
+        bg_b = _bigrams(b_str)
+        if not bg_a or not bg_b:
+            return 0.0
+        return len(bg_a & bg_b) / len(bg_a | bg_b)
 
     def _as_value_set(self, value: Any) -> set[str]:
         if isinstance(value, list):
