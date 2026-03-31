@@ -153,32 +153,69 @@ def _run_phase(
     progress_every: int,
     capture_every: int = 0,
     snapshot_limit: int = 12,
+    batch_size: int = 0,
 ) -> dict[str, Any]:
+    """Run an ingest phase.
+
+    If batch_size > 0 and ltm supports ingest_batch, episodes are processed
+    in batches with parallel LLM extraction + serial DB writes.
+    """
+    use_batch = batch_size > 0 and hasattr(ltm, "ingest_batch")
+
     errors = 0
     timeline: list[dict[str, Any]] = []
-    for idx, episode in enumerate(episodes, 1):
-        timeline_entry = {
-            "phase": phase_name,
-            "phase_index": idx,
-            "episode": _episode_to_dict(episode),
-        }
-        try:
-            result = ltm.ingest(episode)
-            timeline_entry["ingest_result"] = _ingest_result_to_dict(result)
-        except Exception as ex:  # pragma: no cover - debug flow should keep going
-            errors += 1
-            timeline_entry["error"] = str(ex)
-        if capture_every > 0 and (
-            idx == 1 or idx % capture_every == 0 or idx == len(episodes)
-        ):
-            timeline_entry["stats"] = ltm.get_stats()
-            timeline_entry["snapshot"] = _capture_snapshot(ltm, snapshot_limit)
-            timeline.append(timeline_entry)
-        if progress_every > 0 and idx % progress_every == 0:
-            print(f"[{phase_name}] Ingested {idx}/{len(episodes)}")
+    total = len(episodes)
+
+    if use_batch:
+        done = 0
+        for start in range(0, total, batch_size):
+            chunk = episodes[start : start + batch_size]
+            results = ltm.ingest_batch(chunk, concurrency=batch_size)
+            for i, (episode, result) in enumerate(zip(chunk, results)):
+                abs_idx = start + i + 1
+                timeline_entry = {
+                    "phase": phase_name,
+                    "phase_index": abs_idx,
+                    "episode": _episode_to_dict(episode),
+                }
+                if isinstance(result, Exception) or result is None:
+                    errors += 1
+                    timeline_entry["error"] = str(result)
+                else:
+                    timeline_entry["ingest_result"] = _ingest_result_to_dict(result)
+                if capture_every > 0 and (
+                    abs_idx == 1 or abs_idx % capture_every == 0 or abs_idx == total
+                ):
+                    timeline_entry["stats"] = ltm.get_stats()
+                    timeline_entry["snapshot"] = _capture_snapshot(ltm, snapshot_limit)
+                    timeline.append(timeline_entry)
+                done += 1
+            if progress_every > 0 and done % progress_every < batch_size:
+                print(f"[{phase_name}] Ingested {min(done, total)}/{total}")
+    else:
+        for idx, episode in enumerate(episodes, 1):
+            timeline_entry = {
+                "phase": phase_name,
+                "phase_index": idx,
+                "episode": _episode_to_dict(episode),
+            }
+            try:
+                result = ltm.ingest(episode)
+                timeline_entry["ingest_result"] = _ingest_result_to_dict(result)
+            except Exception as ex:  # pragma: no cover - debug flow should keep going
+                errors += 1
+                timeline_entry["error"] = str(ex)
+            if capture_every > 0 and (
+                idx == 1 or idx % capture_every == 0 or idx == total
+            ):
+                timeline_entry["stats"] = ltm.get_stats()
+                timeline_entry["snapshot"] = _capture_snapshot(ltm, snapshot_limit)
+                timeline.append(timeline_entry)
+            if progress_every > 0 and idx % progress_every == 0:
+                print(f"[{phase_name}] Ingested {idx}/{total}")
 
     return {
-        "episodes": len(episodes),
+        "episodes": total,
         "errors": errors,
         "timeline": timeline,
         "stats": ltm.get_stats(),

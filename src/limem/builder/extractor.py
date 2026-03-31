@@ -151,8 +151,12 @@ class TwoStageExtractor(LLMExtractor):
             entities=[],
         )
 
+    # Threshold (in chars) above which we fall back to the two-stage
+    # segment→struct pipeline to avoid hitting LLM context limits.
+    _TWO_STAGE_TEXT_THRESHOLD = 4000
+
     def _extract_events(self, text: str) -> list[dict[str, Any]]:
-        """两阶段事件抽取：先切分，再逐段结构化。
+        """事件抽取：短文本走单次 LLM，长文本走两阶段切分+结构化。
 
         Args:
             text: 原始文本
@@ -160,6 +164,11 @@ class TwoStageExtractor(LLMExtractor):
         Returns:
             事件数据列表
         """
+        # Short texts: single-pass extraction (1 LLM call instead of 2)
+        if len(text) <= self._TWO_STAGE_TEXT_THRESHOLD:
+            return self._extract_events_single_pass(text)
+
+        # Long texts: two-stage to avoid context overflow
         try:
             segments = self._extract_event_segments(text)
         except Exception as exc:

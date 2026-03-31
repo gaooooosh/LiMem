@@ -132,6 +132,12 @@ def _parse_args() -> argparse.Namespace:
         help="Skip automatic graph visualization after build",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Batch size for parallel LLM extraction (0 = serial mode)",
+    )
+    parser.add_argument(
         "--output-dir",
         default=os.path.join(PROJECT_ROOT, "outputs"),
         help="Report output directory",
@@ -193,6 +199,7 @@ def main() -> None:
         progress_every=args.progress_every,
         capture_every=0,
         snapshot_limit=args.snapshot_limit,
+        batch_size=args.batch_size,
     )
     debug_phase = _run_phase(
         ltm=ltm,
@@ -201,6 +208,7 @@ def main() -> None:
         progress_every=args.progress_every,
         capture_every=max(args.debug_snapshot_every, 0),
         snapshot_limit=args.snapshot_limit,
+        batch_size=args.batch_size,
     )
 
     migration_dry = {}

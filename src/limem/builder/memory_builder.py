@@ -530,6 +530,143 @@ class MemoryBuilder:
         ts = event.timestamp or event.last_active or int(time.time())
         return f"{base[:20]}_{ts}_{uuid.uuid4().hex[:6]}"
 
+    # ------------------------------------------------------------------
+    # Two-phase ingest: extract (LLM, thread-safe) → persist (DB, serial)
+    # ------------------------------------------------------------------
+
+    @dataclass
+    class _ExtractionBundle:
+        """Intermediate result of the extract-only phase (no DB writes)."""
+        episode: Any  # Episode
+        extraction: Any  # ExtractionResult
+        pending_events: list  # list[tuple[int, Event]]
+        embeddings: list  # list[list[float]]
+
+    def extract_only(self, episode: Episode) -> "_ExtractionBundle":
+        """Phase 1: LLM extraction + embedding. No DB writes, thread-safe."""
+        current_time = episode.timestamp
+        extraction = self._extract_episode(episode)
+        event_payloads = self._collect_event_payloads(extraction)
+
+        pending_events: list[tuple[int, Event]] = []
+        for idx, event_payload in enumerate(event_payloads):
+            event = self._build_event_frame(event_payload, episode, current_time, index=idx)
+            if self._is_effective_event(event):
+                pending_events.append((idx, event))
+
+        embeddings = self._get_embeddings(
+            [event.summary for _, event in pending_events]
+        ) if pending_events else []
+
+        return MemoryBuilder._ExtractionBundle(
+            episode=episode,
+            extraction=extraction,
+            pending_events=pending_events,
+            embeddings=embeddings,
+        )
+
+    def persist_extraction(self, bundle: "_ExtractionBundle") -> IngestResult:
+        """Phase 2: write extracted results to DB. NOT thread-safe."""
+        episode = bundle.episode
+        current_time = episode.timestamp
+
+        self.store.save_episode(episode)
+
+        if not bundle.pending_events:
+            ignored_event = Event(
+                id=f"ignored_{episode.id}",
+                summary="",
+                action="",
+                causality="",
+                time_range={
+                    "start": current_time,
+                    "end": current_time,
+                    "display_time_bucket": time_bucket_from_ts(current_time),
+                },
+                last_active=current_time,
+                participants=[],
+                evidence=[],
+                timestamp=current_time,
+                created_at=current_time,
+                updated_at=current_time,
+                valid_from=current_time,
+                payload={
+                    "episode_id": episode.id,
+                    "episode_text": episode.content,
+                    "skip_reason": "no_effective_event_after_normalization",
+                },
+                status="ignored",
+            )
+            return IngestResult(
+                event=ignored_event,
+                is_new=False,
+                merged_with=None,
+                entities_created=0,
+                events=[],
+            )
+
+        entities: list[Any] = []
+        built_events: list[Event] = []
+        is_new_flags: list[bool] = []
+        merged_targets: list[Optional[str]] = []
+        entities_created_total = 0
+
+        for (idx, event), embedding in zip(bundle.pending_events, bundle.embeddings):
+            if self.config.append_first_mode or not self.config.enable_legacy_online_event_merge:
+                event.id = self._append_first_event_id(event)
+                event.embedding = embedding
+                event.timestamp = event.timestamp or current_time
+                event.created_at = event.created_at or current_time
+                event.updated_at = current_time
+                event.valid_from = event.valid_from or current_time
+                event.status = event.status or "active"
+                self.store.save_event(event)
+                is_new = True
+                consolidation = ConsolidationResult(should_merge=False)
+            else:
+                consolidation = self.consolidator.find_similar_event(
+                    embedding=embedding,
+                    entities=entities,
+                    action=event.action,
+                    current_time=current_time,
+                )
+                if consolidation.should_merge:
+                    event = self._merge_event(
+                        event_id=consolidation.target_event_id,
+                        incoming_event=event,
+                        embedding=embedding,
+                        current_time=current_time,
+                    )
+                    is_new = False
+                else:
+                    event.id = hash_summary(event.summary)
+                    event.embedding = embedding
+                    self.store.save_event(event)
+                    is_new = True
+
+            self.store.link_event_to_episode(event.id, episode.id)
+            entities_created_total += self._update_entity_relations(
+                event_id=event.id,
+                entities=entities,
+                current_time=current_time,
+            )
+            built_events.append(event)
+            is_new_flags.append(is_new)
+            merged_targets.append(consolidation.target_event_id if not is_new else None)
+
+        self._persist_inferred_relations(built_events, episode)
+
+        if self.dynamic_engine:
+            self.dynamic_engine.evolve_existing_events(built_events)
+
+        return IngestResult(
+            event=built_events[0],
+            is_new=is_new_flags[0],
+            merged_with=merged_targets[0],
+            entities_created=entities_created_total,
+            events=built_events,
+        )
+
     def _extract_episode(self, episode: Episode) -> ExtractionResult:
         extract_fn = self.extractor.extract
         try:

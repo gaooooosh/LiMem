@@ -5,6 +5,7 @@
 """
 
 from typing import Any, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 from .core.episode import Episode
@@ -66,6 +67,59 @@ class LTMemoryImpl(LTMemory):
             IngestResult 包含事件和构建信息
         """
         return self.builder.build(episode)
+
+    def ingest_batch(
+        self,
+        episodes: list[Episode],
+        concurrency: int = 4,
+        progress_cb=None,
+    ) -> list[IngestResult]:
+        """Batch ingest with parallel LLM extraction and serial DB writes.
+
+        Args:
+            episodes: Episodes to ingest.
+            concurrency: Max parallel LLM extraction workers.
+            progress_cb: Optional callback(idx, total, result_or_error) per episode.
+
+        Returns:
+            List of IngestResult (one per episode, same order).
+        """
+        if not episodes:
+            return []
+
+        workers = max(1, min(concurrency, len(episodes)))
+
+        # Phase 1: parallel LLM extraction (no DB writes)
+        bundles = [None] * len(episodes)
+        errors = [None] * len(episodes)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(self.builder.extract_only, ep): idx
+                for idx, ep in enumerate(episodes)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    bundles[idx] = future.result()
+                except Exception as exc:
+                    errors[idx] = exc
+
+        # Phase 2: serial DB persistence (thread-safe for single connection)
+        results: list[Optional[IngestResult]] = [None] * len(episodes)
+        for idx in range(len(episodes)):
+            if errors[idx] is not None:
+                if progress_cb:
+                    progress_cb(idx, len(episodes), errors[idx])
+                continue
+            try:
+                result = self.builder.persist_extraction(bundles[idx])
+                results[idx] = result
+            except Exception as exc:
+                errors[idx] = exc
+            if progress_cb:
+                progress_cb(idx, len(episodes), results[idx] or errors[idx])
+
+        return results
 
     def search(
         self,
