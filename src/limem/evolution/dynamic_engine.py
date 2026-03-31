@@ -87,6 +87,15 @@ from ..utils import hash_summary, robust_json_loads, safe_json_dumps, safe_json_
 
 logger = logging.getLogger(__name__)
 
+_CONTEXT_ECHO_SLOT_KEYS = {
+    "situation",
+    "state",
+    "constraint",
+    "goal",
+    "environment",
+    "phase",
+}
+
 
 @dataclass
 class DynamicEvolutionConfig:
@@ -520,6 +529,22 @@ class DynamicEvolutionEngine:
             return False
         return not self.config.bulk_ingest_mode
 
+    def _is_valid_context_draft(self, draft: ContextDraft) -> bool:
+        validator = getattr(self.context_extractor, "is_valid_context_draft", None)
+        if callable(validator):
+            try:
+                return bool(validator(draft))
+            except Exception:
+                logger.warning("context draft validation failed", exc_info=True)
+                return False
+        return bool(isinstance(draft, ContextDraft) and self._context_summary(draft))
+
+    def _filter_valid_context_drafts(self, drafts: list[ContextDraft]) -> list[ContextDraft]:
+        return [
+            draft for draft in drafts
+            if isinstance(draft, ContextDraft) and self._is_valid_context_draft(draft)
+        ]
+
     def _resolve_context_pairs_for_event_batch(
         self,
         events: list[Event],
@@ -542,7 +567,7 @@ class DynamicEvolutionEngine:
                             f"expected {len(batch_events)} batch context results, got {len(batch_drafts)}"
                         )
                     for offset, drafts in enumerate(batch_drafts):
-                        drafts_by_index[start + offset] = drafts
+                        drafts_by_index[start + offset] = self._filter_valid_context_drafts(drafts)
                 except Exception as exc:
                     logger.warning(
                         "batch context extraction failed for events[%s:%s]; "
@@ -583,7 +608,8 @@ class DynamicEvolutionEngine:
         event: Event,
         record: Optional[Any] = None,
     ) -> list[ContextDraft]:
-        return self.context_extractor.extract(record=record or event, event=event)
+        drafts = self.context_extractor.extract(record=record or event, event=event)
+        return self._filter_valid_context_drafts(drafts)
 
     def resolve_context_pairs(
         self,
@@ -618,6 +644,20 @@ class DynamicEvolutionEngine:
         return self.update_context_with_evidence(match, context_draft, event)
 
     def match_existing_context(self, context_draft: ContextDraft) -> Optional[Context]:
+        all_candidates = self.store.find_context_candidates(
+            context_type=context_draft.context_type,
+            subtype="",
+            limit=self.config.context_candidate_limit,
+            only_active=True,
+        )
+        draft_summary_key = self._normalized_context_text(self._context_summary(context_draft))
+        exact_matches = [
+            candidate for candidate in all_candidates
+            if self._normalized_context_text(candidate.summary) == draft_summary_key
+        ]
+        if exact_matches:
+            return max(exact_matches, key=self._context_rank_key)
+
         candidates = self.store.find_context_candidates(
             context_type=context_draft.context_type,
             subtype=context_draft.subtype,
@@ -2132,8 +2172,8 @@ class DynamicEvolutionEngine:
         )
 
     def _context_similarity(self, a: Any, b: Any) -> float:
-        slots_a = self._context_slots(a)
-        slots_b = self._context_slots(b)
+        slots_a = self._effective_context_slots(a)
+        slots_b = self._effective_context_slots(b)
         core_keys = self._core_context_slot_keys()
         aux_keys = self._aux_context_slot_keys()
         core_slot_sim = self._slot_group_similarity(slots_a, slots_b, core_keys)
@@ -2162,10 +2202,17 @@ class DynamicEvolutionEngine:
         active_sim = 1.0 if self._context_status(a) == "active" else 0.75
         temporal_sim = self._context_temporal_compatibility(a, b)
         embedding_sim = self._context_embedding_similarity(a, b)
+        slot_weight = float(self.config.context_similarity_slot_weight or 0.0)
+        set_slot_weight = float(self.config.context_similarity_set_slot_weight or 0.0)
+        summary_weight = float(self.config.context_similarity_summary_weight or 0.0)
+        if not slots_a and not slots_b:
+            summary_weight += slot_weight + set_slot_weight
+            slot_weight = 0.0
+            set_slot_weight = 0.0
         return (
-            float(self.config.context_similarity_slot_weight or 0.0) * slot_sim
-            + float(self.config.context_similarity_set_slot_weight or 0.0) * set_slot_sim
-            + float(self.config.context_similarity_summary_weight or 0.0) * summary_sim
+            slot_weight * slot_sim
+            + set_slot_weight * set_slot_sim
+            + summary_weight * summary_sim
             + float(self.config.context_similarity_subtype_weight or 0.0) * subtype_sim
             + float(self.config.context_similarity_active_weight or 0.0) * active_sim
             + float(self.config.context_similarity_temporal_weight or 0.0) * temporal_sim
@@ -2173,11 +2220,14 @@ class DynamicEvolutionEngine:
         )
 
     def _context_merge_score(self, a: Context, b: Context) -> float:
+        summary_sim = self._summary_semantic_similarity(a, b)
         base = self._context_similarity(a, b)
+        if summary_sim >= 0.7:
+            return max(base, 0.5 + 0.5 * summary_sim)
         containment = self._context_slot_containment_ratio(a, b)
         slot_density = min(
-            len(self._filled_slot_values(self._context_slots(a))),
-            len(self._filled_slot_values(self._context_slots(b))),
+            len(self._filled_slot_values(self._effective_context_slots(a))),
+            len(self._filled_slot_values(self._effective_context_slots(b))),
         )
         if slot_density >= 3:
             containment_weight = float(self.config.context_merge_containment_weight_dense or 0.0)
@@ -2188,8 +2238,8 @@ class DynamicEvolutionEngine:
         return (1.0 - containment_weight) * base + containment_weight * containment
 
     def _context_slot_containment_ratio(self, a: Any, b: Any) -> float:
-        values_a = self._filled_slot_values(self._context_slots(a))
-        values_b = self._filled_slot_values(self._context_slots(b))
+        values_a = self._filled_slot_values(self._effective_context_slots(a))
+        values_b = self._filled_slot_values(self._effective_context_slots(b))
         if not values_a and not values_b:
             return self._summary_containment(a, b)
         if not values_a or not values_b:
@@ -2207,22 +2257,22 @@ class DynamicEvolutionEngine:
         return max(contains(values_a, values_b), contains(values_b, values_a))
 
     def _pick_canonical_context(self, left: Context, right: Context) -> tuple[Context, Context]:
-        def rank_key(context: Context) -> tuple[int, float, int, int]:
-            slot_count = len(context.structured_slots) if isinstance(context.structured_slots, dict) else 0
-            return (
-                int(context.support_count or 1),
-                slot_count,
-                int(context.last_seen_at or context.updated_at or 0),
-                int(context.created_at or 0),
-            )
-
-        if rank_key(left) >= rank_key(right):
+        if self._context_rank_key(left) >= self._context_rank_key(right):
             return left, right
         return right, left
 
+    def _context_rank_key(self, context: Context) -> tuple[int, int, int, int]:
+        slot_count = len(self._effective_context_slots(context))
+        return (
+            int(context.support_count or 1),
+            slot_count,
+            int(context.last_seen_at or context.updated_at or 0),
+            int(context.created_at or 0),
+        )
+
     def _context_conflict_ratio(self, a: Any, b: Any) -> float:
-        slots_a = self._context_slots(a)
-        slots_b = self._context_slots(b)
+        slots_a = self._effective_context_slots(a)
+        slots_b = self._effective_context_slots(b)
         overlap_keys = set(slots_a.keys()) & set(slots_b.keys())
         overlap = 0
         conflicts = 0
@@ -2237,8 +2287,8 @@ class DynamicEvolutionEngine:
         return (conflicts / overlap) if overlap else 0.0
 
     def _context_overlap_key_count(self, a: Any, b: Any) -> int:
-        slots_a = self._context_slots(a)
-        slots_b = self._context_slots(b)
+        slots_a = self._effective_context_slots(a)
+        slots_b = self._effective_context_slots(b)
         overlap_keys = set(slots_a.keys()) & set(slots_b.keys())
         count = 0
         for key in overlap_keys:
@@ -2338,6 +2388,37 @@ class DynamicEvolutionEngine:
     def _context_slots(self, node: Any) -> dict[str, Any]:
         slots = getattr(node, "structured_slots", {})
         return dict(slots) if isinstance(slots, dict) else {}
+
+    def _effective_context_slots(self, node: Any) -> dict[str, Any]:
+        return self._strip_echo_slots(
+            summary=self._context_summary(node),
+            slots=self._context_slots(node),
+        )
+
+    def _normalized_context_text(self, value: Any) -> str:
+        return re.sub(r"[\s，,。；;：:、/\\-]+", "", str(value or "").strip().lower())
+
+    def _strip_echo_slots(self, summary: str, slots: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(slots, dict) or not slots:
+            return {}
+        cleaned: dict[str, Any] = {}
+        summary_norm = self._normalized_context_text(summary)
+        for key, value in slots.items():
+            if key in _CONTEXT_ECHO_SLOT_KEYS and isinstance(value, str):
+                value_norm = self._normalized_context_text(value)
+                if summary_norm and value_norm:
+                    if value_norm == summary_norm:
+                        continue
+                    shorter, longer = (
+                        (value_norm, summary_norm)
+                        if len(value_norm) <= len(summary_norm)
+                        else (summary_norm, value_norm)
+                    )
+                    ratio = len(shorter) / max(1, len(longer))
+                    if len(shorter) > 8 and shorter in longer and ratio > 0.8:
+                        continue
+            cleaned[key] = value
+        return cleaned
 
     def _context_summary(self, node: Any) -> str:
         return str(getattr(node, "summary", "") or "").strip()
@@ -3045,10 +3126,9 @@ class DynamicEvolutionEngine:
 
     def _new_context_id(self, context: Any) -> str:
         summary = self._context_summary(context)
-        slots = self._context_slots(context)
+        slots = self._effective_context_slots(context)
         subtype = self._context_subtype(context) or "situation"
-        valid_from = int(getattr(context, "valid_from", 0) or 0)
-        signature = f"context|{subtype}|{summary}|{safe_json_dumps(slots)}|{valid_from}"
+        signature = f"context|{subtype}|{summary}|{safe_json_dumps(slots)}"
         return f"ctx_{hash_summary(signature)[:20]}"
 
     def _ensure_append_first_event_id(self, event: Event) -> str:

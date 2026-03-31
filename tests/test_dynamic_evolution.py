@@ -6,7 +6,7 @@ import json
 import unittest
 
 from limem import create_ltm, Episode
-from limem.core.context import ContextDraft
+from limem.core.context import Context, ContextDraft
 from limem.core.event import Event
 from limem.evolution import DynamicEvolutionConfig, DynamicEvolutionEngine
 
@@ -1317,6 +1317,92 @@ class TestDynamicEvolution(unittest.TestCase):
             engine._context_merge_score(left, right),
             engine.config.context_reuse_threshold,
         )
+
+    def test_context_similarity_strips_echo_slots_and_redistributes_sparse_weights(self):
+        engine = DynamicEvolutionEngine(
+            store=object(),
+            config=DynamicEvolutionConfig(),
+        )
+        left = ContextDraft(
+            subtype="situation",
+            summary="音乐播放场景",
+            structured_slots={"situation": "音乐播放场景"},
+        )
+        right = ContextDraft(
+            subtype="state",
+            summary="音乐播放场景",
+            structured_slots={"state": "音乐播放场景"},
+        )
+
+        self.assertEqual(engine._effective_context_slots(left), {})
+        self.assertEqual(engine._effective_context_slots(right), {})
+        self.assertGreaterEqual(
+            engine._context_similarity(left, right),
+            engine.config.context_reuse_threshold,
+        )
+
+    def test_new_context_id_ignores_valid_from_when_slots_only_echo_summary(self):
+        engine = DynamicEvolutionEngine(
+            store=object(),
+            config=DynamicEvolutionConfig(),
+        )
+        first = ContextDraft(
+            subtype="situation",
+            summary="音乐播放场景",
+            structured_slots={"situation": "音乐播放场景"},
+            valid_from=100,
+        )
+        second = ContextDraft(
+            subtype="situation",
+            summary="音乐播放场景",
+            structured_slots={"situation": "音乐播放场景"},
+            valid_from=200,
+        )
+
+        self.assertEqual(engine._new_context_id(first), engine._new_context_id(second))
+
+    def test_match_existing_context_reuses_exact_summary_across_subtypes(self):
+        class _Store:
+            def __init__(self, candidates):
+                self._candidates = candidates
+
+            def find_context_candidates(self, context_type, subtype="", limit=20, only_active=True):
+                del context_type, limit, only_active
+                if subtype:
+                    return [item for item in self._candidates if item.subtype == subtype]
+                return list(self._candidates)
+
+        existing = Context(
+            id="ctx_music_state",
+            subtype="state",
+            summary="音乐播放场景",
+            structured_slots={"state": "音乐播放场景"},
+            support_count=3,
+            last_seen_at=20,
+        )
+        weaker = Context(
+            id="ctx_other",
+            subtype="situation",
+            summary="会议场景",
+            structured_slots={"situation": "会议场景"},
+            support_count=1,
+            last_seen_at=10,
+        )
+        engine = DynamicEvolutionEngine(
+            store=_Store([existing, weaker]),
+            config=DynamicEvolutionConfig(),
+        )
+
+        match = engine.match_existing_context(
+            ContextDraft(
+                subtype="situation",
+                summary="音乐播放场景",
+                structured_slots={"situation": "音乐播放场景"},
+            )
+        )
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.id, existing.id)
 
     def test_context_slot_containment_ratio_uses_summary_fallback_for_sparse_slots(self):
         engine = DynamicEvolutionEngine(

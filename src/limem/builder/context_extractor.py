@@ -119,6 +119,23 @@ _DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE = {
     "environment": "当前环境",
     "phase": "当前阶段",
 }
+_DEFAULT_INVALID_CONTEXT_DATA_MARKERS = (
+    "[车辆状态]",
+    "[舱内摄像头]",
+    "[日程数据]",
+    "[屏幕]",
+    "[环境感知]",
+    "来源:",
+    "payload",
+    "cal_evt",
+    "door_status",
+    "vehicle_stat",
+)
+_DEFAULT_INVALID_CONTEXT_DIALOGUE_MARKERS = (
+    "->",
+    "车机回答",
+    "车机主动播报",
+)
 _DEFAULT_CONTEXT_DOMAIN_CONFIG = {
     "habit_like_markers": _DEFAULT_HABIT_LIKE_MARKERS,
     "event_like_markers": _DEFAULT_EVENT_LIKE_MARKERS,
@@ -131,6 +148,8 @@ _DEFAULT_CONTEXT_DOMAIN_CONFIG = {
     "event_like_minimum_context_rules": _DEFAULT_EVENT_LIKE_MINIMUM_CONTEXT_RULES,
     "abstract_context_rules": _DEFAULT_ABSTRACT_CONTEXT_RULES,
     "abstract_context_fallback_by_subtype": _DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE,
+    "invalid_context_data_markers": _DEFAULT_INVALID_CONTEXT_DATA_MARKERS,
+    "invalid_context_dialogue_markers": _DEFAULT_INVALID_CONTEXT_DIALOGUE_MARKERS,
 }
 
 
@@ -197,6 +216,12 @@ class ContextExtractionPipeline:
         )
         self._abstract_context_fallback_by_subtype = dict(
             self._domain_config["abstract_context_fallback_by_subtype"]
+        )
+        self._invalid_context_data_markers = tuple(
+            self._domain_config["invalid_context_data_markers"]
+        )
+        self._invalid_context_dialogue_markers = tuple(
+            self._domain_config["invalid_context_dialogue_markers"]
         )
         self._system_prompt = load_prompt("extract_context_system.txt")
         self._user_prompt = load_prompt("extract_context_user.txt")
@@ -273,11 +298,16 @@ class ContextExtractionPipeline:
             drafts = fallback_drafts
         validated = self.validate_context_drafts(drafts, record_text, event)
         reranked = self._rerank_context_drafts(validated, record_text, event)
-        canonicalized = [self.canonicalize_context(draft) for draft in reranked]
+        canonicalized = [
+            draft for draft in (self.canonicalize_context(item) for item in reranked)
+            if self.is_valid_context_draft(draft)
+        ]
         if not canonicalized:
             inferred = self._infer_minimum_context(event=event, record_text=record_text)
             if inferred is not None:
-                canonicalized = [self.canonicalize_context(inferred)]
+                inferred_canonical = self.canonicalize_context(inferred)
+                if self.is_valid_context_draft(inferred_canonical):
+                    canonicalized = [inferred_canonical]
         return self._dedupe_drafts(canonicalized)
 
     def detect_context_candidates(
@@ -589,6 +619,8 @@ class ContextExtractionPipeline:
                 continue
             if not isinstance(draft.structured_slots, dict):
                 continue
+            if not self.is_valid_context_draft(draft):
+                continue
 
             evidence_span = draft.evidence_span or draft.summary
             evidence_overlap = self._evidence_overlap_ratio(evidence_span, record_text)
@@ -631,24 +663,47 @@ class ContextExtractionPipeline:
             if not normalized_summary:
                 continue
 
-            validated.append(
-                ContextDraft(
-                    subtype=draft.subtype,
-                    summary=self._normalize_free_text(normalized_summary),
-                    structured_slots=cleaned_slots,
-                    confidence=max(0.1, min(1.0, 0.75 * draft.confidence + 0.25 * quality)),
+            candidate = ContextDraft(
+                subtype=draft.subtype,
+                summary=self._normalize_free_text(normalized_summary),
+                structured_slots=cleaned_slots,
+                confidence=max(0.1, min(1.0, 0.75 * draft.confidence + 0.25 * quality)),
+                evidence_span=evidence_span,
+                source_refs=draft.source_refs or self._make_source_refs(
+                    event=event,
                     evidence_span=evidence_span,
-                    source_refs=draft.source_refs or self._make_source_refs(
-                        event=event,
-                        evidence_span=evidence_span,
-                        signal="validated_context",
-                        source="context_validation",
-                    ),
-                    valid_from=draft.valid_from or self._event_timestamp(event),
-                    valid_to=draft.valid_to,
-                )
+                    signal="validated_context",
+                    source="context_validation",
+                ),
+                valid_from=draft.valid_from or self._event_timestamp(event),
+                valid_to=draft.valid_to,
             )
+            if not self.is_valid_context_draft(candidate):
+                continue
+            validated.append(candidate)
         return validated
+
+    def is_valid_context_draft(self, draft: ContextDraft) -> bool:
+        if not isinstance(draft, ContextDraft):
+            return False
+        summary = str(draft.summary or "").strip()
+        if not summary:
+            return False
+        if len(summary) > 40:
+            return False
+
+        summary_lower = summary.lower()
+        if any(marker.lower() in summary_lower for marker in self._invalid_context_data_markers):
+            return False
+        if any(ch in summary for ch in ('{', '}', '"')):
+            return False
+        if any(marker in summary for marker in self._invalid_context_dialogue_markers):
+            return False
+
+        evidence_span = str(draft.evidence_span or "").strip()
+        if evidence_span and summary == evidence_span and len(summary) > 15:
+            return False
+        return True
 
     def canonicalize_context(self, context_draft: ContextDraft) -> ContextDraft:
         subtype = normalize_context_subtype(context_draft.subtype)
@@ -689,35 +744,31 @@ class ContextExtractionPipeline:
                 continue
             if self._looks_low_reusability_context(normalized_text, span.text, strict=False):
                 continue
-            drafts.append(
-                ContextDraft(
-                    subtype=normalize_context_subtype(span.subtype_hint),
-                    summary=self._abstract_context_phrase(
-                        self._normalize_context_surface(normalized_text),
-                        evidence_span=span.text,
-                        subtype=normalize_context_subtype(span.subtype_hint),
-                    ),
-                    structured_slots={
-                        _FALLBACK_SLOT_KEYS.get(
-                            normalize_context_subtype(span.subtype_hint),
-                            "condition",
-                        ): self._abstract_context_phrase(
-                            self._normalize_context_surface(normalized_text),
-                            evidence_span=span.text,
-                            subtype=normalize_context_subtype(span.subtype_hint),
-                        )
-                    },
-                    confidence=0.58,
-                    evidence_span=span.text,
-                    source_refs=self._make_source_refs(
-                        event=event,
-                        evidence_span=span.text,
-                        signal=span.signal or "fallback_context",
-                        source="fallback_context_extraction",
-                    ),
-                    valid_from=self._event_timestamp(event),
-                )
+            subtype = normalize_context_subtype(span.subtype_hint)
+            summary = self._abstract_context_phrase(
+                self._normalize_context_surface(normalized_text),
+                evidence_span=span.text,
+                subtype=subtype,
             )
+            draft = ContextDraft(
+                subtype=subtype,
+                summary=summary,
+                structured_slots={
+                    _FALLBACK_SLOT_KEYS.get(subtype, "condition"): summary
+                },
+                confidence=0.58,
+                evidence_span=span.text,
+                source_refs=self._make_source_refs(
+                    event=event,
+                    evidence_span=span.text,
+                    signal=span.signal or "fallback_context",
+                    source="fallback_context_extraction",
+                ),
+                valid_from=self._event_timestamp(event),
+            )
+            if not self.is_valid_context_draft(draft):
+                continue
+            drafts.append(draft)
         return drafts
 
     def _clean_structured_slots(self, structured_slots: dict[str, Any]) -> dict[str, Any]:
@@ -1123,7 +1174,7 @@ class ContextExtractionPipeline:
 
         slot_key = _FALLBACK_SLOT_KEYS.get(subtype, "condition")
         evidence = self._normalize_free_text(text) or summary
-        return ContextDraft(
+        draft = ContextDraft(
             subtype=normalize_context_subtype(subtype),
             summary=self._normalize_free_text(summary),
             structured_slots={slot_key: self._normalize_free_text(summary)},
@@ -1137,6 +1188,7 @@ class ContextExtractionPipeline:
             ),
             valid_from=self._event_timestamp(event),
         )
+        return draft if self.is_valid_context_draft(draft) else None
 
     def _abstract_context_phrase(self, text: str, evidence_span: str = "", subtype: str = "situation") -> str:
         normalized = self._normalize_context_surface(text)
