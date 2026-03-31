@@ -57,6 +57,7 @@ class IngestResult:
     merged_with: Optional[str] = None
     entities_created: int = 0
     events: list[Event] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
@@ -68,6 +69,7 @@ class IngestResult:
             "entities_created": self.entities_created,
             "event_ids": [event.id for event in all_events],
             "event_count": len(all_events),
+            "metrics": dict(self.metrics or {}),
         }
 
 

@@ -20,9 +20,11 @@ from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
 from .config import (
     APPEND_FIRST_MODE,
     BULK_INGEST_MODE,
+    CONTEXT_EXTRACTION_BATCH_SIZE,
     DB_PATH,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
+    DEFERRED_EVOLUTION,
     ENABLE_DYNAMIC_EVOLUTION,
     ENABLE_EVENT_RELATIONS,
     EXTRACTOR_TYPE,
@@ -164,6 +166,7 @@ def create_ltm_system(
         prune_top_k=config.get("prune_top_k", PRUNE_EVIDENCE_TOP_K),
         default_user_id=config.get("default_user_id", DEFAULT_USER_ID),
         append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
+        deferred_evolution=config.get("deferred_evolution", DEFERRED_EVOLUTION),
         llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),
     )
 
@@ -180,6 +183,10 @@ def create_ltm_system(
                 llm_base_url=base_url,
                 llm_model=config.get("generation_model", GENERATION_MODEL),
                 enable_auto_consolidation=config.get("enable_auto_consolidation", True),
+                context_extraction_batch_size=config.get(
+                    "context_extraction_batch_size",
+                    CONTEXT_EXTRACTION_BATCH_SIZE,
+                ),
                 event_consolidation_candidate_limit=config.get("event_consolidation_candidate_limit", 12),
                 event_consolidation_embedding_candidate_threshold=config.get(
                     "event_consolidation_embedding_candidate_threshold",

@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from datetime import datetime
+import time
 from typing import Any
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -93,6 +94,17 @@ def _parse_args() -> argparse.Namespace:
         help="Print progress every N episodes",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="Use ingest_batch with this chunk size (0 means single-episode ingest)",
+    )
+    parser.add_argument(
+        "--deferred-evolution",
+        action="store_true",
+        help="Defer dynamic evolution out of ingest and run one batched pass per phase",
+    )
+    parser.add_argument(
         "--debug-snapshot-every",
         type=int,
         default=10,
@@ -139,7 +151,42 @@ def _ingest_result_to_dict(result: Any) -> dict[str, Any]:
         "is_new": bool(result.is_new),
         "merged_with": result.merged_with,
         "entities_created": int(result.entities_created),
+        "metrics": dict(getattr(result, "metrics", {}) or {}),
     }
+
+
+def _init_timing_summary() -> dict[str, Any]:
+    return {
+        "measured_episodes": 0,
+        "total_events": 0,
+        "totals_ms": {},
+        "avg_ms_per_episode": {},
+        "wall_clock_ms": 0.0,
+    }
+
+
+def _record_ingest_metrics(summary: dict[str, Any], result: Any) -> None:
+    metrics = dict(getattr(result, "metrics", {}) or {})
+    if not metrics:
+        return
+    summary["measured_episodes"] += 1
+    summary["total_events"] += int(metrics.get("event_count", 0) or 0)
+    totals = summary.setdefault("totals_ms", {})
+    for key, value in metrics.items():
+        if not str(key).endswith("_ms"):
+            continue
+        totals[key] = round(float(totals.get(key, 0.0)) + float(value or 0.0), 3)
+
+
+def _finalize_timing_summary(summary: dict[str, Any], wall_clock_ms: float) -> dict[str, Any]:
+    measured = max(1, int(summary.get("measured_episodes", 0) or 0))
+    totals = dict(summary.get("totals_ms", {}) or {})
+    summary["wall_clock_ms"] = round(float(wall_clock_ms), 3)
+    summary["avg_ms_per_episode"] = {
+        key: round(float(value) / measured, 3)
+        for key, value in totals.items()
+    }
+    return summary
 
 
 def _capture_snapshot(ltm, limit: int) -> dict[str, Any]:
@@ -154,6 +201,7 @@ def _run_phase(
     capture_every: int = 0,
     snapshot_limit: int = 12,
     batch_size: int = 0,
+    run_deferred_evolution: bool = False,
 ) -> dict[str, Any]:
     """Run an ingest phase.
 
@@ -164,7 +212,10 @@ def _run_phase(
 
     errors = 0
     timeline: list[dict[str, Any]] = []
+    timing = _init_timing_summary()
+    phase_events: list[Any] = []
     total = len(episodes)
+    phase_started_at = time.perf_counter()
 
     if use_batch:
         done = 0
@@ -183,6 +234,9 @@ def _run_phase(
                     timeline_entry["error"] = str(result)
                 else:
                     timeline_entry["ingest_result"] = _ingest_result_to_dict(result)
+                    if run_deferred_evolution:
+                        phase_events.extend(list(getattr(result, "events", []) or []))
+                    _record_ingest_metrics(timing, result)
                 if capture_every > 0 and (
                     abs_idx == 1 or abs_idx % capture_every == 0 or abs_idx == total
                 ):
@@ -202,6 +256,9 @@ def _run_phase(
             try:
                 result = ltm.ingest(episode)
                 timeline_entry["ingest_result"] = _ingest_result_to_dict(result)
+                if run_deferred_evolution:
+                    phase_events.extend(list(getattr(result, "events", []) or []))
+                _record_ingest_metrics(timing, result)
             except Exception as ex:  # pragma: no cover - debug flow should keep going
                 errors += 1
                 timeline_entry["error"] = str(ex)
@@ -214,12 +271,32 @@ def _run_phase(
             if progress_every > 0 and idx % progress_every == 0:
                 print(f"[{phase_name}] Ingested {idx}/{total}")
 
+    deferred_evolution_report: dict[str, Any] = {}
+    if run_deferred_evolution and phase_events and hasattr(ltm, "evolve_events"):
+        evolve_started_at = time.perf_counter()
+        evolution_stats = ltm.evolve_events(phase_events)
+        duration_ms = round((time.perf_counter() - evolve_started_at) * 1000.0, 3)
+        deferred_evolution_report = {
+            "event_count": len(phase_events),
+            "duration_ms": duration_ms,
+            "stats": evolution_stats,
+        }
+        timing.setdefault("totals_ms", {})["deferred_phase_evolution_ms"] = duration_ms
+        timing.setdefault("avg_ms_per_episode", {})
+
+    timing = _finalize_timing_summary(
+        timing,
+        wall_clock_ms=(time.perf_counter() - phase_started_at) * 1000.0,
+    )
+
     return {
         "episodes": total,
         "errors": errors,
         "timeline": timeline,
         "stats": ltm.get_stats(),
         "snapshot": _capture_snapshot(ltm, snapshot_limit),
+        "timing": timing,
+        "deferred_evolution": deferred_evolution_report,
     }
 
 
@@ -468,6 +545,8 @@ def _render_html_report(report: dict[str, Any]) -> str:
           `episodes: ${{report.base_phase.episodes}}`,
           `errors: ${{report.base_phase.errors}}`,
           `split ratio: ${{(report.split.split_ratio * 100).toFixed(1)}}%`,
+          `wall ms: ${{Math.round(report.base_phase.timing?.wall_clock_ms || 0)}}`,
+          `avg ingest ms: ${{Math.round(report.base_phase.timing?.avg_ms_per_episode?.total_ms || 0)}}`,
         ])}}
         <div>${{smallStats(report.base_phase.stats)}}</div>
       </div>
@@ -477,6 +556,8 @@ def _render_html_report(report: dict[str, Any]) -> str:
           `episodes: ${{report.debug_phase.episodes}}`,
           `errors: ${{report.debug_phase.errors}}`,
           `snapshots: ${{report.debug_phase.timeline.length}}`,
+          `wall ms: ${{Math.round(report.debug_phase.timing?.wall_clock_ms || 0)}}`,
+          `avg ingest ms: ${{Math.round(report.debug_phase.timing?.avg_ms_per_episode?.total_ms || 0)}}`,
         ])}}
         <div>${{smallStats(report.debug_phase.stats)}}</div>
       </div>
@@ -485,6 +566,7 @@ def _render_html_report(report: dict[str, Any]) -> str:
         ${{tags([
           `migration: ${{Object.keys(report.migration_applied || {{}}).length ? 'on' : 'off'}}`,
           `consolidation: ${{report.consolidation_report && Object.keys(report.consolidation_report).length ? 'on' : 'off'}}`,
+          `deferred evolution: ${{report.config.deferred_evolution ? 'on' : 'off'}}`,
         ])}}
         <div>${{smallStats(report.final_stats)}}</div>
       </div>
@@ -567,6 +649,7 @@ def main() -> None:
             "offline_mode": not args.online,
             "enable_dynamic_evolution": True,
             "append_first_mode": not args.legacy_merge,
+            "deferred_evolution": args.deferred_evolution,
             "generate_answer": False,
             "search_top_k": 5,
         },
@@ -579,6 +662,8 @@ def main() -> None:
         progress_every=args.progress_every,
         capture_every=0,
         snapshot_limit=args.snapshot_limit,
+        batch_size=max(args.batch_size, 0),
+        run_deferred_evolution=args.deferred_evolution,
     )
     debug_phase = _run_phase(
         ltm=ltm,
@@ -587,6 +672,8 @@ def main() -> None:
         progress_every=args.progress_every,
         capture_every=max(args.debug_snapshot_every, 0),
         snapshot_limit=args.snapshot_limit,
+        batch_size=max(args.batch_size, 0),
+        run_deferred_evolution=args.deferred_evolution,
     )
 
     migration_dry = {}
@@ -613,6 +700,10 @@ def main() -> None:
         "db_path": args.db_path,
         "offline_mode": not args.online,
         "append_first_mode": not args.legacy_merge,
+        "config": {
+            "batch_size": max(args.batch_size, 0),
+            "deferred_evolution": bool(args.deferred_evolution),
+        },
         "split": {
             "split_index": split_result.split_index,
             "split_ratio": split_result.split_ratio,

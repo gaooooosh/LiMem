@@ -14,6 +14,7 @@ from .core.memory import LTMemory, SearchResult, IngestResult
 from .builder.memory_builder import MemoryBuilder
 from .retriever.memory_searcher import MemorySearcher
 from .storage.graph_store import GraphStore
+from .evolution.dynamic_engine import EvolutionReport
 from .config import EPISODE_TTL, DECAY_RATE
 from .ops import MemoryGraphOps
 
@@ -67,6 +68,12 @@ class LTMemoryImpl(LTMemory):
             IngestResult 包含事件和构建信息
         """
         return self.builder.build(episode)
+
+    def evolve_events(self, events: list[Event]) -> EvolutionReport:
+        """Run dynamic evolution for already-persisted events."""
+        if not self.dynamic_engine or not events:
+            return {"context_links": 0, "next_links": 0, "event_relation_links": 0}
+        return self.dynamic_engine.evolve_existing_events(events)
 
     def ingest_batch(
         self,

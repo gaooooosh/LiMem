@@ -386,6 +386,48 @@ class KuzuStore(GraphStore):
             fields,
         )
 
+    def save_events_batch(self, events: list[Event]) -> None:
+        """批量保存 Event 节点。"""
+        if not events:
+            return
+        if any(event.embedding is None for event in events):
+            for event in events:
+                self.save_event(event)
+            return
+
+        rows: list[dict[str, Any]] = []
+        for event in events:
+            fields = event.to_db_fields()
+            fields["valid_to"] = int(fields["valid_to"]) if fields["valid_to"] is not None else -1
+            rows.append(fields)
+
+        self.conn.execute(
+            """
+            WITH $rows AS rows
+            UNWIND rows AS row
+            CREATE (:Event {
+                id: row.id,
+                summary: row.summary,
+                participants: row.participants,
+                time_range: row.time_range,
+                action: row.action,
+                causality: row.causality,
+                payload: row.payload,
+                evidence: row.evidence,
+                timestamp: row.timestamp,
+                last_active: row.last_active,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                valid_from: row.valid_from,
+                valid_to: CASE WHEN row.valid_to < 0 THEN NULL ELSE row.valid_to END,
+                status: row.status,
+                support_count: row.support_count,
+                embedding: row.embedding
+            })
+            """,
+            {"rows": rows},
+        )
+
     def get_event(self, event_id: str) -> Optional[Event]:
         """获取Event"""
         resp = self.conn.execute(
@@ -640,6 +682,25 @@ class KuzuStore(GraphStore):
             CREATE (e)-[:EXTRACTED_FROM]->(ep)
             """,
             {"event_id": event_id, "episode_id": episode_id},
+        )
+
+    def link_events_to_episode_batch(self, event_ids: list[str], episode_id: str) -> None:
+        """批量创建 Event -> Episode 关系。"""
+        if not event_ids:
+            return
+        self.conn.execute(
+            """
+            WITH $rows AS rows
+            UNWIND rows AS row
+            MATCH (e:Event {id: row.event_id}), (ep:Episode {id: row.episode_id})
+            CREATE (e)-[:EXTRACTED_FROM]->(ep)
+            """,
+            {
+                "rows": [
+                    {"event_id": str(event_id), "episode_id": str(episode_id)}
+                    for event_id in event_ids
+                ]
+            },
         )
 
     def promote_permanent_trait(

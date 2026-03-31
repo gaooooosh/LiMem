@@ -1,0 +1,36 @@
+待处理 item 总数：{item_total}
+
+以下是待抽取 Context 的 item 列表（item_index 从 0 开始）：
+{items_json}
+
+请为每个 item 返回一条结果，严格 JSON：
+{{
+  "items": [
+    {{
+      "item_index": 0,
+      "contexts": [
+        {{
+          "subtype": "state",
+          "summary": "可复用的抽象上下文",
+          "structured_slots": {{}},
+          "confidence": 0.88,
+          "evidence_span": "必须来自该 item 的原文"
+        }}
+      ],
+      "rejected_candidates": [
+        {{
+          "text": "候选片段",
+          "reason": "event_action_not_context"
+        }}
+      ]
+    }}
+  ]
+}}
+
+规则：
+1. 返回数量必须等于 {item_total}，每个 item 恰好一条结果。
+2. 每条结果只能使用对应 item 的 record_text / event / candidate_spans，不要跨 item 混用信息。
+3. 如果某个 item 没有高质量 Context，也必须返回对应 item_index，且 contexts 置为空数组。
+4. evidence_span 必须来自对应 item 的原文。
+5. summary 要短、可复用、去事件化，不要复制整句事件。
+6. 只输出 JSON，不要任何解释文本。

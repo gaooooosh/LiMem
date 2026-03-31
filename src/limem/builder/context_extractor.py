@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 import json
+import logging
 import re
 
 try:
@@ -16,6 +17,7 @@ except Exception:  # pragma: no cover - optional dependency for offline mode
     Generation = None
 
 from ..config import (
+    CONTEXT_EXTRACTION_BATCH_SIZE,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     GENERATION_MODEL,
@@ -29,6 +31,8 @@ from ..core.context import (
 )
 from ..core.event import Event
 from ..utils import load_prompt, robust_json_loads, safe_json_dumps
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_HABIT_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯")
 _DEFAULT_EVENT_LIKE_MARKERS = (
@@ -130,6 +134,13 @@ _DEFAULT_CONTEXT_DOMAIN_CONFIG = {
 }
 
 
+@dataclass
+class _PreparedContextRequest:
+    record_text: str
+    event: Optional[Event]
+    candidate_spans: list[ContextSpan]
+
+
 def _merge_context_domain_config(overrides: Optional[dict[str, Any]]) -> dict[str, Any]:
     config = dict(_DEFAULT_CONTEXT_DOMAIN_CONFIG)
     fallback_by_subtype = dict(_DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE)
@@ -189,11 +200,68 @@ class ContextExtractionPipeline:
         )
         self._system_prompt = load_prompt("extract_context_system.txt")
         self._user_prompt = load_prompt("extract_context_user.txt")
+        self._batch_user_prompt = load_prompt("extract_context_batch_user.txt")
 
     def extract(self, record: Any, event: Optional[Event] = None) -> list[ContextDraft]:
+        prepared = self._prepare_context_request(record=record, event=event)
+        llm_drafts = self.llm_extract_contexts(
+            prepared.record_text,
+            prepared.event,
+            prepared.candidate_spans,
+        )
+        return self._finalize_context_extraction(prepared=prepared, llm_drafts=llm_drafts)
+
+    def extract_batch(
+        self,
+        records: list[Any],
+        events: list[Optional[Event]],
+    ) -> list[list[ContextDraft]]:
+        if not records or not events or len(records) != len(events):
+            return []
+        if len(events) == 1:
+            return [self.extract(records[0], event=events[0])]
+
+        prepared_requests = [
+            self._prepare_context_request(record=record, event=event)
+            for record, event in zip(records, events)
+        ]
+
+        batch_used, llm_drafts_by_index = self.llm_extract_contexts_batch(prepared_requests)
+        if not batch_used:
+            return [
+                self.extract(record, event=event)
+                for record, event in zip(records, events)
+            ]
+
+        return [
+            self._finalize_context_extraction(
+                prepared=prepared,
+                llm_drafts=llm_drafts_by_index.get(idx, []),
+            )
+            for idx, prepared in enumerate(prepared_requests)
+        ]
+
+    def _prepare_context_request(
+        self,
+        record: Any,
+        event: Optional[Event],
+    ) -> _PreparedContextRequest:
         record_text = self._record_text(record, event)
         candidate_spans = self.detect_context_candidates(record, event)
-        llm_drafts = self.llm_extract_contexts(record_text, event, candidate_spans)
+        return _PreparedContextRequest(
+            record_text=record_text,
+            event=event,
+            candidate_spans=candidate_spans,
+        )
+
+    def _finalize_context_extraction(
+        self,
+        prepared: _PreparedContextRequest,
+        llm_drafts: Optional[list[ContextDraft]] = None,
+    ) -> list[ContextDraft]:
+        record_text = prepared.record_text
+        event = prepared.event
+        candidate_spans = prepared.candidate_spans
         fallback_drafts = self._fallback_extract_contexts(record_text, event, candidate_spans)
         drafts: list[ContextDraft] = []
         if llm_drafts:
@@ -311,22 +379,122 @@ class ContextExtractionPipeline:
     ) -> list[ContextDraft]:
         if not self._llm_available():
             return []
+        parsed = self._call_context_llm_json(
+            self._build_context_user_message(
+                record_text=record_text,
+                event=event,
+                candidate_spans=candidate_spans,
+            )
+        )
+        raw_contexts = parsed.get("contexts", []) if isinstance(parsed, dict) else []
+        return self._build_context_drafts_from_raw(
+            raw_contexts=raw_contexts,
+            event=event,
+            candidate_spans=candidate_spans,
+        )
 
-        user_msg = self._user_prompt.format(
+    def llm_extract_contexts_batch(
+        self,
+        prepared_requests: list[_PreparedContextRequest],
+    ) -> tuple[bool, dict[int, list[ContextDraft]]]:
+        if (
+            len(prepared_requests) <= 1
+            or not self._llm_available()
+            or not str(self._batch_user_prompt or "").strip()
+        ):
+            return False, {}
+
+        batches = [
+            (start, prepared_requests[start : start + CONTEXT_EXTRACTION_BATCH_SIZE])
+            for start in range(0, len(prepared_requests), CONTEXT_EXTRACTION_BATCH_SIZE)
+        ]
+        drafts_by_index: dict[int, list[ContextDraft]] = {}
+
+        for batch_start, batch_requests in batches:
+            parsed = self._call_context_llm_json(
+                self._build_context_batch_user_message(batch_requests)
+            )
+            raw_items = self._collect_batched_context_items(parsed)
+            if len(raw_items) != len(batch_requests):
+                logger.warning(
+                    "context batch extraction returned %s items for %s requests; "
+                    "falling back to heuristic extraction for this batch",
+                    len(raw_items),
+                    len(batch_requests),
+                )
+                continue
+
+            for item in raw_items:
+                try:
+                    item_index = self._parse_context_item_index(
+                        item,
+                        item_total=len(batch_requests),
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "context batch extraction returned invalid item index; "
+                        "falling back to heuristic extraction for this item: %s",
+                        exc,
+                    )
+                    continue
+                absolute_index = batch_start + item_index
+                prepared = batch_requests[item_index]
+                drafts_by_index[absolute_index] = self._build_context_drafts_from_raw(
+                    raw_contexts=item.get("contexts", []),
+                    event=prepared.event,
+                    candidate_spans=prepared.candidate_spans,
+                )
+
+        return True, drafts_by_index
+
+    def _build_context_user_message(
+        self,
+        record_text: str,
+        event: Optional[Event],
+        candidate_spans: list[ContextSpan],
+    ) -> str:
+        return self._user_prompt.format(
             record_text=record_text or "",
             event_json=safe_json_dumps(self._event_payload(event)),
             candidate_spans_json=safe_json_dumps(
-                [
-                    {
-                        "text": span.text,
-                        "signal": span.signal,
-                        "subtype_hint": span.subtype_hint,
-                        "source": span.source,
-                    }
-                    for span in candidate_spans
-                ]
+                self._candidate_spans_payload(candidate_spans)
             ),
         )
+
+    def _build_context_batch_user_message(
+        self,
+        prepared_requests: list[_PreparedContextRequest],
+    ) -> str:
+        items = []
+        for idx, prepared in enumerate(prepared_requests):
+            items.append(
+                {
+                    "item_index": idx,
+                    "record_text": prepared.record_text or "",
+                    "event": self._event_payload(prepared.event),
+                    "candidate_spans": self._candidate_spans_payload(prepared.candidate_spans),
+                }
+            )
+        return self._batch_user_prompt.format(
+            item_total=len(prepared_requests),
+            items_json=safe_json_dumps(items),
+        )
+
+    def _candidate_spans_payload(
+        self,
+        candidate_spans: list[ContextSpan],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "text": span.text,
+                "signal": span.signal,
+                "subtype_hint": span.subtype_hint,
+                "source": span.source,
+            }
+            for span in candidate_spans
+        ]
+
+    def _call_context_llm_json(self, user_msg: str) -> Any:
         try:
             dashscope.base_http_api_url = self.base_url
             dashscope.api_key = self.api_key
@@ -341,12 +509,17 @@ class ContextExtractionPipeline:
                 enable_thinking=False,
             )
             if getattr(resp, "status_code", None) != 200:
-                return []
-            parsed = robust_json_loads(resp.output.choices[0].message.content, {})
+                return {}
+            return robust_json_loads(resp.output.choices[0].message.content, {})
         except Exception:
-            return []
+            return {}
 
-        raw_contexts = parsed.get("contexts", []) if isinstance(parsed, dict) else []
+    def _build_context_drafts_from_raw(
+        self,
+        raw_contexts: Any,
+        event: Optional[Event],
+        candidate_spans: list[ContextSpan],
+    ) -> list[ContextDraft]:
         if not isinstance(raw_contexts, list):
             return []
 
@@ -378,6 +551,27 @@ class ContextExtractionPipeline:
                 )
             )
         return drafts
+
+    def _collect_batched_context_items(self, payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if not isinstance(payload, dict):
+            return []
+        for key in ("items", "contexts_by_item", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _parse_context_item_index(self, payload: dict[str, Any], item_total: int) -> int:
+        raw_value = payload.get("item_index", payload.get("index"))
+        try:
+            item_index = int(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid item_index: {raw_value!r}") from exc
+        if item_index < 0 or item_index >= item_total:
+            raise ValueError(f"item_index out of range: {item_index}")
+        return item_index
 
     def validate_context_drafts(
         self,

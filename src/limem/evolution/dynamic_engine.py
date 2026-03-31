@@ -5,8 +5,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 import json
+import logging
 import math
 import os
 import re
@@ -28,6 +29,7 @@ from ..config import (
     CONSOLIDATION_MIN_INTERVAL_SECONDS,
     CONTEXT_CANDIDATE_LIMIT,
     CONTEXT_CONFLICT_THRESHOLD,
+    CONTEXT_EXTRACTION_BATCH_SIZE,
     CONTEXT_CORE_SLOT_WEIGHT,
     CONTEXT_AUX_SLOT_WEIGHT,
     CONTEXT_QUERY_CANDIDATE_LIMIT,
@@ -66,6 +68,8 @@ from ..core.context import Context, ContextDraft
 from ..core.event import Event
 from ..utils import hash_summary, robust_json_loads, safe_json_dumps, safe_json_loads
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class DynamicEvolutionConfig:
@@ -80,6 +84,7 @@ class DynamicEvolutionConfig:
     context_conflict_threshold: float = CONTEXT_CONFLICT_THRESHOLD
     context_candidate_limit: int = CONTEXT_CANDIDATE_LIMIT
     context_query_candidate_limit: int = CONTEXT_QUERY_CANDIDATE_LIMIT
+    context_extraction_batch_size: int = CONTEXT_EXTRACTION_BATCH_SIZE
     context_core_slot_weight: float = CONTEXT_CORE_SLOT_WEIGHT
     context_aux_slot_weight: float = CONTEXT_AUX_SLOT_WEIGHT
 
@@ -111,6 +116,16 @@ class DynamicEvolutionConfig:
     event_merge_trace_strategy_version: str = EVENT_MERGE_TRACE_STRATEGY_VERSION
     event_merge_trace_log_path: str = EVENT_MERGE_TRACE_LOG_PATH
     enable_event_relations: bool = ENABLE_EVENT_RELATIONS
+
+
+class EvolutionReport(TypedDict):
+    context_links: int
+    next_links: int
+    event_relation_links: int
+
+
+class WriteBatchReport(EvolutionReport):
+    event_count: int
 
 
 class DynamicEvolutionEngine:
@@ -159,12 +174,13 @@ class DynamicEvolutionEngine:
         events: list[Event],
         record: Optional[Any] = None,
         entities_by_event: Optional[dict[str, list[str]]] = None,
-    ) -> dict[str, Any]:
+    ) -> WriteBatchReport:
         if not events:
             return {
                 "event_count": 0,
                 "context_links": 0,
                 "next_links": 0,
+                "event_relation_links": 0,
             }
 
         new_events: list[Event] = []
@@ -206,7 +222,7 @@ class DynamicEvolutionEngine:
             "event_relation_links": relation_links,
         }
 
-    def evolve_existing_events(self, events: list[Event]) -> dict[str, int]:
+    def evolve_existing_events(self, events: list[Event]) -> EvolutionReport:
         """Apply local dynamic updates for already-persisted events."""
         if not events:
             return {"context_links": 0, "next_links": 0, "event_relation_links": 0}
@@ -478,21 +494,44 @@ class DynamicEvolutionEngine:
         if not events:
             return []
 
-        workers = self._llm_workers(task_count=len(events))
-        if workers <= 1:
-            drafts_by_index = {
-                idx: self.extract_context_drafts(event, record=record)
-                for idx, event in enumerate(events)
-            }
-        else:
-            drafts_by_index: dict[int, list[ContextDraft]] = {}
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(self.extract_context_drafts, event, record): idx
-                    for idx, event in enumerate(events)
-                }
-                for future in as_completed(futures):
-                    drafts_by_index[futures[future]] = future.result()
+        drafts_by_index: dict[int, list[ContextDraft]] = {}
+        batched_extract = getattr(self.context_extractor, "extract_batch", None)
+        max_batch_size = max(1, int(self.config.context_extraction_batch_size or 1))
+        if callable(batched_extract) and len(events) > 1:
+            for start in range(0, len(events), max_batch_size):
+                batch_events = events[start : start + max_batch_size]
+                batch_records = [record if record is not None else event for event in batch_events]
+                try:
+                    batch_drafts = batched_extract(records=batch_records, events=batch_events)
+                    if len(batch_drafts) != len(batch_events):
+                        raise ValueError(
+                            f"expected {len(batch_events)} batch context results, got {len(batch_drafts)}"
+                        )
+                    for offset, drafts in enumerate(batch_drafts):
+                        drafts_by_index[start + offset] = drafts
+                except Exception as exc:
+                    logger.warning(
+                        "batch context extraction failed for events[%s:%s]; "
+                        "falling back to per-event extraction for this slice: %s",
+                        start,
+                        start + len(batch_events),
+                        exc,
+                    )
+
+        missing_indices = [idx for idx in range(len(events)) if idx not in drafts_by_index]
+        if missing_indices:
+            workers = self._llm_workers(task_count=len(missing_indices))
+            if workers <= 1:
+                for idx in missing_indices:
+                    drafts_by_index[idx] = self.extract_context_drafts(events[idx], record=record)
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {
+                        pool.submit(self.extract_context_drafts, events[idx], record): idx
+                        for idx in missing_indices
+                    }
+                    for future in as_completed(futures):
+                        drafts_by_index[futures[future]] = future.result()
 
         resolved_batches: list[list[tuple[Context, ContextDraft]]] = []
         for idx, event in enumerate(events):
