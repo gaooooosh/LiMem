@@ -6,7 +6,9 @@ import json
 import unittest
 
 from limem import create_ltm, Episode
+from limem.core.context import ContextDraft
 from limem.core.event import Event
+from limem.evolution import DynamicEvolutionConfig, DynamicEvolutionEngine
 
 
 class TestDynamicEvolution(unittest.TestCase):
@@ -1291,6 +1293,72 @@ class TestDynamicEvolution(unittest.TestCase):
             )
             self.assertEqual(preview["context_candidates"], 0)
             self.assertEqual(preview["context_plans"], [])
+
+    def test_context_merge_score_handles_short_chinese_fuzzy_matches(self):
+        engine = DynamicEvolutionEngine(
+            store=object(),
+            config=DynamicEvolutionConfig(),
+        )
+        left = ContextDraft(
+            summary="会议场景",
+            structured_slots={"scene": "会议场景"},
+        )
+        right = ContextDraft(
+            summary="开会场景",
+            structured_slots={"scene": "开会场景"},
+        )
+
+        self.assertGreaterEqual(engine._fuzzy_string_score("会议场景", "开会场景"), 0.6)
+        self.assertGreaterEqual(
+            engine._value_overlap_score("会议场景", "开会场景"),
+            engine.config.context_fuzzy_match_threshold,
+        )
+        self.assertGreaterEqual(
+            engine._context_merge_score(left, right),
+            engine.config.context_reuse_threshold,
+        )
+
+    def test_context_slot_containment_ratio_uses_summary_fallback_for_sparse_slots(self):
+        engine = DynamicEvolutionEngine(
+            store=object(),
+            config=DynamicEvolutionConfig(),
+        )
+        no_slots_left = ContextDraft(summary="会议场景")
+        no_slots_right = ContextDraft(summary="会议场景")
+        sparse_right = ContextDraft(
+            summary="会议场景",
+            structured_slots={"scene": "会议场景"},
+        )
+
+        self.assertEqual(
+            engine._context_slot_containment_ratio(no_slots_left, no_slots_right),
+            1.0,
+        )
+        self.assertAlmostEqual(
+            engine._context_slot_containment_ratio(no_slots_left, sparse_right),
+            engine.config.context_sparse_slot_summary_fallback,
+        )
+
+    def test_create_ltm_accepts_new_context_similarity_overrides(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_context_similarity_overrides.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "generate_answer": False,
+                    "context_fuzzy_match_threshold": 0.55,
+                    "context_similarity_summary_weight": 0.31,
+                    "context_merge_containment_weight_mid": 0.19,
+                },
+            )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            self.assertEqual(engine.config.context_fuzzy_match_threshold, 0.55)
+            self.assertEqual(engine.config.context_similarity_summary_weight, 0.31)
+            self.assertEqual(engine.config.context_merge_containment_weight_mid, 0.19)
 
 
 if __name__ == "__main__":

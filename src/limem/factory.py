@@ -4,6 +4,7 @@
 提供创建完整LTM系统的便捷方法。
 """
 
+from dataclasses import fields
 from typing import Any, Optional
 
 from .core.memory import LTMemory
@@ -172,32 +173,36 @@ def create_ltm_system(
 
     dynamic_engine = None
     if config.get("enable_dynamic_evolution", ENABLE_DYNAMIC_EVOLUTION):
+        dynamic_config = DynamicEvolutionConfig(
+            append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
+            llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),
+            bulk_ingest_mode=config.get("bulk_ingest_mode", BULK_INGEST_MODE),
+            merge_decision_strategy=config.get("merge_decision_strategy", "auto"),
+            llm_api_key=api_key,
+            llm_base_url=base_url,
+            llm_model=config.get("generation_model", GENERATION_MODEL),
+            enable_auto_consolidation=config.get("enable_auto_consolidation", True),
+            context_extraction_batch_size=config.get(
+                "context_extraction_batch_size",
+                CONTEXT_EXTRACTION_BATCH_SIZE,
+            ),
+            event_consolidation_candidate_limit=config.get("event_consolidation_candidate_limit", 12),
+            event_consolidation_embedding_candidate_threshold=config.get(
+                "event_consolidation_embedding_candidate_threshold",
+                0.80,
+            ),
+            event_consolidation_embedding_top_k=config.get(
+                "event_consolidation_embedding_top_k",
+                8,
+            ),
+            enable_event_relations=config.get("enable_event_relations", ENABLE_EVENT_RELATIONS),
+        )
+        for field in fields(DynamicEvolutionConfig):
+            if field.name in config:
+                setattr(dynamic_config, field.name, config[field.name])
         dynamic_engine = DynamicEvolutionEngine(
             store=store,
-            config=DynamicEvolutionConfig(
-                append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
-                llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),
-                bulk_ingest_mode=config.get("bulk_ingest_mode", BULK_INGEST_MODE),
-                merge_decision_strategy=config.get("merge_decision_strategy", "auto"),
-                llm_api_key=api_key,
-                llm_base_url=base_url,
-                llm_model=config.get("generation_model", GENERATION_MODEL),
-                enable_auto_consolidation=config.get("enable_auto_consolidation", True),
-                context_extraction_batch_size=config.get(
-                    "context_extraction_batch_size",
-                    CONTEXT_EXTRACTION_BATCH_SIZE,
-                ),
-                event_consolidation_candidate_limit=config.get("event_consolidation_candidate_limit", 12),
-                event_consolidation_embedding_candidate_threshold=config.get(
-                    "event_consolidation_embedding_candidate_threshold",
-                    0.80,
-                ),
-                event_consolidation_embedding_top_k=config.get(
-                    "event_consolidation_embedding_top_k",
-                    8,
-                ),
-                enable_event_relations=config.get("enable_event_relations", ENABLE_EVENT_RELATIONS),
-            ),
+            config=dynamic_config,
         )
 
     builder = MemoryBuilder(

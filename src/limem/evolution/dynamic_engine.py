@@ -32,8 +32,25 @@ from ..config import (
     CONTEXT_EXTRACTION_BATCH_SIZE,
     CONTEXT_CORE_SLOT_WEIGHT,
     CONTEXT_AUX_SLOT_WEIGHT,
+    CONTEXT_FUZZY_MATCH_THRESHOLD,
+    CONTEXT_MERGE_CONTAINMENT_WEIGHT_DENSE,
+    CONTEXT_MERGE_CONTAINMENT_WEIGHT_MID,
+    CONTEXT_MERGE_CONTAINMENT_WEIGHT_SPARSE,
     CONTEXT_QUERY_CANDIDATE_LIMIT,
     CONTEXT_REUSE_THRESHOLD,
+    CONTEXT_SIMILARITY_ACTIVE_WEIGHT,
+    CONTEXT_SIMILARITY_EMBEDDING_WEIGHT,
+    CONTEXT_SIMILARITY_SET_SLOT_WEIGHT,
+    CONTEXT_SIMILARITY_SLOT_WEIGHT,
+    CONTEXT_SIMILARITY_SUBTYPE_WEIGHT,
+    CONTEXT_SIMILARITY_SUMMARY_WEIGHT,
+    CONTEXT_SIMILARITY_TEMPORAL_WEIGHT,
+    CONTEXT_SPARSE_SLOT_SUMMARY_FALLBACK,
+    CONTEXT_SUBTYPE_COMPATIBLE_SCORE,
+    CONTEXT_SUBTYPE_MISMATCH_FLOOR,
+    CONTEXT_SUMMARY_CONTAINMENT_BONUS,
+    CONTEXT_SUMMARY_SEMANTIC_EMBEDDING_WEIGHT,
+    CONTEXT_SUMMARY_SEMANTIC_LEXICAL_WEIGHT,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     DECAY_RATE,
@@ -87,6 +104,23 @@ class DynamicEvolutionConfig:
     context_extraction_batch_size: int = CONTEXT_EXTRACTION_BATCH_SIZE
     context_core_slot_weight: float = CONTEXT_CORE_SLOT_WEIGHT
     context_aux_slot_weight: float = CONTEXT_AUX_SLOT_WEIGHT
+    context_fuzzy_match_threshold: float = CONTEXT_FUZZY_MATCH_THRESHOLD
+    context_summary_containment_bonus: float = CONTEXT_SUMMARY_CONTAINMENT_BONUS
+    context_summary_semantic_lexical_weight: float = CONTEXT_SUMMARY_SEMANTIC_LEXICAL_WEIGHT
+    context_summary_semantic_embedding_weight: float = CONTEXT_SUMMARY_SEMANTIC_EMBEDDING_WEIGHT
+    context_sparse_slot_summary_fallback: float = CONTEXT_SPARSE_SLOT_SUMMARY_FALLBACK
+    context_merge_containment_weight_dense: float = CONTEXT_MERGE_CONTAINMENT_WEIGHT_DENSE
+    context_merge_containment_weight_mid: float = CONTEXT_MERGE_CONTAINMENT_WEIGHT_MID
+    context_merge_containment_weight_sparse: float = CONTEXT_MERGE_CONTAINMENT_WEIGHT_SPARSE
+    context_similarity_slot_weight: float = CONTEXT_SIMILARITY_SLOT_WEIGHT
+    context_similarity_set_slot_weight: float = CONTEXT_SIMILARITY_SET_SLOT_WEIGHT
+    context_similarity_summary_weight: float = CONTEXT_SIMILARITY_SUMMARY_WEIGHT
+    context_similarity_subtype_weight: float = CONTEXT_SIMILARITY_SUBTYPE_WEIGHT
+    context_similarity_active_weight: float = CONTEXT_SIMILARITY_ACTIVE_WEIGHT
+    context_similarity_temporal_weight: float = CONTEXT_SIMILARITY_TEMPORAL_WEIGHT
+    context_similarity_embedding_weight: float = CONTEXT_SIMILARITY_EMBEDDING_WEIGHT
+    context_subtype_compatible_score: float = CONTEXT_SUBTYPE_COMPATIBLE_SCORE
+    context_subtype_mismatch_floor: float = CONTEXT_SUBTYPE_MISMATCH_FLOOR
 
     reinforcement_step: float = REINFORCEMENT_STEP
     decay_step: float = DECAY_STEP
@@ -2104,56 +2138,70 @@ class DynamicEvolutionEngine:
         aux_keys = self._aux_context_slot_keys()
         core_slot_sim = self._slot_group_similarity(slots_a, slots_b, core_keys)
         aux_slot_sim = self._slot_group_similarity(slots_a, slots_b, aux_keys)
+        core_group_weight = (
+            float(self.config.context_core_slot_weight or 0.0)
+            if self._slot_group_has_signal(slots_a, slots_b, core_keys)
+            else 0.0
+        )
+        aux_group_weight = (
+            float(self.config.context_aux_slot_weight or 0.0)
+            if self._slot_group_has_signal(slots_a, slots_b, aux_keys)
+            else 0.0
+        )
         total_slot_weight = max(
             1e-6,
-            float(self.config.context_core_slot_weight or 0.0) + float(self.config.context_aux_slot_weight or 0.0),
+            core_group_weight + aux_group_weight,
         )
         slot_sim = (
-            float(self.config.context_core_slot_weight or 0.0) * core_slot_sim
-            + float(self.config.context_aux_slot_weight or 0.0) * aux_slot_sim
+            core_group_weight * core_slot_sim
+            + aux_group_weight * aux_slot_sim
         ) / total_slot_weight
         set_slot_sim = self._value_similarity(slots_a, slots_b)
-        summary_sim = self._lexical_similarity(self._context_summary(a), self._context_summary(b))
+        summary_sim = self._summary_semantic_similarity(a, b)
         subtype_sim = self._context_subtype_similarity(self._context_subtype(a), self._context_subtype(b))
         active_sim = 1.0 if self._context_status(a) == "active" else 0.75
         temporal_sim = self._context_temporal_compatibility(a, b)
         embedding_sim = self._context_embedding_similarity(a, b)
         return (
-            0.26 * slot_sim
-            + 0.10 * set_slot_sim
-            + 0.24 * summary_sim
-            + 0.18 * subtype_sim
-            + 0.12 * active_sim
-            + 0.10 * temporal_sim
-            + 0.08 * embedding_sim
+            float(self.config.context_similarity_slot_weight or 0.0) * slot_sim
+            + float(self.config.context_similarity_set_slot_weight or 0.0) * set_slot_sim
+            + float(self.config.context_similarity_summary_weight or 0.0) * summary_sim
+            + float(self.config.context_similarity_subtype_weight or 0.0) * subtype_sim
+            + float(self.config.context_similarity_active_weight or 0.0) * active_sim
+            + float(self.config.context_similarity_temporal_weight or 0.0) * temporal_sim
+            + float(self.config.context_similarity_embedding_weight or 0.0) * embedding_sim
         )
 
     def _context_merge_score(self, a: Context, b: Context) -> float:
         base = self._context_similarity(a, b)
         containment = self._context_slot_containment_ratio(a, b)
-        return 0.7 * base + 0.3 * containment
+        slot_density = min(
+            len(self._filled_slot_values(self._context_slots(a))),
+            len(self._filled_slot_values(self._context_slots(b))),
+        )
+        if slot_density >= 3:
+            containment_weight = float(self.config.context_merge_containment_weight_dense or 0.0)
+        elif slot_density >= 1:
+            containment_weight = float(self.config.context_merge_containment_weight_mid or 0.0)
+        else:
+            containment_weight = float(self.config.context_merge_containment_weight_sparse or 0.0)
+        return (1.0 - containment_weight) * base + containment_weight * containment
 
     def _context_slot_containment_ratio(self, a: Any, b: Any) -> float:
-        slots_a = self._context_slots(a)
-        slots_b = self._context_slots(b)
-        values_a = {
-            key: value for key, value in slots_a.items()
-            if value not in (None, "", [], {})
-        }
-        values_b = {
-            key: value for key, value in slots_b.items()
-            if value not in (None, "", [], {})
-        }
+        values_a = self._filled_slot_values(self._context_slots(a))
+        values_b = self._filled_slot_values(self._context_slots(b))
+        if not values_a and not values_b:
+            return self._summary_containment(a, b)
         if not values_a or not values_b:
-            return 0.0
+            return float(self.config.context_sparse_slot_summary_fallback or 0.0) * self._summary_containment(a, b)
 
         def contains(smaller: dict[str, Any], larger: dict[str, Any]) -> float:
             if not smaller:
                 return 0.0
-            matched = 0
+            matched = 0.0
             for key, value in smaller.items():
-                if key in larger and self._value_overlap(value, larger.get(key)):
-                    matched += 1
+                if key in larger:
+                    matched += self._value_overlap_score(value, larger.get(key))
             return matched / len(smaller)
 
         return max(contains(values_a, values_b), contains(values_b, values_a))
@@ -2181,7 +2229,7 @@ class DynamicEvolutionEngine:
         for key in overlap_keys:
             va = slots_a.get(key)
             vb = slots_b.get(key)
-            if va in (None, "", [], {}) or vb in (None, "", [], {}):
+            if self._is_empty_slot_value(va) or self._is_empty_slot_value(vb):
                 continue
             overlap += 1
             if not self._value_overlap(va, vb):
@@ -2196,7 +2244,7 @@ class DynamicEvolutionEngine:
         for key in overlap_keys:
             va = slots_a.get(key)
             vb = slots_b.get(key)
-            if va in (None, "", [], {}) or vb in (None, "", [], {}):
+            if self._is_empty_slot_value(va) or self._is_empty_slot_value(vb):
                 continue
             count += 1
         return count
@@ -2210,11 +2258,12 @@ class DynamicEvolutionEngine:
             {"situation", "environment", "state"},
             {"constraint", "goal"},
             {"phase", "state"},
+            {"situation", "phase"},
         ]
         for group in compatible_groups:
             if left_norm in group and right_norm in group:
-                return 0.68
-        return 0.0
+                return float(self.config.context_subtype_compatible_score or 0.0)
+        return float(self.config.context_subtype_mismatch_floor or 0.0)
 
     def _infer_context_subtype(self, event: Event, slots: dict[str, Any]) -> str:
         if str(slots.get("phase", "") or slots.get("task_stage", "")).strip():
@@ -2330,6 +2379,16 @@ class DynamicEvolutionEngine:
         window = max(1, self.config.stale_seconds)
         return max(0.3, math.exp(-diff / window))
 
+    @staticmethod
+    def _is_empty_slot_value(value: Any) -> bool:
+        return value in (None, "", [], {})
+
+    def _filled_slot_values(self, slots: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value for key, value in slots.items()
+            if not self._is_empty_slot_value(value)
+        }
+
     def _merge_source_refs(
         self,
         existing: list[dict[str, Any]],
@@ -2398,17 +2457,29 @@ class DynamicEvolutionEngine:
         slots_b: dict[str, Any],
         keys: list[str],
     ) -> float:
-        same = 0
+        score_sum = 0.0
         total = 0
         for key in keys:
             va = slots_a.get(key)
             vb = slots_b.get(key)
-            if va in (None, "", [], {}) and vb in (None, "", [], {}):
+            if self._is_empty_slot_value(va) and self._is_empty_slot_value(vb):
                 continue
             total += 1
-            if self._value_overlap(va, vb):
-                same += 1
-        return (same / total) if total else 0.0
+            if self._is_empty_slot_value(va) or self._is_empty_slot_value(vb):
+                continue
+            score_sum += self._value_overlap_score(va, vb)
+        return (score_sum / total) if total else 0.0
+
+    def _slot_group_has_signal(
+        self,
+        slots_a: dict[str, Any],
+        slots_b: dict[str, Any],
+        keys: list[str],
+    ) -> bool:
+        for key in keys:
+            if not self._is_empty_slot_value(slots_a.get(key)) or not self._is_empty_slot_value(slots_b.get(key)):
+                return True
+        return False
 
     def _participant_labels(self, participants: list[Any]) -> list[str]:
         if not isinstance(participants, list):
@@ -2441,7 +2512,39 @@ class DynamicEvolutionEngine:
         right_tokens = self._tokenize_text(right)
         if not left_tokens and not right_tokens:
             return 0.0
-        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+        jaccard = len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+        if left_tokens and right_tokens:
+            smaller, larger = (
+                (left_tokens, right_tokens)
+                if len(left_tokens) <= len(right_tokens)
+                else (right_tokens, left_tokens)
+            )
+            containment = len(smaller & larger) / len(smaller)
+            jaccard = max(
+                jaccard,
+                float(self.config.context_summary_containment_bonus or 0.0) * containment,
+            )
+        return max(jaccard, self._fuzzy_string_score(left, right))
+
+    def _summary_containment(self, a: Any, b: Any) -> float:
+        tokens_a = self._tokenize_text(self._context_summary(a))
+        tokens_b = self._tokenize_text(self._context_summary(b))
+        if not tokens_a or not tokens_b:
+            return 0.0
+        smaller, larger = (
+            (tokens_a, tokens_b) if len(tokens_a) <= len(tokens_b) else (tokens_b, tokens_a)
+        )
+        return len(smaller & larger) / len(smaller)
+
+    def _summary_semantic_similarity(self, a: Any, b: Any) -> float:
+        lexical = self._lexical_similarity(self._context_summary(a), self._context_summary(b))
+        embedding = self._context_embedding_similarity(a, b)
+        if embedding > 0.0:
+            lexical_weight = float(self.config.context_summary_semantic_lexical_weight or 0.0)
+            embedding_weight = float(self.config.context_summary_semantic_embedding_weight or 0.0)
+            total_weight = max(1e-6, lexical_weight + embedding_weight)
+            return (lexical_weight * lexical + embedding_weight * embedding) / total_weight
+        return lexical
 
     def _tokenize_text(self, text: str) -> set[str]:
         raw = str(text or "").lower()
@@ -2485,7 +2588,41 @@ class DynamicEvolutionEngine:
         right_set = self._as_value_set(right)
         if not left_set and not right_set:
             return 0.0
-        return len(left_set & right_set) / len(left_set | right_set)
+        exact = len(left_set & right_set) / len(left_set | right_set)
+        if exact > 0.0:
+            return exact
+        if len(left_set) <= 5 and len(right_set) <= 5:
+            best_scores = [
+                max((self._fuzzy_string_score(left_value, right_value) for right_value in right_set), default=0.0)
+                for left_value in left_set
+            ]
+            if best_scores:
+                return sum(best_scores) / len(left_set | right_set)
+        return exact
+
+    def _fuzzy_string_score(self, a: str, b: str) -> float:
+        a_norm = str(a or "").strip().lower()
+        b_norm = str(b or "").strip().lower()
+        if not a_norm or not b_norm:
+            return 0.0
+        if a_norm == b_norm:
+            return 1.0
+        if a_norm in b_norm or b_norm in a_norm:
+            shorter, longer = (
+                (a_norm, b_norm) if len(a_norm) <= len(b_norm) else (b_norm, a_norm)
+            )
+            return len(shorter) / max(1, len(longer))
+        bg_a = {a_norm[idx: idx + 2] for idx in range(max(1, len(a_norm) - 1))}
+        bg_b = {b_norm[idx: idx + 2] for idx in range(max(1, len(b_norm) - 1))}
+        bigram_score = 0.0
+        if bg_a and bg_b:
+            bigram_score = len(bg_a & bg_b) / len(bg_a | bg_b)
+        char_a = {ch for ch in a_norm if not ch.isspace()}
+        char_b = {ch for ch in b_norm if not ch.isspace()}
+        char_score = 0.0
+        if char_a and char_b:
+            char_score = len(char_a & char_b) / len(char_a | char_b)
+        return max(bigram_score, char_score)
 
     @staticmethod
     def _text_token_similarity(a: Optional[str], b: Optional[str]) -> float:
@@ -2518,11 +2655,26 @@ class DynamicEvolutionEngine:
         return {str(value).strip()}
 
     def _value_overlap(self, va: Any, vb: Any) -> bool:
+        return self._value_overlap_score(va, vb) >= float(self.config.context_fuzzy_match_threshold or 0.0)
+
+    def _value_overlap_score(self, va: Any, vb: Any) -> float:
         if isinstance(va, list) or isinstance(vb, list):
-            sa = set(str(x) for x in (va if isinstance(va, list) else [va]) if str(x))
-            sb = set(str(x) for x in (vb if isinstance(vb, list) else [vb]) if str(x))
-            return bool(sa & sb)
-        return str(va).strip() == str(vb).strip()
+            sa = {str(item).strip() for item in (va if isinstance(va, list) else [va]) if str(item).strip()}
+            sb = {str(item).strip() for item in (vb if isinstance(vb, list) else [vb]) if str(item).strip()}
+            if not sa and not sb:
+                return 0.0
+            exact = len(sa & sb) / len(sa | sb)
+            if exact > 0.0:
+                return exact
+            return max(
+                (self._fuzzy_string_score(left_value, right_value) for left_value in sa for right_value in sb),
+                default=0.0,
+            )
+        a_str = str(va).strip()
+        b_str = str(vb).strip()
+        if a_str == b_str:
+            return 1.0
+        return self._fuzzy_string_score(a_str, b_str)
 
     def _merge_slots(self, a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         merged = dict(a)
