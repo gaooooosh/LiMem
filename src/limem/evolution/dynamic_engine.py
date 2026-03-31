@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Optional
 import json
@@ -22,6 +23,7 @@ except Exception:  # pragma: no cover - optional dependency for offline mode
 from ..config import (
     APPEND_FIRST_MODE,
     ARCHIVE_EVENT_SECONDS,
+    BULK_INGEST_MODE,
     CONSOLIDATION_LOG_PATH,
     CONSOLIDATION_MIN_INTERVAL_SECONDS,
     CONTEXT_CANDIDATE_LIMIT,
@@ -48,6 +50,7 @@ from ..config import (
     EVENT_MERGE_TRACE_LOG_PATH,
     EVENT_MERGE_TRACE_STRATEGY_VERSION,
     GENERATION_MODEL,
+    LLM_CONCURRENCY,
     REINFORCEMENT_STEP,
     RETRIEVAL_DEFAULT_CANDIDATE_LIMIT,
     RETRIEVAL_WEIGHT_CONTEXT,
@@ -67,6 +70,8 @@ from ..utils import hash_summary, robust_json_loads, safe_json_dumps, safe_json_
 @dataclass
 class DynamicEvolutionConfig:
     append_first_mode: bool = APPEND_FIRST_MODE
+    llm_concurrency: int = LLM_CONCURRENCY
+    bulk_ingest_mode: bool = BULK_INGEST_MODE
     merge_decision_strategy: str = "auto"
     llm_api_key: str = DASHSCOPE_API_KEY
     llm_base_url: str = DASHSCOPE_BASE_URL
@@ -178,15 +183,18 @@ class DynamicEvolutionEngine:
             self.store.save_event(event)
             new_events.append(event)
 
-        for event in new_events:
-            resolved_contexts = self.resolve_context_pairs(event, record=record)
+        resolved_context_batches = self._resolve_context_pairs_for_event_batch(
+            events=new_events,
+            record=record,
+        )
+        for event, resolved_contexts in zip(new_events, resolved_context_batches):
             in_links += self.attach_contexts_to_event(event, resolved_contexts)
         if self.config.enable_event_relations:
             relation_links += self.extract_event_event_relations(
                 events=new_events,
                 record=record,
             )
-        if self.config.enable_auto_consolidation:
+        if self._should_run_auto_consolidation():
             ts = int(time.time())
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
                 self.run_consolidation(current_time=ts)
@@ -205,15 +213,18 @@ class DynamicEvolutionEngine:
 
         context_links = 0
         relation_links = 0
-        for event in events:
-            resolved_contexts = self.resolve_context_pairs(event, record=None)
+        resolved_context_batches = self._resolve_context_pairs_for_event_batch(
+            events=events,
+            record=None,
+        )
+        for event, resolved_contexts in zip(events, resolved_context_batches):
             context_links += self.attach_contexts_to_event(event, resolved_contexts)
         if self.config.enable_event_relations:
             relation_links += self.extract_event_event_relations(
                 events=events,
                 record=None,
             )
-        if self.config.enable_auto_consolidation:
+        if self._should_run_auto_consolidation():
             ts = int(time.time())
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
                 self.run_consolidation(current_time=ts)
@@ -239,6 +250,7 @@ class DynamicEvolutionEngine:
             return 0
 
         created = 0
+        relation_pairs: list[tuple[Event, Event]] = []
         for idx, left in enumerate(events):
             for right in events[idx + 1:]:
                 if not left or not right or left.id == right.id:
@@ -247,25 +259,55 @@ class DynamicEvolutionEngine:
                     continue
                 if not self._same_relation_scope(left, right):
                     continue
-                payload = self._relation_prompt_payload(left=left, right=right, source_text=source_text)
-                decision = self._call_relation_llm(payload)
-                if not isinstance(decision, dict) or not bool(decision.get("should_link", False)):
-                    continue
-                relation = self._normalize_relation_decision(left=left, right=right, decision=decision)
-                if relation is None:
-                    continue
-                self.store.upsert_event_relation(
-                    from_event_id=relation["from_event_id"],
-                    to_event_id=relation["to_event_id"],
-                    relation_type=relation["relation_type"],
-                    description=relation["description"],
-                    confidence=relation["confidence"],
-                    evidence_span=relation["evidence_span"],
-                    source_episode_id=relation["source_episode_id"],
-                    source_session_id=relation["source_session_id"],
-                    timestamp=relation["timestamp"],
+                relation_pairs.append((left, right))
+
+        if not relation_pairs:
+            return 0
+
+        workers = self._llm_workers(task_count=len(relation_pairs))
+        if workers <= 1:
+            decisions = [
+                (
+                    left,
+                    right,
+                    self._call_relation_llm(
+                        self._relation_prompt_payload(left=left, right=right, source_text=source_text)
+                    ),
                 )
-                created += 1
+                for left, right in relation_pairs
+            ]
+        else:
+            decisions: list[tuple[Event, Event, Optional[dict[str, Any]]]] = []
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(
+                        self._call_relation_llm,
+                        self._relation_prompt_payload(left=left, right=right, source_text=source_text),
+                    ): (left, right)
+                    for left, right in relation_pairs
+                }
+                for future in as_completed(futures):
+                    left, right = futures[future]
+                    decisions.append((left, right, future.result()))
+
+        for left, right, decision in decisions:
+            if not isinstance(decision, dict) or not bool(decision.get("should_link", False)):
+                continue
+            relation = self._normalize_relation_decision(left=left, right=right, decision=decision)
+            if relation is None:
+                continue
+            self.store.upsert_event_relation(
+                from_event_id=relation["from_event_id"],
+                to_event_id=relation["to_event_id"],
+                relation_type=relation["relation_type"],
+                description=relation["description"],
+                confidence=relation["confidence"],
+                evidence_span=relation["evidence_span"],
+                source_episode_id=relation["source_episode_id"],
+                source_session_id=relation["source_session_id"],
+                timestamp=relation["timestamp"],
+            )
+            created += 1
         return created
 
     def _extract_relation_source_text(self, record: Optional[Any], events: list[Event]) -> str:
@@ -418,6 +460,47 @@ class DynamicEvolutionEngine:
             "source_session_id": source_session_id,
             "timestamp": timestamp,
         }
+
+    def _llm_workers(self, task_count: int) -> int:
+        concurrency = max(1, int(self.config.llm_concurrency or 1))
+        return max(1, min(concurrency, task_count))
+
+    def _should_run_auto_consolidation(self) -> bool:
+        if not self.config.enable_auto_consolidation:
+            return False
+        return not self.config.bulk_ingest_mode
+
+    def _resolve_context_pairs_for_event_batch(
+        self,
+        events: list[Event],
+        record: Optional[Any],
+    ) -> list[list[tuple[Context, ContextDraft]]]:
+        if not events:
+            return []
+
+        workers = self._llm_workers(task_count=len(events))
+        if workers <= 1:
+            drafts_by_index = {
+                idx: self.extract_context_drafts(event, record=record)
+                for idx, event in enumerate(events)
+            }
+        else:
+            drafts_by_index: dict[int, list[ContextDraft]] = {}
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(self.extract_context_drafts, event, record): idx
+                    for idx, event in enumerate(events)
+                }
+                for future in as_completed(futures):
+                    drafts_by_index[futures[future]] = future.result()
+
+        resolved_batches: list[list[tuple[Context, ContextDraft]]] = []
+        for idx, event in enumerate(events):
+            drafts = drafts_by_index.get(idx, [])
+            resolved_batches.append(
+                [(self.resolve_context(draft, event=event), draft) for draft in drafts]
+            )
+        return resolved_batches
 
     # -------------------------------------------------------------------------
     # Algorithm 2: Dynamic Context Resolution

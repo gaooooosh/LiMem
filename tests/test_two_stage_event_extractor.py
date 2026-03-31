@@ -10,10 +10,12 @@ def _make_extractor() -> TwoStageExtractor:
     extractor.base_url = "http://test.local"
     extractor.generation_model = "test-model"
     extractor.enable_thinking = False
+    extractor.llm_concurrency = 1
     extractor._event_segment_system_prompt = "SEGMENT_SYSTEM"
     extractor._event_segment_user_prompt = "{episode_text}"
     extractor._event_struct_system_prompt = "STRUCT_SYSTEM"
     extractor._event_struct_user_prompt = "{segment_text}"
+    extractor._event_struct_batch_user_prompt = "{segments_text}"
     extractor._event_system_prompt = "LEGACY_EVENT_SYSTEM"
     extractor._event_user_prompt = "{episode_text}"
     extractor._entity_system_prompt = "ENTITY_SYSTEM"
@@ -151,6 +153,123 @@ class TestTwoStageEventExtractor(unittest.TestCase):
         self.assertEqual(events[0]["action"], "调整后排温度")
         self.assertEqual(events[1]["summary"], "车机启动安抚模式")
         self.assertEqual(events[1]["action"], "启动安抚模式")
+
+    def test_batch_structuring_reduces_multi_segment_calls_to_one(self):
+        extractor = _make_extractor()
+        struct_calls = 0
+
+        def fake_call_generation_json(system_prompt, user_message, default):
+            nonlocal struct_calls
+            if system_prompt == "SEGMENT_SYSTEM":
+                return {
+                    "segments": [
+                        {"order": 1, "span_text": "用户打开座椅加热"},
+                        {"order": 2, "span_text": "系统同步调高空调温度"},
+                    ]
+                }
+            if system_prompt == "STRUCT_SYSTEM":
+                struct_calls += 1
+                self.assertIn("[segment_index=0]", user_message)
+                self.assertIn("[segment_index=1]", user_message)
+                self.assertIn("用户打开座椅加热", user_message)
+                self.assertIn("系统同步调高空调温度", user_message)
+                return {
+                    "events": [
+                        {
+                            "segment_index": 0,
+                            "event": {
+                                "summary": "用户打开座椅加热",
+                                "participants": [{"role": "用户"}],
+                                "action": "打开座椅加热",
+                                "time": {"text": "晚上"},
+                                "causality": "",
+                            },
+                        },
+                        {
+                            "segment_index": 1,
+                            "event": {
+                                "summary": "系统调高空调温度",
+                                "participants": [{"role": "系统"}],
+                                "action": "调高空调温度",
+                                "time": {"text": "晚上"},
+                                "causality": "响应用户操作",
+                            },
+                        },
+                    ]
+                }
+            raise AssertionError(f"unexpected system prompt: {system_prompt}")
+
+        extractor._call_generation_json = fake_call_generation_json
+
+        events = extractor._extract_events("用户打开座椅加热，系统同步调高空调温度")
+
+        self.assertEqual(struct_calls, 1)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["action"], "打开座椅加热")
+        self.assertEqual(events[1]["action"], "调高空调温度")
+
+    def test_batch_structuring_falls_back_when_segment_count_mismatches(self):
+        extractor = _make_extractor()
+        batch_attempted = False
+        single_segments: list[str] = []
+
+        def fake_call_generation_json(system_prompt, user_message, default):
+            nonlocal batch_attempted
+            if system_prompt == "SEGMENT_SYSTEM":
+                return {
+                    "segments": [
+                        {"order": 1, "span_text": "用户要求导航去公司"},
+                        {"order": 2, "span_text": "系统开始规划路线"},
+                    ]
+                }
+            if system_prompt == "STRUCT_SYSTEM":
+                if "[segment_index=0]" in user_message and "[segment_index=1]" in user_message:
+                    batch_attempted = True
+                    return {
+                        "events": [
+                            {
+                                "segment_index": 0,
+                                "event": {
+                                    "summary": "用户要求导航去公司",
+                                    "participants": [{"role": "用户"}],
+                                    "action": "要求导航",
+                                    "time": {"text": "上午"},
+                                    "causality": "",
+                                },
+                            }
+                        ]
+                    }
+                single_segments.append(user_message.strip())
+                if "用户要求导航去公司" in user_message:
+                    return {
+                        "event": {
+                            "summary": "用户要求导航去公司",
+                            "participants": [{"role": "用户"}],
+                            "action": "要求导航",
+                            "time": {"text": "上午"},
+                            "causality": "",
+                        }
+                    }
+                return {
+                    "event": {
+                        "summary": "系统开始规划路线",
+                        "participants": [{"role": "系统"}],
+                        "action": "规划路线",
+                        "time": {"text": "上午"},
+                        "causality": "响应用户导航请求",
+                    }
+                }
+            raise AssertionError(f"unexpected system prompt: {system_prompt}")
+
+        extractor._call_generation_json = fake_call_generation_json
+
+        events = extractor._extract_events("用户要求导航去公司，系统开始规划路线")
+
+        self.assertTrue(batch_attempted)
+        self.assertEqual(len(single_segments), 2)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["action"], "要求导航")
+        self.assertEqual(events[1]["action"], "规划路线")
 
     def test_dedupe_keeps_blank_signature_events_for_debugging(self):
         extractor = _make_extractor()

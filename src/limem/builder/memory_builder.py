@@ -2,13 +2,14 @@
 """MemoryBuilder - 记忆构建器
 
 编排整个构建管道：
-1. LLM提取（事件 + 实体）
+1. LLM提取（事件）
 2. 相似度搜索
 3. 合并/创建决策
-4. 存储（Event + INVOLVES关系）
+4. 存储（Event）
 5. 修剪/提升
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import inspect
 from typing import Any, Optional
@@ -30,6 +31,7 @@ from ..config import (
     DEFAULT_USER_ID,
     APPEND_FIRST_MODE,
     ENABLE_LEGACY_ONLINE_EVENT_MERGE,
+    LLM_CONCURRENCY,
     PRUNE_C_VALID_THRESHOLD,
     PRUNE_EVIDENCE_TOP_K,
 )
@@ -55,6 +57,7 @@ class BuilderConfig:
     default_user_id: str = DEFAULT_USER_ID
     append_first_mode: bool = APPEND_FIRST_MODE
     enable_legacy_online_event_merge: bool = ENABLE_LEGACY_ONLINE_EVENT_MERGE
+    llm_concurrency: int = LLM_CONCURRENCY
 
 
 class MemoryBuilder:
@@ -64,14 +67,13 @@ class MemoryBuilder:
 
     管道流程：
     1. 保存原始Episode
-    2. LLM提取（事件 + 实体）
+    2. LLM提取（事件）
     3. 生成嵌入向量
     4. 相似度搜索
     5. 合并/创建决策
     6. 存储Event
     7. 创建Event → Episode链接
-    8. 更新INVOLVES关系
-    9. 修剪/提升（可选）
+    8. 修剪/提升（可选）
     """
 
     def __init__(
@@ -132,23 +134,60 @@ class MemoryBuilder:
         event_payloads = self._collect_event_payloads(extraction)
         print(f"🧠 Extracted Events: {len(event_payloads)}")
 
-        # 获取实体
-        entities = extraction.entities
+        # 实体提取已禁用，保留空列表以兼容旧接口。
+        entities: list[Any] = []
         print(f"🧩 Entities: {entities}")
         built_events: list[Event] = []
         is_new_flags: list[bool] = []
         merged_targets: list[Optional[str]] = []
         entities_created_total = 0
+        pending_events: list[tuple[int, Event]] = []
 
         for idx, event_payload in enumerate(event_payloads):
             event = self._build_event_frame(event_payload, episode, current_time, index=idx)
             if not self._is_effective_event(event):
                 continue
             print(f"   - Event[{idx}]: {event.summary}")
+            pending_events.append((idx, event))
 
-            # Step 3: 生成嵌入向量
-            embedding = self._get_embedding(event.summary)
+        if not pending_events:
+            # Do not persist fallback events. If normalization drops all extracted
+            # candidates, this episode is treated as non-eventful for memory graph.
+            ignored_event = Event(
+                id=f"ignored_{episode.id}",
+                summary="",
+                action="",
+                causality="",
+                time_range={
+                    "start": current_time,
+                    "end": current_time,
+                    "display_time_bucket": time_bucket_from_ts(current_time),
+                },
+                last_active=current_time,
+                participants=[],
+                evidence=[],
+                timestamp=current_time,
+                created_at=current_time,
+                updated_at=current_time,
+                valid_from=current_time,
+                payload={
+                    "episode_id": episode.id,
+                    "episode_text": episode.content,
+                    "skip_reason": "no_effective_event_after_normalization",
+                },
+                status="ignored",
+            )
+            return IngestResult(
+                event=ignored_event,
+                is_new=False,
+                merged_with=None,
+                entities_created=0,
+                events=[],
+            )
 
+        embeddings = self._get_embeddings([event.summary for _, event in pending_events])
+
+        for (idx, event), embedding in zip(pending_events, embeddings):
             # Event is the append-first atomic memory unit.
             # Online overwrite/merge remains compatibility-only and is disabled by default.
             if self.config.append_first_mode or not self.config.enable_legacy_online_event_merge:
@@ -202,7 +241,7 @@ class MemoryBuilder:
             # Step 6: 创建Event → Episode链接
             self.store.link_event_to_episode(event.id, episode.id)
 
-            # Step 7: 更新INVOLVES关系
+            # Step 7: 实体关系写入已禁用
             entities_created_total += self._update_entity_relations(
                 event_id=event.id,
                 entities=entities,
@@ -211,41 +250,6 @@ class MemoryBuilder:
             built_events.append(event)
             is_new_flags.append(is_new)
             merged_targets.append(consolidation.target_event_id if not is_new else None)
-
-        if not built_events:
-            # Do not persist fallback events. If normalization drops all extracted
-            # candidates, this episode is treated as non-eventful for memory graph.
-            ignored_event = Event(
-                id=f"ignored_{episode.id}",
-                summary="",
-                action="",
-                causality="",
-                time_range={
-                    "start": current_time,
-                    "end": current_time,
-                    "display_time_bucket": time_bucket_from_ts(current_time),
-                },
-                last_active=current_time,
-                participants=[],
-                evidence=[],
-                timestamp=current_time,
-                created_at=current_time,
-                updated_at=current_time,
-                valid_from=current_time,
-                payload={
-                    "episode_id": episode.id,
-                    "episode_text": episode.content,
-                    "skip_reason": "no_effective_event_after_normalization",
-                },
-                status="ignored",
-            )
-            return IngestResult(
-                event=ignored_event,
-                is_new=False,
-                merged_with=None,
-                entities_created=0,
-                events=[],
-            )
 
         self._persist_inferred_relations(built_events, episode)
 
@@ -417,47 +421,8 @@ class MemoryBuilder:
         Returns:
             新创建的实体数量
         """
-        count = 0
-
-        for entity in entities:
-            # 获取实体名称
-            entity_name = self._get_entity_name(entity)
-            if not entity_name:
-                continue
-
-            # 确保实体存在
-            is_new = self.store.ensure_entity(
-                entity_name,
-                entity.get("type", "UNKNOWN") if isinstance(entity, dict) else "UNKNOWN",
-            )
-            if is_new:
-                count += 1
-
-            # 更新或创建INVOLVES关系
-            relation = self.store.get_involves_relation(event_id, entity_name)
-
-            if relation:
-                # 更新现有关系
-                relation.c_valid += 1
-                relation.t_valid = current_time
-                self.store.update_involves_relation(relation)
-                c_valid_new = relation.c_valid
-            else:
-                # 创建新关系
-                self.store.create_involves_relation(
-                    event_id=event_id,
-                    entity_id=entity_name,
-                    t_created=current_time,
-                    t_valid=current_time,
-                    c_valid=1,
-                )
-                c_valid_new = 1
-
-            # 检查是否需要修剪/提升
-            if c_valid_new > self.config.prune_threshold:
-                self._prune_and_promote(event_id, current_time)
-
-        return count
+        del event_id, entities, current_time
+        return 0
 
     def _prune_and_promote(self, event_id: str, current_time: int) -> None:
         """修剪证据并提升为永久特征
@@ -529,6 +494,23 @@ class MemoryBuilder:
         if isinstance(output, dict):
             return output["embeddings"][0]["embedding"]
         return output.embeddings[0].embedding
+
+    def _get_embeddings(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        workers = max(1, min(int(self.config.llm_concurrency or 1), len(texts)))
+        if workers <= 1:
+            return [self._get_embedding(text) for text in texts]
+
+        embeddings: list[Optional[list[float]]] = [None] * len(texts)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                idx: pool.submit(self._get_embedding, text)
+                for idx, text in enumerate(texts)
+            }
+            for idx, future in futures.items():
+                embeddings[idx] = future.result()
+        return [embedding or [] for embedding in embeddings]
 
     def _get_entity_name(self, entity: Any) -> Optional[str]:
         """获取实体名称

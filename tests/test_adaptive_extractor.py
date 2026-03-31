@@ -21,7 +21,7 @@ class _FallbackExtractor:
         return ExtractionResult(
             event_data={"summary": "Fallback event", "action": "fallback action", "causality": ""},
             events_data=[{"summary": "Fallback event", "action": "fallback action", "causality": ""}],
-            entities=["Fallback"],
+            entities=[],
             confidence=0.4,
         )
 
@@ -51,7 +51,7 @@ class _FakeExtractor:
         return ExtractionResult(
             event_data=events[0],
             events_data=events,
-            entities=["order"],
+            entities=[],
             confidence=1.0,
         )
 
@@ -161,7 +161,7 @@ class TestAdaptiveExtractor(unittest.TestCase):
         unstructured = classifier.classify("A free-form paragraph about product strategy.")
         self.assertEqual(unstructured.level, StructureLevel.UNSTRUCTURED)
 
-    def test_structured_mapper_extracts_action_and_entities_without_llm(self):
+    def test_structured_mapper_extracts_action_without_entities(self):
         mapper = StructuredFieldMapper()
         result = mapper.extract(
             {
@@ -178,8 +178,7 @@ class TestAdaptiveExtractor(unittest.TestCase):
         self.assertEqual(result.event_data["participants"], [{"role": "Alice", "seat": ""}])
         self.assertEqual(result.event_data["action"], 'Play "Roadtrip Mix" on Spotify')
         self.assertEqual(result.event_data["causality"], "Started playback")
-        self.assertIn("Spotify", result.entities)
-        self.assertIn("Roadtrip Mix", result.entities)
+        self.assertEqual(result.entities, [])
 
     def test_semi_structured_extractor_prefers_rules(self):
         fallback = _FallbackExtractor()
@@ -191,7 +190,7 @@ class TestAdaptiveExtractor(unittest.TestCase):
         self.assertFalse(fallback.called)
         self.assertEqual(len(result.events_data), 2)
         self.assertEqual(result.events_data[0]["participants"], [{"role": "User", "seat": ""}])
-        self.assertIn("Atlas", result.entities)
+        self.assertEqual(result.entities, [])
 
     def test_semi_structured_extractor_falls_back_when_rules_fail(self):
         fallback = _FallbackExtractor()
@@ -227,7 +226,7 @@ class TestAdaptiveExtractor(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(result.event_data["summary"], "Team plans Acme Summit launch")
-        self.assertEqual(result.entities, ["Acme Summit", "Berlin"])
+        self.assertEqual(result.entities, [])
 
     def test_unstructured_extractor_ignores_list_payload_for_entities(self):
         def fake_llm(system_prompt, user_message, default):
@@ -368,7 +367,7 @@ class TestAdaptiveExtractor(unittest.TestCase):
         self.assertEqual(len(result.events_data), 2)
         self.assertEqual(result.events_data[0]["participants"], [{"role": "Alice", "seat": ""}])
         self.assertEqual(result.events_data[1]["participants"], [{"role": "Bob", "seat": ""}])
-        self.assertIn("Atlas", result.entities)
+        self.assertEqual(result.entities, [])
 
     def test_adaptive_extractor_handles_chinese_meeting_minutes(self):
         extractor = AdaptiveExtractor()
@@ -389,8 +388,7 @@ class TestAdaptiveExtractor(unittest.TestCase):
 
         self.assertEqual(result.event_data["action"], "report temperature spike")
         self.assertEqual(result.event_data["causality"], "fan turned on")
-        self.assertIn("Greenhouse Sensor A1", result.entities)
-        self.assertIn("Zone 3", result.entities)
+        self.assertEqual(result.entities, [])
 
     def test_adaptive_extractor_handles_mixed_language_dialogue(self):
         extractor = AdaptiveExtractor()
@@ -401,7 +399,7 @@ class TestAdaptiveExtractor(unittest.TestCase):
         self.assertEqual(len(result.events_data), 2)
         self.assertEqual(result.events_data[0]["participants"], [{"role": "Alice", "seat": ""}])
         self.assertEqual(result.events_data[1]["participants"], [{"role": "System", "seat": ""}])
-        self.assertIn("Atlas", result.entities)
+        self.assertEqual(result.entities, [])
 
     def test_adaptive_extractor_handles_nested_json_records(self):
         extractor = AdaptiveExtractor()
@@ -412,8 +410,7 @@ class TestAdaptiveExtractor(unittest.TestCase):
         self.assertEqual(result.event_data["participants"], [{"role": "OpsBot", "seat": ""}])
         self.assertEqual(result.event_data["action"], "restart search service")
         self.assertEqual(result.event_data["causality"], "service recovered")
-        self.assertIn("Search API", result.entities)
-        self.assertIn("cluster-a", result.entities)
+        self.assertEqual(result.entities, [])
 
     def test_adaptive_extractor_handles_noise_and_edge_inputs(self):
         extractor = AdaptiveExtractor()
@@ -449,6 +446,9 @@ class TestAdaptiveExtractor(unittest.TestCase):
 
         self.assertEqual(extractor.received_metadata, {"session_id": "session-1", "trace_id": "trace-9"})
         self.assertEqual(len(result.events), 2)
+        self.assertEqual(result.entities_created, 0)
+        self.assertEqual(store.entities, set())
+        self.assertEqual(store.involves, {})
         self.assertTrue(any(item["type"] == "temporal_next" for item in store.event_relations))
         self.assertTrue(any(item["type"] == "causality" for item in store.event_relations))
 

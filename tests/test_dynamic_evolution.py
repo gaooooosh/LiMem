@@ -6,9 +6,53 @@ import json
 import unittest
 
 from limem import create_ltm, Episode, migrate_to_dynamic_graph
+from limem.core.event import Event
 
 
 class TestDynamicEvolution(unittest.TestCase):
+    def test_bulk_ingest_mode_skips_auto_consolidation_for_new_and_existing_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_bulk_ingest_no_auto_consolidation.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": True,
+                    "bulk_ingest_mode": True,
+                    "generate_answer": False,
+                },
+            )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._resolve_context_pairs_for_event_batch = lambda events, record=None: [[] for _ in events]
+            engine.extract_event_event_relations = lambda events, record=None: 0
+            engine.run_consolidation = lambda *args, **kwargs: self.fail(
+                "bulk ingest mode should skip auto consolidation"
+            )
+
+            existing_event = Event(
+                summary="用户开启勿扰模式",
+                action="开启勿扰",
+                timestamp=1773326409,
+                last_active=1773326409,
+            )
+            existing_report = engine.evolve_existing_events([existing_event])
+            self.assertEqual(existing_report["context_links"], 0)
+            self.assertEqual(existing_report["event_relation_links"], 0)
+
+            new_event = Event(
+                summary="系统开始播放通勤歌单",
+                action="播放歌单",
+                timestamp=1773326410,
+                last_active=1773326410,
+            )
+            write_report = engine.write_event_batch([new_event], record=None)
+            self.assertEqual(write_report["event_count"], 1)
+            self.assertEqual(write_report["context_links"], 0)
+
     def test_append_first_and_dynamic_edges(self):
         with tempfile.TemporaryDirectory() as td:
             db_path = os.path.join(td, "test_dynamic.kz")

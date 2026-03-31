@@ -6,16 +6,11 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ..config import SKIP_DYNAMIC_CHANGE_FILTER
-from ..utils import (
-    _SKIP_DYNAMIC_CHECK,
-    normalize_entity_candidates,
-    normalize_event_payload,
-    robust_json_loads,
-)
+from ..utils import _SKIP_DYNAMIC_CHECK, normalize_event_payload, robust_json_loads
 
 
 class UnstructuredExtractor:
-    """Collapse event/entity extraction into one best-effort LLM call."""
+    """Collapse unstructured text into one best-effort event extraction call."""
 
     def __init__(
         self,
@@ -62,13 +57,11 @@ class UnstructuredExtractor:
                 events.append(normalized)
 
         deduped_events = self._dedupe_events(events)
-        raw_entities = payload.get("entities", []) if isinstance(payload, dict) else []
-        entities = normalize_entity_candidates(raw_entities, source_text=text)
         return ExtractionResult(
             event_data=deduped_events[0] if deduped_events else {},
             events_data=deduped_events,
-            entities=entities,
-            confidence=0.7 if deduped_events or entities else 0.0,
+            entities=[],
+            confidence=0.7 if deduped_events else 0.0,
         )
 
     def _collect_raw_event_items(self, payload: Any) -> list[dict[str, Any]]:

@@ -17,7 +17,7 @@ class _FallbackExtractor:
         return ExtractionResult(
             event_data={"summary": "Fallback event", "action": "fallback action", "causality": ""},
             events_data=[{"summary": "Fallback event", "action": "fallback action", "causality": ""}],
-            entities=["Fallback"],
+            entities=[],
             confidence=0.4,
         )
 
@@ -69,8 +69,7 @@ class TestAdaptiveExtractorBenchmarkRegressions(unittest.TestCase):
         self.assertFalse(fallback.called)
         self.assertEqual(len(result.events_data), 1)
         self.assertIn("播放", result.event_data["action"])
-        self.assertIn("QQ音乐", result.entities)
-        self.assertIn("你要跳舞吗", result.entities)
+        self.assertEqual(result.entities, [])
 
     def test_semi_structured_extractor_extracts_navigation_narrative_without_fallback(self):
         fallback = _FallbackExtractor()
@@ -84,7 +83,7 @@ class TestAdaptiveExtractorBenchmarkRegressions(unittest.TestCase):
         self.assertFalse(fallback.called)
         self.assertEqual(len(result.events_data), 1)
         self.assertIn("导航到XX健身房", result.event_data["action"])
-        self.assertIn("XX健身房", result.entities)
+        self.assertEqual(result.entities, [])
 
     def test_semi_structured_extractor_skips_fallback_for_non_actionable_noise(self):
         fallback = _FallbackExtractor()

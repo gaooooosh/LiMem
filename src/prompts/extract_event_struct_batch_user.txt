@@ -1,0 +1,29 @@
+完整对话：
+{episode_text}
+
+segments 总数：{segment_total}
+
+以下是待结构化的 segments（segment_index 从 0 开始）：
+{segments_text}
+
+请为每个 segment 返回一条结果，严格 JSON：
+{{
+  "events": [
+    {{
+      "segment_index": 0,
+      "event": {{
+        "summary": "一句话总结，能独立成节点",
+        "participants": [{{"role": "主体或作用源", "seat": ""}}],
+        "action": "本次变化本身，用简短动宾结构",
+        "time": {{"start": 0, "end": 0, "text": ""}},
+        "causality": ""
+      }}
+    }}
+  ]
+}}
+
+规则：
+1. 返回数量必须等于 {segment_total}，每个 segment 恰好一条结果。
+2. 如果某个 segment 不是事件，也必须返回对应的 segment_index，但 event 置为空 event。
+3. 不要跨 segment 合并信息，不要把别的 segment 内容写到当前 event 中。
+4. 只输出 JSON，不要解释。

@@ -124,7 +124,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--run-consolidation",
         action="store_true",
-        help="Run one consolidation pass after debug replay",
+        help="Deprecated: bulk sessions build now always runs one final consolidation pass",
     )
     parser.add_argument(
         "--skip-visualize",
@@ -175,9 +175,12 @@ def main() -> None:
     ltm = create_ltm(
         db_path=args.db_path,
         config={
+            "extractor_type": "two_stage",
             "offline_mode": not args.online,
             "enable_dynamic_evolution": True,
             "append_first_mode": not args.legacy_merge,
+            "bulk_ingest_mode": True,
+            "llm_concurrency": 4,
             "generate_answer": False,
             "search_top_k": 5,
         },
@@ -210,10 +213,8 @@ def main() -> None:
         print("Migration dry-run:", migration_dry)
         print("Migration applied:", migration_run)
 
-    consolidation_report: dict[str, Any] = {}
-    if args.run_consolidation:
-        consolidation_report = ltm.run_consolidation()
-        print("Consolidation report:", consolidation_report)
+    consolidation_report: dict[str, Any] = ltm.run_consolidation()
+    print("Consolidation report:", consolidation_report)
 
     final_stats = ltm.get_stats()
     final_snapshot = _capture_snapshot(ltm, args.snapshot_limit)
@@ -222,8 +223,11 @@ def main() -> None:
     report = {
         "sessions_path": args.sessions_path,
         "db_path": args.db_path,
+        "extractor_type": "two_stage",
         "offline_mode": not args.online,
         "append_first_mode": not args.legacy_merge,
+        "bulk_ingest_mode": True,
+        "llm_concurrency": 4,
         "split": {
             "split_index": split_result.split_index,
             "split_ratio": split_result.split_ratio,

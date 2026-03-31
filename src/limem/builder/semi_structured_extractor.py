@@ -7,11 +7,7 @@ import re
 from typing import Any
 
 from ..config import SKIP_DYNAMIC_CHANGE_FILTER
-from ..utils import (
-    _SKIP_DYNAMIC_CHECK,
-    normalize_entity_candidates,
-    normalize_event_payload,
-)
+from ..utils import _SKIP_DYNAMIC_CHECK, normalize_event_payload
 from .structured_mapper import StructuredFieldMapper
 
 
@@ -90,25 +86,21 @@ class SemiStructuredExtractor:
         from .extractor import ExtractionResult
 
         events = self._extract_dialogue_events(text)
-        entities = self._extract_pattern_entities(text)
 
         kv_result = self._extract_kv_record(text)
         if kv_result.events_data:
             events.extend(kv_result.events_data)
-            entities.extend(kv_result.entities)
 
-        narrative_events, narrative_entities = self._extract_narrative_events(text)
+        narrative_events, _ = self._extract_narrative_events(text)
         if narrative_events:
             events.extend(narrative_events)
-            entities.extend(narrative_entities)
 
         deduped_events = self._dedupe_events(events)
-        deduped_entities = normalize_entity_candidates(entities, source_text=text)
         if deduped_events:
             return ExtractionResult(
                 event_data=deduped_events[0],
                 events_data=deduped_events,
-                entities=deduped_entities,
+                entities=[],
                 confidence=0.9,
             )
 
@@ -116,14 +108,14 @@ class SemiStructuredExtractor:
             return ExtractionResult(
                 event_data={},
                 events_data=[],
-                entities=deduped_entities,
+                entities=[],
                 confidence=0.0,
             )
 
         if self.fallback_extractor is not None:
             return self.fallback_extractor.extract(text)
 
-        return ExtractionResult(event_data={}, events_data=[], entities=deduped_entities, confidence=0.0)
+        return ExtractionResult(event_data={}, events_data=[], entities=[], confidence=0.0)
 
     def _extract_dialogue_events(self, text: str) -> list[dict[str, Any]]:
         raw_events: list[dict[str, Any]] = []

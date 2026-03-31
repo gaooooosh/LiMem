@@ -92,6 +92,8 @@ DB_PATH = os.getenv("DB_PATH", "./DB/demo_db.kz")
 # Master switch for the dynamic evolution pipeline.
 ENABLE_DYNAMIC_EVOLUTION = env_bool("ENABLE_DYNAMIC_EVOLUTION", True)
 ENABLE_EVENT_RELATIONS = env_bool("ENABLE_EVENT_RELATIONS", True)
+LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "1"))
+BULK_INGEST_MODE = env_bool("BULK_INGEST_MODE", False)
 
 # Write path: append-first Event ingestion.
 APPEND_FIRST_MODE = env_bool("APPEND_FIRST_MODE", True)

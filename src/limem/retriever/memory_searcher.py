@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """MemorySearcher - 记忆搜索器
 
-编排四阶段检索管道：
-1. 实体提取（LLM）
-2. 实体匹配（精确 + 模糊，索引兼容层）
-3. 双路图路径搜索 → 获取候选事件（Entity + Context）
-4. 加权重排序
-5. LLM总结（可选）
+编排检索管道：
+1. Context 图路径搜索 → 获取候选事件
+2. 加权重排序
+3. LLM总结（可选）
 """
 
 from dataclasses import dataclass, field
@@ -57,11 +55,9 @@ class MemorySearcher:
     """记忆搜索器 - 编排四阶段检索管道
 
     管道流程：
-    1. 实体提取（LLM）
-    2. 实体匹配（精确 + 包含 + 模糊）
-    3. 图路径搜索 → 获取候选事件
-    4. 加权重排序
-    5. LLM总结（可选）
+    1. 图路径搜索 → 获取候选事件
+    2. 加权重排序
+    3. LLM总结（可选）
     """
 
     def __init__(
@@ -137,11 +133,11 @@ class MemorySearcher:
             else self.config.generate_answer
         )
 
-        # Stage 1: 实体提取
+        # Entity extraction is disabled; retrieval is context-first only.
         entities = self._extract_entities(query)
         print(f"🧩 Extracted entities: {entities}")
 
-        # Stage 2/3: 实体索引路 + Context 语义路
+        # Stage 1/2: Context 语义路 + 排序
         candidate_bundle = self._collect_candidates(query, entities)
         raw_events = candidate_bundle["raw_events"]
         print(
@@ -196,7 +192,7 @@ class MemorySearcher:
         """
         k = top_k or self.config.default_top_k
 
-        # Stage 1: 实体提取
+        # Entity extraction is disabled; retrieval is context-first only.
         entities = self._extract_entities(query)
         print(f"🧩 Extracted entities: {entities}")
         candidate_bundle = self._collect_candidates(query, entities)
@@ -335,42 +331,8 @@ class MemorySearcher:
         return rows
 
     def _extract_entities(self, query: str) -> list[str]:
-        """从查询中提取实体（LLM）
-
-        Args:
-            query: 用户查询
-
-        Returns:
-            实体名称列表
-        """
-        user_msg = self._entity_extraction_user.format(query=query)
-
-        if self.offline_mode or Generation is None:
-            return self._extract_entities_fallback(query)
-
-        resp = Generation.call(
-            api_key=self.api_key,
-            model=self.generation_model,
-            messages=[
-                {"role": "system", "content": self._entity_extraction_system},
-                {"role": "user", "content": user_msg},
-            ],
-            result_format="message",
-            enable_thinking=False,
-        )
-
-        if resp.status_code != 200:
-            print(f"⚠️ Entity extraction failed: {resp.message}")
-            return self._extract_entities_fallback(query)
-
-        content = resp.output.choices[0].message.content.strip()
-
-        # 处理Markdown代码块
-        if content.startswith("```"):
-            content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-        entities = robust_json_loads(content, [])
-        return self._filter_entities(entities, source_text=query)
+        del query
+        return []
 
     def _extract_entities_fallback(self, query: str) -> list[str]:
         import re

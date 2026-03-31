@@ -19,6 +19,7 @@ from .retriever.ranker import MemoryRanker, RankerConfig
 from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
 from .config import (
     APPEND_FIRST_MODE,
+    BULK_INGEST_MODE,
     DB_PATH,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
@@ -27,6 +28,7 @@ from .config import (
     EXTRACTOR_TYPE,
     GENERATION_MODEL,
     EMBEDDING_MODEL,
+    LLM_CONCURRENCY,
     SIMILARITY_THRESHOLD,
     MERGE_WEIGHT_SEMANTIC,
     MERGE_WEIGHT_ENTITY,
@@ -131,6 +133,7 @@ def create_ltm_system(
             base_url=base_url,
             generation_model=config.get("generation_model", GENERATION_MODEL),
             enable_thinking=config.get("enable_thinking", False),
+            llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),
         )
     else:
         extractor = AdaptiveExtractor(
@@ -161,6 +164,7 @@ def create_ltm_system(
         prune_top_k=config.get("prune_top_k", PRUNE_EVIDENCE_TOP_K),
         default_user_id=config.get("default_user_id", DEFAULT_USER_ID),
         append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
+        llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),
     )
 
     dynamic_engine = None
@@ -169,6 +173,8 @@ def create_ltm_system(
             store=store,
             config=DynamicEvolutionConfig(
                 append_first_mode=config.get("append_first_mode", APPEND_FIRST_MODE),
+                llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),
+                bulk_ingest_mode=config.get("bulk_ingest_mode", BULK_INGEST_MODE),
                 merge_decision_strategy=config.get("merge_decision_strategy", "auto"),
                 llm_api_key=api_key,
                 llm_base_url=base_url,

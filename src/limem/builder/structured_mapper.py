@@ -8,11 +8,7 @@ from typing import Any
 import re
 
 from ..config import SKIP_DYNAMIC_CHANGE_FILTER
-from ..utils import (
-    _SKIP_DYNAMIC_CHECK,
-    normalize_entity_candidates,
-    normalize_event_payload,
-)
+from ..utils import _SKIP_DYNAMIC_CHECK, normalize_event_payload
 
 
 _SUMMARY_KEYS = ("summary", "description", "detail", "details", "headline", "subject", "cal_evt")
@@ -46,7 +42,7 @@ class FieldMappingConfig:
 
 
 class StructuredFieldMapper:
-    """Extract events/entities from structured records without LLMs."""
+    """Extract events from structured records without LLMs."""
 
     def __init__(
         self,
@@ -61,20 +57,17 @@ class StructuredFieldMapper:
         from .extractor import ExtractionResult
 
         events: list[dict[str, Any]] = []
-        entities: list[str] = []
 
         for record in self._collect_records(payload):
-            mapped_event, mapped_entities = self._map_record(record, source_text=source_text)
+            mapped_event, _ = self._map_record(record, source_text=source_text)
             if mapped_event and self._has_event(mapped_event):
                 events.append(mapped_event)
-            entities.extend(mapped_entities)
 
         deduped_events = self._dedupe_events(events)
-        deduped_entities = self._dedupe_entities(entities)
         return ExtractionResult(
             event_data=deduped_events[0] if deduped_events else {},
             events_data=deduped_events,
-            entities=deduped_entities,
+            entities=[],
             confidence=1.0 if deduped_events else 0.75,
         )
 
@@ -110,8 +103,6 @@ class StructuredFieldMapper:
         response_value = self._select_best_value(flattened, self.config.response_keys)
         summary_value = self._select_best_value(flattened, _SUMMARY_KEYS)
         time_value = self._build_time_value(flattened)
-        entity_values = self._collect_entity_values(flattened)
-
         raw_event = {
             "summary": summary_value,
             "actor": actor_value,
@@ -131,8 +122,7 @@ class StructuredFieldMapper:
             passive_screen_dynamic_hints=(),
         )
 
-        entities = normalize_entity_candidates(entity_values, source_text=source_text)
-        return normalized, entities
+        return normalized, []
 
     def _flatten(
         self,
