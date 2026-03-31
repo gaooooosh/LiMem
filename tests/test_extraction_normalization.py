@@ -82,6 +82,23 @@ class TestExtractionNormalization(unittest.TestCase):
         self.assertIn("用户", normalized["summary"])
         self.assertIn("导航去公司", normalized["summary"])
 
+    def test_timestamp_prefixed_single_clause_summary_is_preserved(self):
+        episode_text = "2026-03-13 下午4点半左右,在芒果TV播放视频《纪录片：城市切片-阶段A》"
+        normalized = normalize_event_payload(
+            {
+                "event": {
+                    "summary": "在芒果TV播放视频《纪录片：城市切片-阶段A》",
+                    "participants": [{"role": "芒果TV"}],
+                    "action": "播放",
+                    "time": {"text": "2026-03-13 下午4点半左右"},
+                }
+            },
+            episode_text=episode_text,
+        )
+
+        self.assertEqual(normalized["summary"], "在芒果TV播放视频《纪录片：城市切片-阶段A》")
+        self.assertEqual(normalized["action"], "播放")
+
     def test_entity_candidates_are_de_fragmented(self):
         entities = normalize_entity_candidates(
             [
@@ -135,6 +152,56 @@ class TestExtractionNormalization(unittest.TestCase):
                     "summary": episode_text,
                     "participants": [{"role": "环境感知"}],
                     "action": "",
+                    "causality": "",
+                }
+            },
+            episode_text=episode_text,
+        )
+
+        self.assertEqual(normalized["summary"], "")
+        self.assertEqual(normalized["action"], "")
+        self.assertEqual(normalized["causality"], "")
+
+    def test_vehicle_adjustment_and_startup_actions_are_kept_as_dynamic_events(self):
+        adjust_episode = (
+            "2026-03-13 晚上2点左右,坐在主驾的用户说:把后排温度调到26度 -> "
+            "车机回答:已调整后排温度到26度并启动安抚模式。"
+        )
+        adjust_normalized = normalize_event_payload(
+            {
+                "event": {
+                    "summary": "用户将后排温度调整为26度",
+                    "participants": [{"role": "用户", "seat": "主驾"}],
+                    "action": "调整后排温度",
+                    "time": {"text": "晚上2点左右"},
+                }
+            },
+            episode_text=adjust_episode,
+        )
+        startup_normalized = normalize_event_payload(
+            {
+                "event": {
+                    "summary": "车机启动安抚模式",
+                    "participants": [{"role": "车机系统", "seat": ""}],
+                    "action": "启动安抚模式",
+                }
+            },
+            episode_text=adjust_episode,
+        )
+
+        self.assertEqual(adjust_normalized["summary"], "用户将后排温度调整为26度")
+        self.assertEqual(adjust_normalized["action"], "调整后排温度")
+        self.assertEqual(startup_normalized["summary"], "车机启动安抚模式")
+        self.assertEqual(startup_normalized["action"], "启动安抚模式")
+
+    def test_passive_screen_app_metadata_is_dropped_even_if_llm_generates_generic_setting_event(self):
+        episode_text = "[屏幕操作数据] 屏幕: 副驾屏 | 应用: QQ音乐"
+        normalized = normalize_event_payload(
+            {
+                "event": {
+                    "summary": "系统设置",
+                    "participants": [{"role": "系统", "seat": ""}],
+                    "action": "设置",
                     "causality": "",
                 }
             },
