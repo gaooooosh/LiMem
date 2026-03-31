@@ -17,7 +17,7 @@ SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from limem import create_ltm, migrate_to_dynamic_graph
+from limem import create_ltm
 from script.trips_loader import load_and_split_trips_episodes
 
 
@@ -115,11 +115,6 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=12,
         help="How many events/contexts to include in each snapshot",
-    )
-    parser.add_argument(
-        "--skip-migration",
-        action="store_true",
-        help="Skip compatibility migration stage",
     )
     parser.add_argument(
         "--run-consolidation",
@@ -676,16 +671,6 @@ def main() -> None:
         run_deferred_evolution=args.deferred_evolution,
     )
 
-    migration_dry = {}
-    migration_run = {}
-    if not args.skip_migration:
-        dry_report = migrate_to_dynamic_graph(ltm.store, dry_run=True)
-        run_report = migrate_to_dynamic_graph(ltm.store, dry_run=False)
-        migration_dry = dry_report.to_dict()
-        migration_run = run_report.to_dict()
-        print("Migration dry-run:", migration_dry)
-        print("Migration applied:", migration_run)
-
     consolidation_report: dict[str, Any] = {}
     if args.run_consolidation:
         consolidation_report = ltm.run_consolidation()
@@ -713,8 +698,6 @@ def main() -> None:
         },
         "base_phase": base_phase,
         "debug_phase": debug_phase,
-        "migration_dry_run": migration_dry,
-        "migration_applied": migration_run,
         "consolidation_report": consolidation_report,
         "final_stats": final_stats,
         "final_snapshot": final_snapshot,

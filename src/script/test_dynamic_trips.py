@@ -11,7 +11,7 @@ SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from limem import create_ltm, Episode, migrate_to_dynamic_graph
+from limem import create_ltm, Episode
 from limem.utils import parse_time_to_unix
 
 
@@ -92,11 +92,6 @@ def main():
         ltm.ingest(ep)
         if i % 100 == 0:
             print(f"Ingested {i} episodes...")
-
-    report_dry = migrate_to_dynamic_graph(ltm.store, dry_run=True)
-    report_run = migrate_to_dynamic_graph(ltm.store, dry_run=False)
-    print("Migration dry-run:", report_dry.to_dict())
-    print("Migration applied:", report_run.to_dict())
 
     stats = ltm.get_stats()
     print("Stats:", stats)

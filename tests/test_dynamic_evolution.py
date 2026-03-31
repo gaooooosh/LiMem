@@ -5,7 +5,7 @@ import time
 import json
 import unittest
 
-from limem import create_ltm, Episode, migrate_to_dynamic_graph
+from limem import create_ltm, Episode
 from limem.core.event import Event
 
 
@@ -74,9 +74,6 @@ class TestDynamicEvolution(unittest.TestCase):
             self.assertGreaterEqual(stats.get("context_count", 0), 1)
             self.assertGreaterEqual(stats.get("abstract_to_count", 0), 1)
 
-            report = migrate_to_dynamic_graph(ltm.store, dry_run=True).to_dict()
-            self.assertIn("scanned_involves", report)
-            self.assertTrue(report["dry_run"])
 
     def test_run_consolidation_respects_llm_gate_for_events_and_contexts(self):
         with tempfile.TemporaryDirectory() as td:

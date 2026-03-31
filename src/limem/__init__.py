@@ -61,7 +61,7 @@ from .retriever import (
 from .ltmemory_impl import LTMemoryImpl
 from .ops import MemoryGraphOps
 from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
-from .migration import migrate_to_dynamic_graph, MigrationReport, LegacyEdgeAdapter
+
 
 # ==================== 数据库和工具 ====================
 from .db import open_connection, init_db
@@ -175,9 +175,6 @@ __all__ = [
     "MemoryGraphOps",
     "DynamicEvolutionEngine",
     "DynamicEvolutionConfig",
-    "migrate_to_dynamic_graph",
-    "MigrationReport",
-    "LegacyEdgeAdapter",
     # ===== 数据库和工具 =====
     "open_connection",
     "init_db",
