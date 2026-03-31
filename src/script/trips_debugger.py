@@ -17,8 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from . import create_ltm
-from .core.episode import Episode
+from limem import create_ltm
+from limem.core.episode import Episode
 from script.trips_loader import load_trips_episodes
 
 

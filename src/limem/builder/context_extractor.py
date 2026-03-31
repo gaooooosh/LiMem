@@ -30,16 +30,16 @@ from ..core.context import (
 from ..core.event import Event
 from ..utils import load_prompt, robust_json_loads, safe_json_dumps
 
-_HABIT_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯")
-_EVENT_LIKE_MARKERS = (
+_DEFAULT_HABIT_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯")
+_DEFAULT_EVENT_LIKE_MARKERS = (
     "打开", "搜索", "开始", "完成", "成功", "失败", "找到", "支付", "导航", "播放", "推荐", "决定",
     "说", "回答", "开启", "关闭", "调高", "调低", "前往", "去",
 )
-_STRONG_CONTEXT_SIGNAL_MARKERS = (
+_DEFAULT_STRONG_CONTEXT_SIGNAL_MARKERS = (
     "由于", "因为", "当前", "目前", "此时", "只剩", "仅剩", "不足", "需要", "希望", "目标", "条件",
     "限制", "状态", "环境", "情况下",
 )
-_GENERIC_CLAUSE_PATTERNS: list[tuple[str, str, str]] = [
+_DEFAULT_GENERIC_CLAUSE_PATTERNS = (
     (r"由于[^，。；,;]+", "constraint", "causal_clause"),
     (r"因为[^，。；,;]+", "constraint", "causal_clause"),
     (r"在[^，。；,;]{1,40}情况下", "situation", "situation_clause"),
@@ -48,7 +48,7 @@ _GENERIC_CLAUSE_PATTERNS: list[tuple[str, str, str]] = [
     (r"(需要|希望|想要|目标是)[^，。；,;]+", "goal", "goal_clause"),
     (r"(正在|处于)[^，。；,;]{0,24}(阶段|中)", "phase", "phase_clause"),
     (r"(执行中|准备中|进行中|等待中|收尾中)", "phase", "phase_clause"),
-]
+)
 _FALLBACK_SLOT_KEYS = {
     "situation": "situation",
     "state": "state",
@@ -75,11 +75,11 @@ _LOW_REUSE_TIME_PATTERNS = (
     r"(上午|下午|晚上|凌晨|中午)?\d{1,2}点(半|\d{1,2}分)?",
     r"\d{1,2}:\d{2}",
 )
-_DOMAIN_LITERAL_PATTERNS = (
+_DEFAULT_DOMAIN_LITERAL_PATTERNS = (
     r"《[^》]{1,40}》",  # media titles, often event payload details
     r"-阶段[A-Za-z0-9一二三四五六七八九十]+",
 )
-_LOW_VALUE_LITERAL_MARKERS = (
+_DEFAULT_LOW_VALUE_LITERAL_MARKERS = (
     "qq音乐",
     "网易云",
     "酷狗",
@@ -90,6 +90,59 @@ _LOW_VALUE_LITERAL_MARKERS = (
     "阶段b",
     "阶段c",
 )
+_DEFAULT_MINIMUM_CONTEXT_SUBTYPE_RULES = (
+    (("需要", "不足", "紧张", "受限"), "constraint"),
+    (("目标", "希望", "想要"), "goal"),
+    (("车内", "app", "系统", "设备"), "environment"),
+)
+_DEFAULT_MINIMUM_CONTEXT_PHRASE_RULES = (
+    (("会议", "开会"), "situation", "会议场景"),
+)
+_DEFAULT_EVENT_LIKE_MINIMUM_CONTEXT_RULES = (
+    (("导航",), "situation", "出行导航场景"),
+    (("勿扰",), "constraint", "减少打扰需求"),
+)
+_DEFAULT_ABSTRACT_CONTEXT_RULES = (
+    (("qq音乐", "网易云", "酷狗", "酷我", "歌曲", "歌单", "播放"), None, "音乐播放场景"),
+    (("导航", "地图", "路线", "充电桩", "目的地"), None, "出行导航场景"),
+    (("会议", "开会", "勿扰"), "constraint", "减少打扰需求"),
+    (("会议", "开会", "勿扰"), None, "会议场景"),
+)
+_DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE = {
+    "constraint": "当前约束条件",
+    "goal": "当前目标",
+    "state": "当前状态",
+    "environment": "当前环境",
+    "phase": "当前阶段",
+}
+_DEFAULT_CONTEXT_DOMAIN_CONFIG = {
+    "habit_like_markers": _DEFAULT_HABIT_LIKE_MARKERS,
+    "event_like_markers": _DEFAULT_EVENT_LIKE_MARKERS,
+    "strong_context_signal_markers": _DEFAULT_STRONG_CONTEXT_SIGNAL_MARKERS,
+    "generic_clause_patterns": _DEFAULT_GENERIC_CLAUSE_PATTERNS,
+    "domain_literal_patterns": _DEFAULT_DOMAIN_LITERAL_PATTERNS,
+    "low_value_literal_markers": _DEFAULT_LOW_VALUE_LITERAL_MARKERS,
+    "minimum_context_subtype_rules": _DEFAULT_MINIMUM_CONTEXT_SUBTYPE_RULES,
+    "minimum_context_phrase_rules": _DEFAULT_MINIMUM_CONTEXT_PHRASE_RULES,
+    "event_like_minimum_context_rules": _DEFAULT_EVENT_LIKE_MINIMUM_CONTEXT_RULES,
+    "abstract_context_rules": _DEFAULT_ABSTRACT_CONTEXT_RULES,
+    "abstract_context_fallback_by_subtype": _DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE,
+}
+
+
+def _merge_context_domain_config(overrides: Optional[dict[str, Any]]) -> dict[str, Any]:
+    config = dict(_DEFAULT_CONTEXT_DOMAIN_CONFIG)
+    fallback_by_subtype = dict(_DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE)
+    if overrides:
+        for key, value in overrides.items():
+            if value is None:
+                continue
+            if key == "abstract_context_fallback_by_subtype" and isinstance(value, dict):
+                fallback_by_subtype.update(value)
+                continue
+            config[key] = value
+    config["abstract_context_fallback_by_subtype"] = fallback_by_subtype
+    return config
 
 
 @dataclass
@@ -100,11 +153,40 @@ class ContextExtractionPipeline:
     base_url: Optional[str] = None
     generation_model: Optional[str] = None
     offline_mode: bool = False
+    domain_config: Optional[dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         self.api_key = self.api_key or DASHSCOPE_API_KEY
         self.base_url = self.base_url or DASHSCOPE_BASE_URL
         self.generation_model = self.generation_model or GENERATION_MODEL
+        self._domain_config = _merge_context_domain_config(self.domain_config)
+        self._habit_like_markers = tuple(self._domain_config["habit_like_markers"])
+        self._event_like_markers = tuple(self._domain_config["event_like_markers"])
+        self._strong_context_signal_markers = tuple(
+            self._domain_config["strong_context_signal_markers"]
+        )
+        self._generic_clause_patterns = tuple(self._domain_config["generic_clause_patterns"])
+        self._domain_literal_patterns = tuple(self._domain_config["domain_literal_patterns"])
+        self._low_value_literal_markers = tuple(self._domain_config["low_value_literal_markers"])
+        self._minimum_context_subtype_rules = tuple(
+            (tuple(markers), subtype)
+            for markers, subtype in self._domain_config["minimum_context_subtype_rules"]
+        )
+        self._minimum_context_phrase_rules = tuple(
+            (tuple(markers), subtype, summary)
+            for markers, subtype, summary in self._domain_config["minimum_context_phrase_rules"]
+        )
+        self._event_like_minimum_context_rules = tuple(
+            (tuple(markers), subtype, summary)
+            for markers, subtype, summary in self._domain_config["event_like_minimum_context_rules"]
+        )
+        self._abstract_context_rules = tuple(
+            (tuple(markers), required_subtype, summary)
+            for markers, required_subtype, summary in self._domain_config["abstract_context_rules"]
+        )
+        self._abstract_context_fallback_by_subtype = dict(
+            self._domain_config["abstract_context_fallback_by_subtype"]
+        )
         self._system_prompt = load_prompt("extract_context_system.txt")
         self._user_prompt = load_prompt("extract_context_user.txt")
 
@@ -142,7 +224,7 @@ class ContextExtractionPipeline:
         for clause, start, end in self._split_text_clauses(text):
             if not clause:
                 continue
-            for pattern, subtype, signal in _GENERIC_CLAUSE_PATTERNS:
+            for pattern, subtype, signal in self._generic_clause_patterns:
                 if not re.search(pattern, clause):
                     continue
                 key = (clause, signal)
@@ -600,8 +682,10 @@ class ContextExtractionPipeline:
         normalized = self._normalize_free_text(text)
         if not normalized:
             return True
-        has_strong_context_signal = any(marker in normalized for marker in _STRONG_CONTEXT_SIGNAL_MARKERS)
-        event_marker_count = sum(1 for marker in _EVENT_LIKE_MARKERS if marker in normalized)
+        has_strong_context_signal = any(
+            marker in normalized for marker in self._strong_context_signal_markers
+        )
+        event_marker_count = sum(1 for marker in self._event_like_markers if marker in normalized)
         if event_marker_count > 0:
             if not has_strong_context_signal:
                 return True
@@ -620,7 +704,7 @@ class ContextExtractionPipeline:
         if not text:
             return True
         text_lower = text.lower()
-        event_marker_count = sum(1 for marker in _EVENT_LIKE_MARKERS if marker in text)
+        event_marker_count = sum(1 for marker in self._event_like_markers if marker in text)
 
         if not strict:
             # LLM path is primary; keep only very coarse guardrails.
@@ -632,7 +716,7 @@ class ContextExtractionPipeline:
             if re.search(pattern, text):
                 if event_marker_count >= 1:
                     return True
-        for pattern in _DOMAIN_LITERAL_PATTERNS:
+        for pattern in self._domain_literal_patterns:
             if re.search(pattern, text):
                 return True
         # Overly specific one-shot narration is usually not reusable as Context.
@@ -657,7 +741,7 @@ class ContextExtractionPipeline:
 
     def _looks_like_habit_not_context(self, text: str) -> bool:
         normalized = str(text or "").strip()
-        return any(marker in normalized for marker in _HABIT_LIKE_MARKERS)
+        return any(marker in normalized for marker in self._habit_like_markers)
 
     def _context_quality_score(
         self,
@@ -677,7 +761,7 @@ class ContextExtractionPipeline:
         )
         habit_like = self._looks_like_habit_not_context(evidence_span)
         has_slots = bool(self._clean_structured_slots(draft.structured_slots))
-        context_signal = any(marker in summary for marker in _STRONG_CONTEXT_SIGNAL_MARKERS)
+        context_signal = any(marker in summary for marker in self._strong_context_signal_markers)
         abstraction_score = self._abstraction_quality_score(summary, evidence_span)
 
         score = 0.25
@@ -708,12 +792,12 @@ class ContextExtractionPipeline:
         elif len(text) <= 24:
             score += 0.10
         # Penalize literal one-shot details leaking into summary.
-        for pattern in _DOMAIN_LITERAL_PATTERNS:
+        for pattern in self._domain_literal_patterns:
             if re.search(pattern, text):
                 score -= 0.30
         if re.search(r"\d{1,2}(:|点)\d{0,2}", text):
             score -= 0.20
-        if any(marker in lowered for marker in _LOW_VALUE_LITERAL_MARKERS):
+        if any(marker in lowered for marker in self._low_value_literal_markers):
             score -= 0.18
         if any(token in text for token in ("播放", "打开", "搜索", "开始", "前往")) and len(text) >= 16:
             score -= 0.15
@@ -817,24 +901,25 @@ class ContextExtractionPipeline:
         subtype = "situation"
         summary = self._normalize_context_surface(text)
         lowered = summary.lower()
-        if any(marker in summary for marker in ("需要", "不足", "紧张", "受限")):
-            subtype = "constraint"
-        elif any(marker in summary for marker in ("目标", "希望", "想要")):
-            subtype = "goal"
-        elif any(marker in lowered for marker in ("车内", "app", "系统", "设备")):
-            subtype = "environment"
-        elif any(marker in summary for marker in ("会议", "开会")):
-            subtype = "situation"
-            summary = "会议场景"
+        for markers, configured_subtype in self._minimum_context_subtype_rules:
+            if any(marker.lower() in lowered for marker in markers):
+                subtype = configured_subtype
+                break
+        for markers, configured_subtype, configured_summary in self._minimum_context_phrase_rules:
+            if any(marker.lower() in lowered for marker in markers):
+                subtype = configured_subtype
+                summary = configured_summary
+                break
 
         if self._looks_like_event_or_result(summary, event):
-            if "导航" in summary:
-                summary = "出行导航场景"
-                subtype = "situation"
-            elif "勿扰" in summary:
-                summary = "减少打扰需求"
-                subtype = "constraint"
-            else:
+            matched_rule = False
+            for markers, configured_subtype, configured_summary in self._event_like_minimum_context_rules:
+                if any(marker.lower() in lowered for marker in markers):
+                    summary = configured_summary
+                    subtype = configured_subtype
+                    matched_rule = True
+                    break
+            if not matched_rule:
                 summary = self._normalize_context_surface(record_text) or "当前场景"
         summary = self._abstract_context_phrase(
             summary,
@@ -865,18 +950,14 @@ class ContextExtractionPipeline:
             return normalized
         source = f"{normalized} {evidence_span}".lower()
 
-        # Domain-specific abstraction rules: convert one-shot literal narration into reusable context labels.
-        if any(token in source for token in ("qq音乐", "网易云", "酷狗", "酷我", "歌曲", "歌单", "播放")):
-            return "音乐播放场景"
-        if any(token in source for token in ("导航", "地图", "路线", "充电桩", "目的地")):
-            return "出行导航场景"
-        if any(token in source for token in ("会议", "开会", "勿扰")):
-            if subtype == "constraint":
-                return "减少打扰需求"
-            return "会议场景"
+        for markers, required_subtype, configured_summary in self._abstract_context_rules:
+            if required_subtype is not None and required_subtype != subtype:
+                continue
+            if any(marker.lower() in source for marker in markers):
+                return configured_summary
 
         abstracted = normalized
-        for pattern in _DOMAIN_LITERAL_PATTERNS:
+        for pattern in self._domain_literal_patterns:
             abstracted = re.sub(pattern, "", abstracted).strip(" ，,。；;：:")
         abstracted = re.sub(
             r"(在)?(qq音乐|网易云|酷狗|酷我|喜马拉雅)(上)?",
@@ -886,15 +967,7 @@ class ContextExtractionPipeline:
         ).strip(" ，,。；;：:")
         abstracted = re.sub(r"(打开|播放|搜索|开始|继续|切换|前往|去往).{0,16}$", "", abstracted).strip(" ，,。；;：:")
         if not abstracted:
-            # Generic but still reusable fallback.
-            fallback_by_subtype = {
-                "constraint": "当前约束条件",
-                "goal": "当前目标",
-                "state": "当前状态",
-                "environment": "当前环境",
-                "phase": "当前阶段",
-            }
-            return fallback_by_subtype.get(subtype, "当前场景")
+            return self._abstract_context_fallback_by_subtype.get(subtype, "当前场景")
         return self._normalize_free_text(abstracted)
 
     def _make_source_refs(

@@ -173,6 +173,8 @@ src/
     └── test_search_fixes.py
 ```
 
+核心算法库的详细说明见 [`src/limem/README.md`](src/limem/README.md)。
+
 ### 核心模块
 
 | 模块 | 说明 |

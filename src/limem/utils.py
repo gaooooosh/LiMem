@@ -6,6 +6,81 @@ import re
 from datetime import datetime
 from typing import Any
 
+_DEFAULT_PARTICIPANT_HINTS = (
+    ("用户", "用户"),
+    ("我", "用户"),
+    ("我们", "用户"),
+    ("车机", "系统"),
+    ("系统", "系统"),
+    ("助手", "agent"),
+    ("agent", "agent"),
+    ("环境", "环境"),
+    ("天气", "环境"),
+    ("路况", "环境"),
+)
+_DEFAULT_DYNAMIC_CHANGE_HINTS = (
+    "说", "问", "播放", "导航", "打开", "开启", "关闭", "切换", "设置", "开始", "停止",
+    "暂停", "恢复", "提醒", "发现", "检测", "选择", "决定", "请求", "回复", "开始导航",
+    "调高", "调低", "拉满", "调整", "调节", "启动", "升高", "降低", "增大", "减小",
+    "增加", "减少", "升温", "降温", "调到", "调为", "切到", "切为", "进入", "退出",
+    "激活", "取消", "确认", "执行", "解锁", "锁定",
+)
+_DEFAULT_EVENT_SUMMARY_PARTICIPANT_SEPARATOR = "、"
+_DEFAULT_EVENT_SUMMARY_SEPARATOR = "；"
+_DEFAULT_EVENT_SUMMARY_TIME_PREFIX = "时间:"
+_DEFAULT_EVENT_SUMMARY_RESULT_PREFIX = "结果:"
+_DEFAULT_STRUCTURED_DIALOGUE_MARKERS = (
+    "用户说:", "用户说：", "车机回答:", "车机回答：", "->", "|",
+    "[", "]", "{", "}", "来源:", "屏幕:", "应用:", "payload", "source",
+)
+_DEFAULT_TELEMETRY_MARKERS = (
+    "环境感知",
+    "来源: 环境感知",
+    "cabin_env",
+    "weather",
+    "spatial",
+    "noise_db",
+    "temp_in",
+    "temp_out",
+)
+_DEFAULT_TELEMETRY_ROLES = frozenset({"环境", "环境感知"})
+_DEFAULT_PASSIVE_SCREEN_PREFIX = "[屏幕操作数据]"
+_DEFAULT_PASSIVE_SCREEN_METADATA_MARKERS = ("屏幕:", "应用:")
+_DEFAULT_PASSIVE_SCREEN_DYNAMIC_HINTS = (
+    "用户说", "车机回答", "播放", "打开", "开启", "关闭", "切换", "点击", "选择",
+    "搜索", "输入", "导航", "发起", "开始", "停止", "暂停", "恢复",
+    "调到", "调整", "启动", "提醒",
+)
+_DEFAULT_ENTITY_GENERIC_TERMS = {
+    "内容", "歌曲", "歌", "音乐", "视频", "动画片", "电影", "纪录片", "节目", "专辑",
+    "路线", "导航", "地址", "位置", "地方", "东西", "事情", "信息", "答案", "问题",
+    "用户说", "系统说", "车机回答",
+}
+_DEFAULT_ENTITY_TIME_TERMS = {
+    "上次", "上一次", "下次", "通常", "经常", "刚刚", "刚才", "今天", "昨天", "明天",
+    "上午", "下午", "晚上", "夜里", "早上", "随后", "之后", "以前", "现在",
+}
+_DEFAULT_ENTITY_ACTION_TERMS = {
+    "播放", "放", "听", "看", "导航", "去", "到", "打开", "开启", "关闭", "切换",
+    "设置", "查看", "查询", "收听", "提醒", "告诉",
+}
+_DEFAULT_ENTITY_ACTION_PHRASE_HINTS = {
+    "开会", "勿扰", "开勿扰", "导航去", "导航到", "播放", "暂停", "打开", "关闭",
+    "切换", "设置", "查看", "查询", "收听", "调整", "提醒",
+}
+_DEFAULT_ENTITY_STOP_WORDS = {
+    "的", "了", "吗", "呢", "啊", "呀", "吧", "这", "那个", "这个", "一下", "一下子",
+    "用户", "我", "我们", "你", "你们", "他", "她", "它",
+}
+_DEFAULT_ENTITY_PREFIXES = (
+    "用户说", "车机回答", "系统提示", "系统说", "帮我", "给我", "给孩子", "给", "帮", "请", "我想", "我要",
+    "我想要", "我需要", "想听", "想看", "想去", "播放", "放", "听", "看", "导航到", "导航去",
+    "导航", "去", "到", "打开", "开启", "关闭", "切换到", "切换", "设置", "查看", "查询",
+)
+_DEFAULT_ENTITY_TRAILING_SUFFIXES = (
+    "的歌", "的歌曲", "的音乐", "的专辑", "动画片", "电影", "纪录片", "视频",
+)
+
 
 def hash_summary(summary):
     # Event ID is a deterministic hash of its summary (as specified).
@@ -199,22 +274,14 @@ def _dedupe_participants(participants: list[dict[str, str]]) -> list[dict[str, s
     return unique
 
 
-def _infer_participants_from_text(text: str) -> list[dict[str, str]]:
+def _infer_participants_from_text(
+    text: str,
+    participant_hints: tuple[tuple[str, str], ...] | None = None,
+) -> list[dict[str, str]]:
     if not text:
         return []
 
-    hints = [
-        ("用户", "用户"),
-        ("我", "用户"),
-        ("我们", "用户"),
-        ("车机", "系统"),
-        ("系统", "系统"),
-        ("助手", "agent"),
-        ("agent", "agent"),
-        ("环境", "环境"),
-        ("天气", "环境"),
-        ("路况", "环境"),
-    ]
+    hints = _DEFAULT_PARTICIPANT_HINTS if participant_hints is None else participant_hints
     participants: list[dict[str, str]] = []
     for needle, role in hints:
         if needle in text:
@@ -318,19 +385,17 @@ def _normalize_evidence(evidence_value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _looks_like_dynamic_change(summary: str, action: str) -> bool:
+def _looks_like_dynamic_change(
+    summary: str,
+    action: str,
+    dynamic_hints: tuple[str, ...] | None = None,
+) -> bool:
     text = f"{summary} {action}".strip().lower()
     if not text:
         return False
 
-    dynamic_hints = [
-        "说", "问", "播放", "导航", "打开", "开启", "关闭", "切换", "设置", "开始", "停止",
-        "暂停", "恢复", "提醒", "发现", "检测", "选择", "决定", "请求", "回复", "开始导航",
-        "调高", "调低", "拉满", "调整", "调节", "启动", "升高", "降低", "增大", "减小",
-        "增加", "减少", "升温", "降温", "调到", "调为", "切到", "切为", "进入", "退出",
-        "激活", "取消", "确认", "执行", "解锁", "锁定",
-    ]
-    return any(token in text for token in dynamic_hints)
+    hints = _DEFAULT_DYNAMIC_CHANGE_HINTS if dynamic_hints is None else dynamic_hints
+    return any(token in text for token in hints)
 
 
 def _build_event_summary(
@@ -338,8 +403,21 @@ def _build_event_summary(
     action: str,
     time_range: dict[str, Any],
     result: str,
+    participant_separator: str | None = None,
+    field_separator: str | None = None,
+    time_prefix: str | None = None,
+    result_prefix: str | None = None,
 ) -> str:
-    actor_text = "、".join(item["role"] for item in participants[:3] if item.get("role"))
+    resolved_participant_separator = (
+        _DEFAULT_EVENT_SUMMARY_PARTICIPANT_SEPARATOR
+        if participant_separator is None
+        else participant_separator
+    )
+    resolved_field_separator = _DEFAULT_EVENT_SUMMARY_SEPARATOR if field_separator is None else field_separator
+    resolved_time_prefix = _DEFAULT_EVENT_SUMMARY_TIME_PREFIX if time_prefix is None else time_prefix
+    resolved_result_prefix = _DEFAULT_EVENT_SUMMARY_RESULT_PREFIX if result_prefix is None else result_prefix
+
+    actor_text = resolved_participant_separator.join(item["role"] for item in participants[:3] if item.get("role"))
     time_text = ""
     if time_range.get("start", 0) > 0:
         time_text = datetime.fromtimestamp(time_range["start"]).strftime("%Y-%m-%d %H:%M")
@@ -352,14 +430,18 @@ def _build_event_summary(
     elif action:
         parts.append(action)
     if time_text:
-        parts.append(f"时间:{time_text}")
+        parts.append(f"{resolved_time_prefix}{time_text}")
     if result:
-        parts.append(f"结果:{result}")
+        parts.append(f"{resolved_result_prefix}{result}")
 
-    return "；".join(parts).strip("；")
+    return resolved_field_separator.join(parts)
 
 
-def _looks_like_episode_text(summary: str, episode_text: str) -> bool:
+def _looks_like_episode_text(
+    summary: str,
+    episode_text: str,
+    structured_dialogue_markers: tuple[str, ...] | None = None,
+) -> bool:
     summary_text = _to_text(summary)
     episode = _to_text(episode_text)
     if not summary_text or not episode:
@@ -372,7 +454,7 @@ def _looks_like_episode_text(summary: str, episode_text: str) -> bool:
     normalized_stripped_episode = stripped_episode.replace(" ", "")
     if (
         normalized_summary == normalized_stripped_episode
-        and not _looks_like_structured_dialogue_or_record(episode)
+        and not _looks_like_structured_dialogue_or_record(episode, markers=structured_dialogue_markers)
     ):
         return False
 
@@ -390,21 +472,21 @@ def _looks_like_episode_text(summary: str, episode_text: str) -> bool:
         len(summary_text) >= 20
         and ratio >= 0.92
         and length_ratio >= 0.88
-        and _looks_like_structured_dialogue_or_record(episode)
+        and _looks_like_structured_dialogue_or_record(episode, markers=structured_dialogue_markers)
     ):
         return True
     return False
 
 
-def _looks_like_structured_dialogue_or_record(text: str) -> bool:
+def _looks_like_structured_dialogue_or_record(
+    text: str,
+    markers: tuple[str, ...] | None = None,
+) -> bool:
     normalized = str(text or "").strip()
     if not normalized:
         return False
-    markers = (
-        "用户说:", "用户说：", "车机回答:", "车机回答：", "->", "|",
-        "[", "]", "{", "}", "来源:", "屏幕:", "应用:", "payload", "source",
-    )
-    return any(marker in normalized for marker in markers)
+    resolved_markers = _DEFAULT_STRUCTURED_DIALOGUE_MARKERS if markers is None else markers
+    return any(marker in normalized for marker in resolved_markers)
 
 
 _LEADING_TEMPORAL_PREFIX_PATTERN = re.compile(
@@ -457,22 +539,19 @@ def _looks_like_raw_record(text: str) -> bool:
     return marker_hits >= 3
 
 
-def _looks_like_telemetry_snapshot(text: str, participants: list[dict[str, str]]) -> bool:
+def _looks_like_telemetry_snapshot(
+    text: str,
+    participants: list[dict[str, str]],
+    telemetry_markers: tuple[str, ...] | None = None,
+    telemetry_roles: set[str] | frozenset[str] | None = None,
+) -> bool:
     normalized = str(text or "").strip().lower()
     if not normalized:
         return False
 
-    telemetry_markers = (
-        "环境感知",
-        "来源: 环境感知",
-        "cabin_env",
-        "weather",
-        "spatial",
-        "noise_db",
-        "temp_in",
-        "temp_out",
-    )
-    marker_hits = sum(1 for marker in telemetry_markers if marker in normalized)
+    resolved_markers = _DEFAULT_TELEMETRY_MARKERS if telemetry_markers is None else telemetry_markers
+    allowed_roles = _DEFAULT_TELEMETRY_ROLES if telemetry_roles is None else set(telemetry_roles)
+    marker_hits = sum(1 for marker in resolved_markers if marker in normalized)
     if marker_hits < 2:
         return False
 
@@ -481,60 +560,65 @@ def _looks_like_telemetry_snapshot(text: str, participants: list[dict[str, str]]
     roles = {str(item.get("role", "") or "").strip() for item in participants if isinstance(item, dict)}
     if not roles:
         return True
-    return roles.issubset({"环境", "环境感知"})
+    return roles.issubset(allowed_roles)
 
 
-def _looks_like_passive_screen_app_metadata(episode_text: str) -> bool:
+def _looks_like_passive_screen_app_metadata(
+    episode_text: str,
+    prefix: str | None = None,
+    metadata_markers: tuple[str, ...] | None = None,
+    dynamic_hints: tuple[str, ...] | None = None,
+) -> bool:
     text = str(episode_text or "").strip()
-    if not text.startswith("[屏幕操作数据]"):
+    resolved_prefix = _DEFAULT_PASSIVE_SCREEN_PREFIX if prefix is None else prefix
+    resolved_markers = (
+        _DEFAULT_PASSIVE_SCREEN_METADATA_MARKERS
+        if metadata_markers is None
+        else metadata_markers
+    )
+    resolved_dynamic_hints = (
+        _DEFAULT_PASSIVE_SCREEN_DYNAMIC_HINTS
+        if dynamic_hints is None
+        else dynamic_hints
+    )
+    if not text.startswith(resolved_prefix):
         return False
-    if not any(marker in text for marker in ("屏幕:", "应用:")):
+    if not any(marker in text for marker in resolved_markers):
         return False
 
     # Metadata-only screen snapshots should not become memory events.
-    dynamic_hints = (
-        "用户说", "车机回答", "播放", "打开", "开启", "关闭", "切换", "点击", "选择",
-        "搜索", "输入", "导航", "发起", "开始", "停止", "暂停", "恢复",
-        "调到", "调整", "启动", "提醒",
-    )
-    return not any(token in text for token in dynamic_hints)
+    return not any(token in text for token in resolved_dynamic_hints)
 
 
-_ENTITY_GENERIC_TERMS = {
-    "内容", "歌曲", "歌", "音乐", "视频", "动画片", "电影", "纪录片", "节目", "专辑",
-    "路线", "导航", "地址", "位置", "地方", "东西", "事情", "信息", "答案", "问题",
-    "用户说", "系统说", "车机回答",
-}
-_ENTITY_TIME_TERMS = {
-    "上次", "上一次", "下次", "通常", "经常", "刚刚", "刚才", "今天", "昨天", "明天",
-    "上午", "下午", "晚上", "夜里", "早上", "随后", "之后", "以前", "现在",
-}
-_ENTITY_ACTION_TERMS = {
-    "播放", "放", "听", "看", "导航", "去", "到", "打开", "开启", "关闭", "切换",
-    "设置", "查看", "查询", "收听", "提醒", "告诉",
-}
-_ENTITY_ACTION_PHRASE_HINTS = {
-    "开会", "勿扰", "开勿扰", "导航去", "导航到", "播放", "暂停", "打开", "关闭",
-    "切换", "设置", "查看", "查询", "收听", "调整", "提醒",
-}
-_ENTITY_STOP_WORDS = {
-    "的", "了", "吗", "呢", "啊", "呀", "吧", "这", "那个", "这个", "一下", "一下子",
-    "用户", "我", "我们", "你", "你们", "他", "她", "它",
-}
-_ENTITY_PREFIXES = (
-    "用户说", "车机回答", "系统提示", "系统说", "帮我", "给我", "给孩子", "给", "帮", "请", "我想", "我要",
-    "我想要", "我需要", "想听", "想看", "想去", "播放", "放", "听", "看", "导航到", "导航去",
-    "导航", "去", "到", "打开", "开启", "关闭", "切换到", "切换", "设置", "查看", "查询",
-)
-_ENTITY_TRAILING_SUFFIXES = (
-    "的歌", "的歌曲", "的音乐", "的专辑", "动画片", "电影", "纪录片", "视频",
-)
-
-
-def _normalize_entity_name(value: Any) -> str:
+def _normalize_entity_name(
+    value: Any,
+    generic_terms: set[str] | None = None,
+    time_terms: set[str] | None = None,
+    action_terms: set[str] | None = None,
+    action_phrase_hints: set[str] | None = None,
+    stop_words: set[str] | None = None,
+    prefixes: tuple[str, ...] | None = None,
+    trailing_suffixes: tuple[str, ...] | None = None,
+) -> str:
     text = _to_text(value)
     if not text:
         return ""
+
+    resolved_generic_terms = _DEFAULT_ENTITY_GENERIC_TERMS if generic_terms is None else generic_terms
+    resolved_time_terms = _DEFAULT_ENTITY_TIME_TERMS if time_terms is None else time_terms
+    resolved_action_terms = _DEFAULT_ENTITY_ACTION_TERMS if action_terms is None else action_terms
+    resolved_action_phrase_hints = (
+        _DEFAULT_ENTITY_ACTION_PHRASE_HINTS
+        if action_phrase_hints is None
+        else action_phrase_hints
+    )
+    resolved_stop_words = _DEFAULT_ENTITY_STOP_WORDS if stop_words is None else stop_words
+    resolved_prefixes = _DEFAULT_ENTITY_PREFIXES if prefixes is None else prefixes
+    resolved_trailing_suffixes = (
+        _DEFAULT_ENTITY_TRAILING_SUFFIXES
+        if trailing_suffixes is None
+        else trailing_suffixes
+    )
 
     text = re.sub(r"^[\"'“”‘’《》【】\[\]()（）]+|[\"'“”‘’《》【】\[\]()（）]+$", "", text)
     text = re.sub(r"^(内容|目的地|地点|位置)[:：]", "", text).strip()
@@ -542,39 +626,50 @@ def _normalize_entity_name(value: Any) -> str:
     changed = True
     while changed and text:
         changed = False
-        for prefix in _ENTITY_PREFIXES:
+        for prefix in resolved_prefixes:
             if text.startswith(prefix) and len(text) > len(prefix) + 1:
                 text = text[len(prefix):].strip(" ：:，,的")
                 changed = True
 
-    for suffix in _ENTITY_TRAILING_SUFFIXES:
+    for suffix in resolved_trailing_suffixes:
         if text.endswith(suffix) and len(text) > len(suffix) + 1:
             text = text[: -len(suffix)].strip(" 的")
             break
 
     text = text.strip(" ，,。：:;；!?？！")
-    if not text or text in _ENTITY_STOP_WORDS:
+    if not text or text in resolved_stop_words:
         return ""
-    if text in _ENTITY_GENERIC_TERMS or text in _ENTITY_TIME_TERMS or text in _ENTITY_ACTION_TERMS:
+    if text in resolved_generic_terms or text in resolved_time_terms or text in resolved_action_terms:
         return ""
-    if text in _ENTITY_ACTION_PHRASE_HINTS:
+    if text in resolved_action_phrase_hints:
         return ""
     if text.isdigit():
         return ""
     if len(text) <= 1:
         return ""
 
-    if any(term in text for term in _ENTITY_ACTION_TERMS) and any(term in text for term in _ENTITY_GENERIC_TERMS):
+    if any(term in text for term in resolved_action_terms) and any(term in text for term in resolved_generic_terms):
         return ""
-    if any(term in text for term in _ENTITY_TIME_TERMS) and len(text) <= 4:
+    if any(term in text for term in resolved_time_terms) and len(text) <= 4:
         return ""
-    if any(text.startswith(term) for term in _ENTITY_ACTION_PHRASE_HINTS):
+    if any(text.startswith(term) for term in resolved_action_phrase_hints):
         return ""
 
     return text
 
 
-def normalize_entity_candidates(payload: Any, source_text: str = "") -> list[str]:
+def normalize_entity_candidates(
+    payload: Any,
+    source_text: str = "",
+    *,
+    entity_generic_terms: set[str] | None = None,
+    entity_time_terms: set[str] | None = None,
+    entity_action_terms: set[str] | None = None,
+    entity_action_phrase_hints: set[str] | None = None,
+    entity_stop_words: set[str] | None = None,
+    entity_prefixes: tuple[str, ...] | None = None,
+    entity_trailing_suffixes: tuple[str, ...] | None = None,
+) -> list[str]:
     if isinstance(payload, dict):
         raw_entities = payload.get("entities", payload.get("entity", []))
     else:
@@ -590,7 +685,16 @@ def normalize_entity_candidates(payload: Any, source_text: str = "") -> list[str
             text = _pick_first(item, ["name", "entity", "id", "label"], "")
         else:
             text = item
-        name = _normalize_entity_name(text)
+        name = _normalize_entity_name(
+            text,
+            generic_terms=entity_generic_terms,
+            time_terms=entity_time_terms,
+            action_terms=entity_action_terms,
+            action_phrase_hints=entity_action_phrase_hints,
+            stop_words=entity_stop_words,
+            prefixes=entity_prefixes,
+            trailing_suffixes=entity_trailing_suffixes,
+        )
         if not name or name in seen:
             continue
         seen.add(name)
@@ -599,7 +703,23 @@ def normalize_entity_candidates(payload: Any, source_text: str = "") -> list[str
     return normalized
 
 
-def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, Any]:
+def normalize_event_payload(
+    payload: Any,
+    episode_text: str = "",
+    *,
+    participant_hints: tuple[tuple[str, str], ...] | None = None,
+    dynamic_hints: tuple[str, ...] | None = None,
+    structured_dialogue_markers: tuple[str, ...] | None = None,
+    telemetry_markers: tuple[str, ...] | None = None,
+    telemetry_roles: set[str] | frozenset[str] | None = None,
+    passive_screen_prefix: str | None = None,
+    passive_screen_markers: tuple[str, ...] | None = None,
+    passive_screen_dynamic_hints: tuple[str, ...] | None = None,
+    event_summary_participant_separator: str | None = None,
+    event_summary_separator: str | None = None,
+    event_summary_time_prefix: str | None = None,
+    event_summary_result_prefix: str | None = None,
+) -> dict[str, Any]:
     """Normalize LLM event output to the system's canonical event schema.
 
     Supports both:
@@ -635,7 +755,10 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
     )
     participants = _normalize_participants(actor_value)
     if not participants:
-        participants = _infer_participants_from_text(f"{episode_text} {_to_text(event_payload)}")
+        participants = _infer_participants_from_text(
+            f"{episode_text} {_to_text(event_payload)}",
+            participant_hints=participant_hints,
+        )
     participants = _dedupe_participants(participants)
     time_range = _normalize_time_range(time_value)
     action = _sanitize_event_field_text(action_value)
@@ -644,7 +767,14 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
         _pick_first(event_payload, ["summary", "Summary", "event_summary"], "")
     )
 
-    if summary and (_looks_like_episode_text(summary, episode_text) or _looks_like_raw_record(summary)):
+    if summary and (
+        _looks_like_episode_text(
+            summary,
+            episode_text,
+            structured_dialogue_markers=structured_dialogue_markers,
+        )
+        or _looks_like_raw_record(summary)
+    ):
         summary = ""
     if action and _looks_like_raw_record(action):
         action = ""
@@ -652,7 +782,16 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
         result = ""
 
     if not summary:
-        summary = _build_event_summary(participants, action, time_range, result)
+        summary = _build_event_summary(
+            participants,
+            action,
+            time_range,
+            result,
+            participant_separator=event_summary_participant_separator,
+            field_separator=event_summary_separator,
+            time_prefix=event_summary_time_prefix,
+            result_prefix=event_summary_result_prefix,
+        )
 
     causality = _to_text(_pick_first(event_payload, ["causality", "cause", "reason"], ""))
     if not causality:
@@ -670,17 +809,27 @@ def normalize_event_payload(payload: Any, episode_text: str = "") -> dict[str, A
             _to_text(event_payload),
         ]
     )
-    if _looks_like_telemetry_snapshot(telemetry_hint_text, participants):
+    if _looks_like_telemetry_snapshot(
+        telemetry_hint_text,
+        participants,
+        telemetry_markers=telemetry_markers,
+        telemetry_roles=telemetry_roles,
+    ):
         summary = ""
         action = ""
         causality = ""
 
-    if _looks_like_passive_screen_app_metadata(episode_text):
+    if _looks_like_passive_screen_app_metadata(
+        episode_text,
+        prefix=passive_screen_prefix,
+        metadata_markers=passive_screen_markers,
+        dynamic_hints=passive_screen_dynamic_hints,
+    ):
         summary = ""
         action = ""
         causality = ""
 
-    if not _looks_like_dynamic_change(summary, action):
+    if not _looks_like_dynamic_change(summary, action, dynamic_hints=dynamic_hints):
         action = ""
         summary = ""
 

@@ -2540,11 +2540,15 @@ class DynamicEvolutionEngine:
 
     def _resolve_merge_strategy(self, strategy: str) -> str:
         requested = (strategy or self.config.merge_decision_strategy or "auto").strip().lower()
-        if requested not in {"auto", "llm"}:
+        if requested not in {"auto", "llm", "heuristic", "disabled"}:
             requested = "auto"
+        if requested == "disabled":
+            return "disabled"
+        if requested == "heuristic":
+            return "heuristic"
         if requested == "llm":
             return "llm" if self._llm_merge_available() else "disabled"
-        return "llm" if self._llm_merge_available() else "disabled"
+        return "llm" if self._llm_merge_available() else "heuristic"
 
     def _llm_merge_available(self) -> bool:
         api_key = str(self.config.llm_api_key or "").strip()

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from limem.builder.extractor import ExtractionResult
-from limem.trips_debugger import TripsDebuggerConfig, TripsDebuggerSession
+from script.trips_debugger import TripsDebuggerConfig, TripsDebuggerSession
 
 
 class TestTripsDebuggerSession(unittest.TestCase):

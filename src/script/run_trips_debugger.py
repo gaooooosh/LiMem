@@ -14,7 +14,7 @@ SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from limem.trips_debugger import TripsDebuggerConfig, create_trips_debugger_app
+from script.trips_debugger import TripsDebuggerConfig, create_trips_debugger_app
 
 
 def _parse_args() -> argparse.Namespace:
