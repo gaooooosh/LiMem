@@ -76,7 +76,16 @@ class DashScopeClient:
             raise ValueError("No generation model specified.")
         # Strip dashscope-specific params that OpenAI client doesn't accept
         kwargs.pop("result_format", None)
-        kwargs.pop("enable_thinking", None)
+        # For qwen3+ models, the DashScope API defaults to enable_thinking=True
+        # which is extremely slow for non-streaming calls. Explicitly disable
+        # unless the caller opts in.
+        enable_thinking = kwargs.pop("enable_thinking", None)
+        if enable_thinking is None and self._is_thinking_model(resolved_model):
+            enable_thinking = False
+        if enable_thinking is not None:
+            extra_body = kwargs.pop("extra_body", {}) or {}
+            extra_body["enable_thinking"] = enable_thinking
+            kwargs["extra_body"] = extra_body
         client = self._get_openai_client()
         response = client.chat.completions.create(
             model=resolved_model,
@@ -84,6 +93,12 @@ class DashScopeClient:
             **kwargs,
         )
         return response
+
+    @staticmethod
+    def _is_thinking_model(model: str) -> bool:
+        """Check if a model defaults to thinking mode on DashScope."""
+        m = model.lower()
+        return "qwen3" in m or "qwq" in m
 
     def call_generation_from_prompts(
         self,
