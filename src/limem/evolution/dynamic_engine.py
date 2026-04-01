@@ -15,8 +15,7 @@ import time
 import uuid
 
 try:
-    import dashscope
-    from dashscope import Generation
+    pass
 except Exception:  # pragma: no cover - optional dependency for offline mode
     dashscope = None
     Generation = None
@@ -179,20 +178,26 @@ class WriteBatchReport(EvolutionReport):
 class DynamicEvolutionEngine:
     """Incremental dynamic graph update and retrieval engine."""
 
-    def __init__(self, store: Any, config: Optional[DynamicEvolutionConfig] = None):
+    def __init__(
+        self,
+        store: Any,
+        config: Optional[DynamicEvolutionConfig] = None,
+        llm_client: Optional[DashScopeClient] = None,
+    ):
         self.store = store
         self.config = config or DynamicEvolutionConfig()
         self._last_consolidation_at = 0
-        self.llm_client = DashScopeClient(
-            api_key=self.config.llm_api_key,
-            base_url=self.config.llm_base_url,
-            generation_api_resolver=lambda: Generation,
-        )
+        if llm_client is not None:
+            self.llm_client = llm_client
+        else:
+            self.llm_client = DashScopeClient(
+                api_key=self.config.llm_api_key,
+                base_url=self.config.llm_base_url,
+            )
         self.context_extractor = ContextExtractionPipeline(
-            api_key=self.config.llm_api_key,
-            base_url=self.config.llm_base_url,
             generation_model=self.config.llm_model,
             offline_mode=False,
+            llm_client=self.llm_client,
         )
 
     # -------------------------------------------------------------------------
@@ -461,11 +466,7 @@ class DynamicEvolutionEngine:
                         "content": json.dumps(payload, ensure_ascii=False),
                     },
                 ],
-                result_format="message",
-                enable_thinking=False,
             )
-            if not self.llm_client.is_success(resp):
-                return None
             content = self.llm_client.message_content(resp)
             data = robust_json_loads(content, None)
             return data if isinstance(data, dict) else None
@@ -3027,11 +3028,7 @@ class DynamicEvolutionEngine:
                         "content": json.dumps(payload, ensure_ascii=False),
                     },
                 ],
-                result_format="message",
-                enable_thinking=False,
             )
-            if not self.llm_client.is_success(resp):
-                return None
             content = self.llm_client.message_content(resp)
             data = robust_json_loads(content, None)
             return data if isinstance(data, dict) else None

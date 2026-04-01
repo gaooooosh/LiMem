@@ -2,22 +2,55 @@
 import json
 import types
 import unittest
+from unittest.mock import MagicMock
 
 from limem.builder.context_extractor import ContextExtractionPipeline
 from limem.core.context import ContextDraft, ContextSpan
 from limem.core.event import Event
 from limem.evolution.dynamic_engine import DynamicEvolutionConfig, DynamicEvolutionEngine
+from limem.llm import DashScopeClient
 
 import limem.builder.context_extractor as context_extractor_module
 
 
+def _make_openai_chat_response(content: str):
+    """Create a mock OpenAI ChatCompletion response."""
+    return types.SimpleNamespace(
+        choices=[
+            types.SimpleNamespace(
+                message=types.SimpleNamespace(content=content),
+            )
+        ],
+    )
+
+
+def _make_mock_client(side_effect_fn):
+    """Create a DashScopeClient with a mocked OpenAI client."""
+    client = DashScopeClient(
+        api_key="test-key",
+        base_url="http://test.local",
+        generation_model="test-model",
+    )
+    mock_openai = MagicMock()
+    mock_openai.chat.completions.create.side_effect = side_effect_fn
+    client._openai_client = mock_openai
+    return client
+
+
 class TestContextExtractorBatch(unittest.TestCase):
-    def _make_test_pipeline(self):
+    def _make_test_pipeline(self, call_side_effect=None):
+        if call_side_effect is not None:
+            client = _make_mock_client(call_side_effect)
+        else:
+            client = DashScopeClient(
+                api_key="test-key",
+                base_url="http://test.local",
+                generation_model="test-model",
+            )
         pipeline = ContextExtractionPipeline(
-            api_key="test-key",
-            base_url="http://test.local",
             generation_model="test-model",
             offline_mode=False,
+            llm_client=client,
         )
         pipeline.detect_context_candidates = lambda record, event=None: [
             ContextSpan(
@@ -45,11 +78,46 @@ class TestContextExtractorBatch(unittest.TestCase):
         return pipeline
 
     def test_extract_batch_uses_single_llm_call_for_multiple_events(self):
+        call_count = 0
+
+        def fake_create(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            payload = {
+                "items": [
+                    {
+                        "item_index": 0,
+                        "contexts": [
+                            {
+                                "subtype": "state",
+                                "summary": "电量低",
+                                "structured_slots": {"battery_level": 12},
+                                "confidence": 0.91,
+                                "evidence_span": "电量只剩12%",
+                            }
+                        ],
+                    },
+                    {
+                        "item_index": 1,
+                        "contexts": [
+                            {
+                                "subtype": "constraint",
+                                "summary": "时间紧张",
+                                "structured_slots": {"deadline": "马上出发"},
+                                "confidence": 0.88,
+                                "evidence_span": "快迟到了",
+                            }
+                        ],
+                    },
+                ]
+            }
+            return _make_openai_chat_response(json.dumps(payload, ensure_ascii=False))
+
+        client = _make_mock_client(fake_create)
         pipeline = ContextExtractionPipeline(
-            api_key="test-key",
-            base_url="http://test.local",
             generation_model="test-model",
             offline_mode=False,
+            llm_client=client,
         )
         pipeline.detect_context_candidates = lambda record, event=None: (
             [ContextSpan(text="电量只剩12%", signal="battery", subtype_hint="state", source="record")]
@@ -61,27 +129,40 @@ class TestContextExtractorBatch(unittest.TestCase):
         pipeline.canonicalize_context = lambda draft: draft
         pipeline._fallback_extract_contexts = lambda record_text, event, candidate_spans: []
 
-        original_generation = context_extractor_module.Generation
-        original_dashscope = context_extractor_module.dashscope
+        results = pipeline.extract_batch(
+            records=[
+                "电量只剩12%，用户开始寻找附近充电桩",
+                "快迟到了，系统建议立即出发",
+            ],
+            events=[
+                Event(summary="用户寻找充电桩", timestamp=1, last_active=1),
+                Event(summary="系统建议立即出发", timestamp=2, last_active=2),
+            ],
+        )
 
-        class _FakeGeneration:
-            calls = 0
+        self.assertEqual(call_count, 1)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0][0].summary, "电量低")
+        self.assertEqual(results[1][0].summary, "时间紧张")
 
-            @staticmethod
-            def call(**kwargs):
-                _FakeGeneration.calls += 1
-                del kwargs
-                payload = {
+    def test_extract_batch_preserves_successful_slices_when_later_slice_mismatches(self):
+        call_count = 0
+
+        def fake_create(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            payload = (
+                {
                     "items": [
                         {
                             "item_index": 0,
                             "contexts": [
                                 {
                                     "subtype": "state",
-                                    "summary": "电量低",
-                                    "structured_slots": {"battery_level": 12},
-                                    "confidence": 0.91,
-                                    "evidence_span": "电量只剩12%",
+                                    "summary": "批量成功-0",
+                                    "structured_slots": {"state": "ok0"},
+                                    "confidence": 0.9,
+                                    "evidence_span": "record-0",
                                 }
                             ],
                         },
@@ -89,120 +170,25 @@ class TestContextExtractorBatch(unittest.TestCase):
                             "item_index": 1,
                             "contexts": [
                                 {
-                                    "subtype": "constraint",
-                                    "summary": "时间紧张",
-                                    "structured_slots": {"deadline": "马上出发"},
-                                    "confidence": 0.88,
-                                    "evidence_span": "快迟到了",
+                                    "subtype": "state",
+                                    "summary": "批量成功-1",
+                                    "structured_slots": {"state": "ok1"},
+                                    "confidence": 0.9,
+                                    "evidence_span": "record-1",
                                 }
                             ],
                         },
                     ]
                 }
-                return types.SimpleNamespace(
-                    status_code=200,
-                    output=types.SimpleNamespace(
-                        choices=[
-                            types.SimpleNamespace(
-                                message=types.SimpleNamespace(
-                                    content=json.dumps(payload, ensure_ascii=False)
-                                )
-                            )
-                        ]
-                    ),
-                )
-
-        context_extractor_module.Generation = _FakeGeneration
-        context_extractor_module.dashscope = types.SimpleNamespace(
-            base_http_api_url="",
-            api_key="",
-        )
-        try:
-            results = pipeline.extract_batch(
-                records=[
-                    "电量只剩12%，用户开始寻找附近充电桩",
-                    "快迟到了，系统建议立即出发",
-                ],
-                events=[
-                    Event(summary="用户寻找充电桩", timestamp=1, last_active=1),
-                    Event(summary="系统建议立即出发", timestamp=2, last_active=2),
-                ],
+                if call_count == 1
+                else {"items": []}
             )
-        finally:
-            context_extractor_module.Generation = original_generation
-            context_extractor_module.dashscope = original_dashscope
+            return _make_openai_chat_response(json.dumps(payload, ensure_ascii=False))
 
-        self.assertEqual(_FakeGeneration.calls, 1)
-        self.assertEqual(len(results), 2)
-        self.assertEqual(results[0][0].summary, "电量低")
-        self.assertEqual(results[1][0].summary, "时间紧张")
-
-    def test_extract_batch_preserves_successful_slices_when_later_slice_mismatches(self):
-        pipeline = self._make_test_pipeline()
-
-        original_generation = context_extractor_module.Generation
-        original_dashscope = context_extractor_module.dashscope
         original_batch_size = context_extractor_module.CONTEXT_EXTRACTION_BATCH_SIZE
-
-        class _FakeGeneration:
-            calls = 0
-
-            @staticmethod
-            def call(**kwargs):
-                _FakeGeneration.calls += 1
-                del kwargs
-                payload = (
-                    {
-                        "items": [
-                            {
-                                "item_index": 0,
-                                "contexts": [
-                                    {
-                                        "subtype": "state",
-                                        "summary": "批量成功-0",
-                                        "structured_slots": {"state": "ok0"},
-                                        "confidence": 0.9,
-                                        "evidence_span": "record-0",
-                                    }
-                                ],
-                            },
-                            {
-                                "item_index": 1,
-                                "contexts": [
-                                    {
-                                        "subtype": "state",
-                                        "summary": "批量成功-1",
-                                        "structured_slots": {"state": "ok1"},
-                                        "confidence": 0.9,
-                                        "evidence_span": "record-1",
-                                    }
-                                ],
-                            },
-                        ]
-                    }
-                    if _FakeGeneration.calls == 1
-                    else {"items": []}
-                )
-                return types.SimpleNamespace(
-                    status_code=200,
-                    output=types.SimpleNamespace(
-                        choices=[
-                            types.SimpleNamespace(
-                                message=types.SimpleNamespace(
-                                    content=json.dumps(payload, ensure_ascii=False)
-                                )
-                            )
-                        ]
-                    ),
-                )
-
-        context_extractor_module.Generation = _FakeGeneration
-        context_extractor_module.dashscope = types.SimpleNamespace(
-            base_http_api_url="",
-            api_key="",
-        )
         context_extractor_module.CONTEXT_EXTRACTION_BATCH_SIZE = 2
         try:
+            pipeline = self._make_test_pipeline(call_side_effect=fake_create)
             results = pipeline.extract_batch(
                 records=["record-0", "record-1", "record-2"],
                 events=[
@@ -212,80 +198,51 @@ class TestContextExtractorBatch(unittest.TestCase):
                 ],
             )
         finally:
-            context_extractor_module.Generation = original_generation
-            context_extractor_module.dashscope = original_dashscope
             context_extractor_module.CONTEXT_EXTRACTION_BATCH_SIZE = original_batch_size
 
-        self.assertEqual(_FakeGeneration.calls, 2)
+        self.assertEqual(call_count, 2)
         self.assertEqual([drafts[0].summary for drafts in results], ["批量成功-0", "批量成功-1", "fallback:evt_2"])
 
     def test_extract_batch_skips_invalid_item_index_without_aborting_the_batch(self):
-        pipeline = self._make_test_pipeline()
+        def fake_create(**kwargs):
+            payload = {
+                "items": [
+                    {
+                        "item_index": "two",
+                        "contexts": [
+                            {
+                                "subtype": "state",
+                                "summary": "坏索引",
+                                "structured_slots": {"state": "bad"},
+                                "confidence": 0.2,
+                                "evidence_span": "record-0",
+                            }
+                        ],
+                    },
+                    {
+                        "item_index": 1,
+                        "contexts": [
+                            {
+                                "subtype": "goal",
+                                "summary": "批量成功-1",
+                                "structured_slots": {"goal": "ok1"},
+                                "confidence": 0.91,
+                                "evidence_span": "record-1",
+                            }
+                        ],
+                    },
+                ]
+            }
+            return _make_openai_chat_response(json.dumps(payload, ensure_ascii=False))
 
-        original_generation = context_extractor_module.Generation
-        original_dashscope = context_extractor_module.dashscope
-
-        class _FakeGeneration:
-            @staticmethod
-            def call(**kwargs):
-                del kwargs
-                payload = {
-                    "items": [
-                        {
-                            "item_index": "two",
-                            "contexts": [
-                                {
-                                    "subtype": "state",
-                                    "summary": "坏索引",
-                                    "structured_slots": {"state": "bad"},
-                                    "confidence": 0.2,
-                                    "evidence_span": "record-0",
-                                }
-                            ],
-                        },
-                        {
-                            "item_index": 1,
-                            "contexts": [
-                                {
-                                    "subtype": "goal",
-                                    "summary": "批量成功-1",
-                                    "structured_slots": {"goal": "ok1"},
-                                    "confidence": 0.91,
-                                    "evidence_span": "record-1",
-                                }
-                            ],
-                        },
-                    ]
-                }
-                return types.SimpleNamespace(
-                    status_code=200,
-                    output=types.SimpleNamespace(
-                        choices=[
-                            types.SimpleNamespace(
-                                message=types.SimpleNamespace(
-                                    content=json.dumps(payload, ensure_ascii=False)
-                                )
-                            )
-                        ]
-                    ),
-                )
-
-        context_extractor_module.Generation = _FakeGeneration
-        context_extractor_module.dashscope = types.SimpleNamespace(
-            base_http_api_url="",
-            api_key="",
+        pipeline = self._make_test_pipeline(call_side_effect=fake_create)
+        results = pipeline.extract_batch(
+            records=["record-0", "record-1"],
+            events=[
+                Event(id="evt_0", summary="事件0", timestamp=1, last_active=1),
+                Event(id="evt_1", summary="事件1", timestamp=2, last_active=2),
+            ],
         )
-        try:
-            results = pipeline.extract_batch(
-                records=["record-0", "record-1"],
-                events=[
-                    Event(id="evt_0", summary="事件0", timestamp=1, last_active=1),
-                    Event(id="evt_1", summary="事件1", timestamp=2, last_active=2),
-                ],
-            )
-        finally:
-            context_extractor_module.Generation = original_generation
-            context_extractor_module.dashscope = original_dashscope
 
         self.assertEqual([drafts[0].summary for drafts in results], ["fallback:evt_0", "批量成功-1"])
 

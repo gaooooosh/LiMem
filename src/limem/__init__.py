@@ -29,7 +29,7 @@ from .core import (
 )
 
 # ==================== 工厂方法 ====================
-from .factory import create_ltm, create_ltm_from_env, EmbeddingClient
+from .factory import create_ltm, create_ltm_from_env
 from .llm import DashScopeClient
 
 # ==================== 存储层 ====================
@@ -150,7 +150,6 @@ __all__ = [
     # ===== 工厂方法 =====
     "create_ltm",
     "create_ltm_from_env",
-    "EmbeddingClient",
     "DashScopeClient",
     # ===== 存储层 =====
     "GraphStore",

@@ -55,31 +55,6 @@ from .llm import DashScopeClient
 from .utils import load_prompt
 
 
-class EmbeddingClient:
-    """嵌入向量客户端包装
-
-    提供统一的嵌入向量生成接口。
-    """
-
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        embedding_model: Optional[str] = None,
-    ):
-        self.api_key = api_key or DASHSCOPE_API_KEY
-        self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
-        self.embedding_model = embedding_model or EMBEDDING_MODEL
-        self.client = DashScopeClient(
-            api_key=self.api_key,
-            base_url=self.base_url,
-        )
-
-    def get_embedding(self, text: str) -> list[float]:
-        """获取文本嵌入向量"""
-        return self.client.embed_text(model=self.embedding_model, text=text)
-
-
 def create_ltm_system(
     db_path: str = DB_PATH,
     config: Optional[dict[str, Any]] = None,
@@ -108,37 +83,39 @@ def create_ltm_system(
     config = config or {}
     api_key = api_key or DASHSCOPE_API_KEY
     base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
-    # 1. 创建嵌入客户端
-    embedding_client = EmbeddingClient(
+    generation_model = config.get("generation_model", GENERATION_MODEL)
+    embedding_model = config.get("embedding_model", EMBEDDING_MODEL)
+
+    # 1. 创建统一的 LLM 客户端
+    llm_client = DashScopeClient(
         api_key=api_key,
         base_url=base_url,
-        embedding_model=config.get("embedding_model", EMBEDDING_MODEL),
+        generation_model=generation_model,
+        embedding_model=embedding_model,
     )
 
     # 2. 创建存储层
     store = KuzuStore(
         db_path=config.get("db_path", db_path),
-        embedding_client=embedding_client,
+        embedding_client=llm_client,
     )
 
     # 3. 创建提取器
     extractor_type = str(config.get("extractor_type", EXTRACTOR_TYPE) or "adaptive").strip().lower()
     if extractor_type == "two_stage":
         extractor = TwoStageExtractor(
-            api_key=api_key,
-            base_url=base_url,
-            generation_model=config.get("generation_model", GENERATION_MODEL),
+            generation_model=generation_model,
             enable_thinking=config.get("enable_thinking", False),
             llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),
+            llm_client=llm_client,
         )
     else:
         extractor = AdaptiveExtractor(
-            api_key=api_key,
-            base_url=base_url,
-            generation_model=config.get("generation_model", GENERATION_MODEL),
+            generation_model=generation_model,
             enable_thinking=config.get("enable_thinking", False),
             field_config=config.get("field_config"),
             plugins=config.get("extractor_plugins"),
+            llm_client=llm_client,
         )
 
     # 4. 创建合并器
@@ -173,7 +150,7 @@ def create_ltm_system(
             merge_decision_strategy=config.get("merge_decision_strategy", "auto"),
             llm_api_key=api_key,
             llm_base_url=base_url,
-            llm_model=config.get("generation_model", GENERATION_MODEL),
+            llm_model=generation_model,
             enable_auto_consolidation=config.get("enable_auto_consolidation", True),
             context_extraction_batch_size=config.get(
                 "context_extraction_batch_size",
@@ -197,6 +174,7 @@ def create_ltm_system(
         dynamic_engine = DynamicEvolutionEngine(
             store=store,
             config=dynamic_config,
+            llm_client=llm_client,
         )
 
     builder = MemoryBuilder(
@@ -204,16 +182,15 @@ def create_ltm_system(
         consolidator=consolidator,
         store=store,
         config=builder_config,
-        api_key=api_key,
-        base_url=base_url,
-        embedding_model=config.get("embedding_model", EMBEDDING_MODEL),
+        embedding_model=embedding_model,
         dynamic_engine=dynamic_engine,
+        llm_client=llm_client,
     )
 
     # 6. 创建检索器组件
     entity_matcher = EntityMatcher(
         store=store,
-        embedding_client=embedding_client,
+        embedding_client=llm_client,
         enable_vector=config.get("enable_vector_match", SEARCH_ENABLE_VECTOR_MATCH),
         vector_threshold=config.get("vector_threshold", SEARCH_VECTOR_THRESHOLD),
         vector_top_k=config.get("vector_top_k", SEARCH_VECTOR_TOP_K),
@@ -239,11 +216,10 @@ def create_ltm_system(
         entity_matcher=entity_matcher,
         ranker=ranker,
         config=searcher_config,
-        api_key=api_key,
-        base_url=base_url,
-        generation_model=config.get("generation_model", GENERATION_MODEL),
+        generation_model=generation_model,
         dynamic_engine=dynamic_engine,
         offline_mode=False,
+        llm_client=llm_client,
     )
 
     # 7. 组装系统

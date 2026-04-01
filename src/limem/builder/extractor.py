@@ -9,8 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 try:
-    import dashscope
-    from dashscope import Generation
+    pass
 except Exception:  # pragma: no cover - optional dependency for offline mode
     dashscope = None
     Generation = None
@@ -95,6 +94,7 @@ class TwoStageExtractor(LLMExtractor):
         generation_model: Optional[str] = None,
         enable_thinking: bool = False,
         llm_concurrency: int = 1,
+        llm_client: Optional[DashScopeClient] = None,
     ):
         """初始化两阶段提取器
 
@@ -103,21 +103,24 @@ class TwoStageExtractor(LLMExtractor):
             base_url: DashScope API URL
             generation_model: 生成模型名称
             enable_thinking: 是否启用思维链
+            llm_client: 共享的 DashScopeClient 实例（优先使用）
         """
-        self.api_key = api_key or DASHSCOPE_API_KEY
-        self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
         self.generation_model = generation_model or GENERATION_MODEL
         self.enable_thinking = enable_thinking or ENABLE_THINKING
         self.llm_concurrency = max(1, int(llm_concurrency or 1))
-        self.llm_client = DashScopeClient(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            generation_api_resolver=lambda: Generation,
-        )
+        if llm_client is not None:
+            self.llm_client = llm_client
+        else:
+            self.api_key = api_key or DASHSCOPE_API_KEY
+            self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
+            self.llm_client = DashScopeClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+            )
 
         if not self.llm_client.has_generation_api():
             raise ImportError("dashscope is required for TwoStageExtractor.")
-        if not self.api_key or self.api_key in {"YOUR_API_KEY", "sk-xxx"}:
+        if not self.llm_client.has_valid_api_key():
             raise ValueError("Set DASHSCOPE_API_KEY in .env or environment.")
 
         # 加载提示词
@@ -404,27 +407,10 @@ class TwoStageExtractor(LLMExtractor):
         user_message: str,
         default: Any,
     ) -> Any:
-        if self.enable_thinking:
-            print("⚠️ enable_thinking requires stream call; ignoring in non-stream mode.")
-
         resp = self.llm_client.call_generation(
             model=self.generation_model,
             messages=self.llm_client.build_messages(system_prompt, user_message),
-            result_format="message",
-            enable_thinking=self.enable_thinking,
         )
-
-        if not self.llm_client.is_success(resp):
-            print(f"⚠️ LLM call failed: {self.llm_client.error_summary(resp)}")
-            print(f"⚠️ base_url={self.base_url}")
-            if getattr(resp, "status_code", None) == 404:
-                print(
-                    "⚠️ This project uses the dashscope SDK. "
-                    "If you copied an OpenAI-compatible DashScope endpoint, "
-                    "use the SDK base URL ending with /api/v1 instead."
-                )
-            raise ValueError("LLM call failed. Check model name, API key, and DashScope base URL.")
-
         content = self.llm_client.message_content(resp)
         return robust_json_loads(content, default)
 
@@ -471,17 +457,20 @@ class AdaptiveExtractor(LLMExtractor):
         field_config: Optional[FieldMappingConfig] = None,
         plugins: Optional[list[ExtractorPlugin]] = None,
         llm_caller=None,
+        llm_client: Optional[DashScopeClient] = None,
     ):
-        self.api_key = api_key or DASHSCOPE_API_KEY
-        self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
         self.generation_model = generation_model or GENERATION_MODEL
         self.enable_thinking = enable_thinking or ENABLE_THINKING
         self._custom_llm_caller = llm_caller
-        self.llm_client = DashScopeClient(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            generation_api_resolver=lambda: Generation,
-        )
+        if llm_client is not None:
+            self.llm_client = llm_client
+        else:
+            self.api_key = api_key or DASHSCOPE_API_KEY
+            self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
+            self.llm_client = DashScopeClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+            )
 
         self.classifier = InputClassifier()
         self.structured_mapper = StructuredFieldMapper(field_config)
@@ -529,19 +518,12 @@ class AdaptiveExtractor(LLMExtractor):
 
         if not self.llm_client.has_generation_api():
             return default
-        if not self.api_key or self.api_key in {"YOUR_API_KEY", "sk-xxx"}:
+        if not self.llm_client.has_valid_api_key():
             return default
-        if self.enable_thinking:
-            print("⚠️ enable_thinking requires stream call; ignoring in non-stream mode.")
 
-        resp = self.llm_client.call_generation(
+        return self.llm_client.call_generation_json(
             model=self.generation_model,
-            messages=self.llm_client.build_messages(system_prompt, user_message),
-            result_format="message",
-            enable_thinking=self.enable_thinking,
+            system_prompt=system_prompt,
+            user_message=user_message,
+            default=default,
         )
-        if not self.llm_client.is_success(resp):
-            print(f"⚠️ Adaptive LLM call failed: {self.llm_client.error_summary(resp)}")
-            return default
-        content = self.llm_client.message_content(resp)
-        return robust_json_loads(content, default)

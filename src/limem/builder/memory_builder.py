@@ -17,9 +17,9 @@ import uuid
 import time
 
 try:
-    from dashscope import TextEmbedding
+    from openai import OpenAI as _OpenAI
 except Exception:  # pragma: no cover - optional dependency for offline mode
-    TextEmbedding = None
+    _OpenAI = None
 
 from ..core.episode import Episode
 from ..core.event import Event
@@ -111,6 +111,7 @@ class MemoryBuilder:
         embedding_model: Optional[str] = None,
         dynamic_engine=None,
         relationship_inferrer: Optional[RelationshipInferrer] = None,
+        llm_client: Optional[DashScopeClient] = None,
     ):
         """初始化记忆构建器
 
@@ -122,23 +123,25 @@ class MemoryBuilder:
             api_key: DashScope API Key
             base_url: DashScope API URL
             embedding_model: 嵌入模型名称
+            llm_client: 共享的 DashScopeClient 实例（优先使用）
         """
         self.extractor = extractor
         self.consolidator = consolidator
         self.store = store
         self.config = config or BuilderConfig()
 
-        # 配置嵌入服务
-        self.api_key = api_key or DASHSCOPE_API_KEY
-        self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
         self.embedding_model = embedding_model or EMBEDDING_MODEL
         self.dynamic_engine = dynamic_engine
         self.relationship_inferrer = relationship_inferrer or RelationshipInferrer()
-        self.llm_client = DashScopeClient(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            embedding_api_resolver=lambda: TextEmbedding,
-        )
+        if llm_client is not None:
+            self.llm_client = llm_client
+        else:
+            self.api_key = api_key or DASHSCOPE_API_KEY
+            self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
+            self.llm_client = DashScopeClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+            )
 
     def build(self, episode: Episode) -> IngestResult:
         """从Episode构建记忆
@@ -485,7 +488,7 @@ class MemoryBuilder:
         Returns:
             嵌入向量
         """
-        if TextEmbedding is None:
+        if _OpenAI is None:
             # Offline deterministic embedding fallback
             import hashlib
             digest = hashlib.sha256(text.encode("utf-8")).digest()
@@ -496,12 +499,12 @@ class MemoryBuilder:
             norm = sum(v * v for v in vec) ** 0.5
             return [v / norm for v in vec] if norm else vec
 
-        return self.llm_client.embed_text(model=self.embedding_model, text=text)
+        return self.llm_client.embed_text(text=text, model=self.embedding_model)
 
     def _get_embedding_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        if TextEmbedding is None:
+        if _OpenAI is None:
             return [self._get_embedding(text) for text in texts]
 
         embeddings = self.llm_client.embed_texts(model=self.embedding_model, texts=texts)
@@ -514,7 +517,7 @@ class MemoryBuilder:
     def _get_embeddings(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        if TextEmbedding is None:
+        if _OpenAI is None:
             return [self._get_embedding(text) for text in texts]
 
         batches = [

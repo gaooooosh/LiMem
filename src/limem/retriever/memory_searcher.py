@@ -13,8 +13,7 @@ import json
 import time
 
 try:
-    import dashscope
-    from dashscope import Generation
+    pass
 except Exception:  # pragma: no cover - optional dependency for offline mode
     dashscope = None
     Generation = None
@@ -73,6 +72,7 @@ class MemorySearcher:
         generation_model: Optional[str] = None,
         dynamic_engine=None,
         offline_mode: Optional[bool] = None,
+        llm_client: Optional[DashScopeClient] = None,
     ):
         """初始化记忆搜索器
 
@@ -84,23 +84,25 @@ class MemorySearcher:
             api_key: DashScope API Key
             base_url: DashScope API URL
             generation_model: 生成模型名称
+            llm_client: 共享的 DashScopeClient 实例（优先使用）
         """
         self.store = store
         self.entity_matcher = entity_matcher
         self.ranker = ranker
         self.config = config or SearcherConfig()
 
-        # 配置LLM
-        self.api_key = api_key or DASHSCOPE_API_KEY
-        self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
         self.generation_model = generation_model or GENERATION_MODEL
         self.dynamic_engine = dynamic_engine
         self.offline_mode = False if offline_mode is None else offline_mode
-        self.llm_client = DashScopeClient(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            generation_api_resolver=lambda: Generation,
-        )
+        if llm_client is not None:
+            self.llm_client = llm_client
+        else:
+            self.api_key = api_key or DASHSCOPE_API_KEY
+            self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
+            self.llm_client = DashScopeClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+            )
 
         if (not self.offline_mode) and (not self.llm_client.has_valid_api_key()):
             raise ValueError("Set DASHSCOPE_API_KEY in .env or environment.")
@@ -479,19 +481,17 @@ class MemorySearcher:
             bullets = [f"- {e.summary}" for e in events[:3]]
             return "根据当前记忆检索到的相关事件：\n" + "\n".join(bullets)
 
-        resp = self.llm_client.call_generation(
-            model=self.generation_model,
-            messages=self.llm_client.build_messages(
-                self._answer_generation_system,
-                user_msg,
-            ),
-            result_format="message",
-            enable_thinking=False,
-            max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
-        )
-
-        if not self.llm_client.is_success(resp):
-            return f"抱歉，生成回答时遇到问题：{self.llm_client.error_summary(resp)}"
+        try:
+            resp = self.llm_client.call_generation(
+                model=self.generation_model,
+                messages=self.llm_client.build_messages(
+                    self._answer_generation_system,
+                    user_msg,
+                ),
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+            )
+        except Exception as exc:
+            return f"抱歉，生成回答时遇到问题：{exc}"
 
         return self.llm_client.message_content(resp).strip()

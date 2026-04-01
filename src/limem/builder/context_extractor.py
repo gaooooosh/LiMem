@@ -10,8 +10,7 @@ import logging
 import re
 
 try:
-    import dashscope
-    from dashscope import Generation
+    pass
 except Exception:  # pragma: no cover - optional dependency for offline mode
     dashscope = None
     Generation = None
@@ -186,18 +185,19 @@ class ContextExtractionPipeline:
     generation_model: Optional[str] = None
     offline_mode: bool = False
     domain_config: Optional[dict[str, Any]] = None
+    llm_client: Optional[DashScopeClient] = None
 
     def __post_init__(self) -> None:
-        self.api_key = self.api_key or DASHSCOPE_API_KEY
-        self.base_url = normalize_dashscope_base_url(
-            self.base_url or DASHSCOPE_BASE_URL
-        )
         self.generation_model = self.generation_model or GENERATION_MODEL
-        self.llm_client = DashScopeClient(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            generation_api_resolver=lambda: Generation,
-        )
+        if self.llm_client is None:
+            self.api_key = self.api_key or DASHSCOPE_API_KEY
+            self.base_url = normalize_dashscope_base_url(
+                self.base_url or DASHSCOPE_BASE_URL
+            )
+            self.llm_client = DashScopeClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+            )
         self._domain_config = _merge_context_domain_config(self.domain_config)
         self._habit_like_markers = tuple(self._domain_config["habit_like_markers"])
         self._event_like_markers = tuple(self._domain_config["event_like_markers"])
@@ -538,11 +538,7 @@ class ContextExtractionPipeline:
             resp = self.llm_client.call_generation(
                 model=self.generation_model,
                 messages=self.llm_client.build_messages(self._system_prompt, user_msg),
-                result_format="message",
-                enable_thinking=False,
             )
-            if not self.llm_client.is_success(resp):
-                return {}
             return robust_json_loads(self.llm_client.message_content(resp), {})
         except Exception:
             return {}

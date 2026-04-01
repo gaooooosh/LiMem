@@ -11,9 +11,9 @@ except Exception:  # pragma: no cover - optional dependency
 load_dotenv()
 
 
-DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
-_DASHSCOPE_COMPATIBLE_MODE_BASE_URL_RE = re.compile(
-    r"/compatible-mode(?:/v\d+)?(?:/(?:chat/completions|embeddings))?/?$",
+DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_DASHSCOPE_NATIVE_SDK_URL_RE = re.compile(
+    r"/api/v\d+(?:/(?:services|chat/completions|embeddings))?/?$",
     re.IGNORECASE,
 )
 
@@ -26,19 +26,17 @@ def env_bool(name, default):
 
 
 def normalize_dashscope_base_url(base_url: str | None) -> str:
-    """Normalize user-provided DashScope endpoints for the dashscope SDK.
+    """Normalize user-provided DashScope endpoints for the OpenAI-compatible mode.
 
-    This project uses the native dashscope SDK, which expects the SDK base path
-    (`.../api/v1`). Users sometimes copy the OpenAI-compatible endpoint
-    (`.../compatible-mode/v1` or a full `/chat/completions` URL) from newer
-    docs, which causes the SDK to append `/services/...` onto the wrong base and
-    return HTTP 404.
+    This project uses the OpenAI-compatible API (`/compatible-mode/v1`).
+    Users who have the old native SDK URL (`.../api/v1`) in their .env will
+    be automatically upgraded to the compatible-mode endpoint.
     """
     value = (base_url or DEFAULT_DASHSCOPE_BASE_URL).strip()
     if not value:
         return DEFAULT_DASHSCOPE_BASE_URL
     value = value.rstrip("/")
-    return _DASHSCOPE_COMPATIBLE_MODE_BASE_URL_RE.sub("/api/v1", value)
+    return _DASHSCOPE_NATIVE_SDK_URL_RE.sub("/compatible-mode/v1", value)
 
 
 # =========================

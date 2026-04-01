@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 import types
 import unittest
+from unittest.mock import MagicMock
 
 from limem.builder.extractor import ExtractionResult
 from limem.builder.memory_builder import BuilderConfig, MemoryBuilder
 from limem.core.episode import Episode
+from limem.llm import DashScopeClient
 
 import limem.builder.memory_builder as memory_builder_module
 
@@ -99,49 +101,49 @@ class _FakeDynamicEngine:
         }
 
 
-class _FakeTextEmbedding:
-    calls = []
-
-    @classmethod
-    def call(cls, model, input):
-        del model
-        items = list(input) if isinstance(input, list) else [input]
-        cls.calls.append(items)
-        return types.SimpleNamespace(
-            output={
-                "embeddings": [
-                    {
-                        "text_index": idx,
-                        "embedding": [float(idx), float(len(text))],
-                    }
-                    for idx, text in enumerate(items)
-                ]
-            }
-        )
-
-
 class TestMemoryBuilderPerformance(unittest.TestCase):
     def test_get_embeddings_batches_dashscope_calls(self):
+        embedding_calls: list[list[str]] = []
+
+        def fake_embeddings_create(**kwargs):
+            items = kwargs.get("input", [])
+            if isinstance(items, str):
+                items = [items]
+            embedding_calls.append(list(items))
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(
+                        index=idx,
+                        embedding=[float(idx), float(len(text))],
+                    )
+                    for idx, text in enumerate(items)
+                ]
+            )
+
+        client = DashScopeClient(
+            api_key="test-key",
+            base_url="http://test.local",
+            embedding_model="test-model",
+        )
+        mock_openai = MagicMock()
+        mock_openai.embeddings.create.side_effect = fake_embeddings_create
+        client._openai_client = mock_openai
+
         builder = MemoryBuilder(
             extractor=_FakeExtractor(),
             consolidator=_FakeConsolidator(),
             store=_BatchAwareStore(),
             config=BuilderConfig(llm_concurrency=4),
             relationship_inferrer=_NoopRelationshipInferrer(),
+            llm_client=client,
         )
         texts = ["x" * (idx + 1) for idx in range(30)]
 
-        original_text_embedding = memory_builder_module.TextEmbedding
-        memory_builder_module.TextEmbedding = _FakeTextEmbedding
-        _FakeTextEmbedding.calls = []
-        try:
-            embeddings = builder._get_embeddings(texts)
-        finally:
-            memory_builder_module.TextEmbedding = original_text_embedding
+        embeddings = builder._get_embeddings(texts)
 
-        self.assertEqual(len(_FakeTextEmbedding.calls), 2)
-        self.assertEqual(len(_FakeTextEmbedding.calls[0]), 25)
-        self.assertEqual(len(_FakeTextEmbedding.calls[1]), 5)
+        self.assertEqual(len(embedding_calls), 2)
+        self.assertEqual(len(embedding_calls[0]), 25)
+        self.assertEqual(len(embedding_calls[1]), 5)
         self.assertEqual(len(embeddings), 30)
         self.assertEqual(embeddings[0][1], 1.0)
         self.assertEqual(embeddings[24][1], 25.0)
