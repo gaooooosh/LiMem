@@ -36,7 +36,9 @@ from ..config import (
     LLM_CONCURRENCY,
     PRUNE_C_VALID_THRESHOLD,
     PRUNE_EVIDENCE_TOP_K,
+    normalize_dashscope_base_url,
 )
+from ..llm import DashScopeClient
 from ..utils import hash_summary, time_bucket_from_ts
 from .extractor import LLMExtractor, ExtractionResult
 from .consolidator import Consolidator
@@ -128,10 +130,15 @@ class MemoryBuilder:
 
         # 配置嵌入服务
         self.api_key = api_key or DASHSCOPE_API_KEY
-        self.base_url = base_url or DASHSCOPE_BASE_URL
+        self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
         self.embedding_model = embedding_model or EMBEDDING_MODEL
         self.dynamic_engine = dynamic_engine
         self.relationship_inferrer = relationship_inferrer or RelationshipInferrer()
+        self.llm_client = DashScopeClient(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            embedding_api_resolver=lambda: TextEmbedding,
+        )
 
     def build(self, episode: Episode) -> IngestResult:
         """从Episode构建记忆
@@ -489,16 +496,7 @@ class MemoryBuilder:
             norm = sum(v * v for v in vec) ** 0.5
             return [v / norm for v in vec] if norm else vec
 
-        import dashscope
-        dashscope.base_http_api_url = self.base_url
-        dashscope.api_key = self.api_key
-
-        resp = TextEmbedding.call(model=self.embedding_model, input=text)
-        output = resp.output
-
-        if isinstance(output, dict):
-            return output["embeddings"][0]["embedding"]
-        return output.embeddings[0].embedding
+        return self.llm_client.embed_text(model=self.embedding_model, text=text)
 
     def _get_embedding_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -506,26 +504,7 @@ class MemoryBuilder:
         if TextEmbedding is None:
             return [self._get_embedding(text) for text in texts]
 
-        import dashscope
-        dashscope.base_http_api_url = self.base_url
-        dashscope.api_key = self.api_key
-
-        resp = TextEmbedding.call(model=self.embedding_model, input=texts)
-        output = resp.output
-        raw_embeddings = output.get("embeddings", []) if isinstance(output, dict) else output.embeddings
-
-        indexed_embeddings: list[tuple[int, list[float]]] = []
-        for idx, item in enumerate(raw_embeddings or []):
-            if isinstance(item, dict):
-                text_index = item.get("text_index", item.get("textIndex", idx))
-                embedding = item.get("embedding") or []
-            else:
-                text_index = getattr(item, "text_index", getattr(item, "textIndex", idx))
-                embedding = getattr(item, "embedding", []) or []
-            indexed_embeddings.append((int(text_index), list(embedding)))
-
-        indexed_embeddings.sort(key=lambda pair: pair[0])
-        embeddings = [embedding for _, embedding in indexed_embeddings]
+        embeddings = self.llm_client.embed_texts(model=self.embedding_model, texts=texts)
         if len(embeddings) != len(texts):
             raise RuntimeError(
                 f"embedding batch size mismatch: expected {len(texts)}, got {len(embeddings)}"

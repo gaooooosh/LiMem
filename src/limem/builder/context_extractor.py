@@ -21,7 +21,9 @@ from ..config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     GENERATION_MODEL,
+    normalize_dashscope_base_url,
 )
+from ..llm import DashScopeClient
 from ..core.context import (
     ALLOWED_CONTEXT_SUBTYPES,
     CanonicalContextKey,
@@ -187,8 +189,15 @@ class ContextExtractionPipeline:
 
     def __post_init__(self) -> None:
         self.api_key = self.api_key or DASHSCOPE_API_KEY
-        self.base_url = self.base_url or DASHSCOPE_BASE_URL
+        self.base_url = normalize_dashscope_base_url(
+            self.base_url or DASHSCOPE_BASE_URL
+        )
         self.generation_model = self.generation_model or GENERATION_MODEL
+        self.llm_client = DashScopeClient(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            generation_api_resolver=lambda: Generation,
+        )
         self._domain_config = _merge_context_domain_config(self.domain_config)
         self._habit_like_markers = tuple(self._domain_config["habit_like_markers"])
         self._event_like_markers = tuple(self._domain_config["event_like_markers"])
@@ -526,21 +535,15 @@ class ContextExtractionPipeline:
 
     def _call_context_llm_json(self, user_msg: str) -> Any:
         try:
-            dashscope.base_http_api_url = self.base_url
-            dashscope.api_key = self.api_key
-            resp = Generation.call(
-                api_key=self.api_key,
+            resp = self.llm_client.call_generation(
                 model=self.generation_model,
-                messages=[
-                    {"role": "system", "content": self._system_prompt},
-                    {"role": "user", "content": user_msg},
-                ],
+                messages=self.llm_client.build_messages(self._system_prompt, user_msg),
                 result_format="message",
                 enable_thinking=False,
             )
-            if getattr(resp, "status_code", None) != 200:
+            if not self.llm_client.is_success(resp):
                 return {}
-            return robust_json_loads(resp.output.choices[0].message.content, {})
+            return robust_json_loads(self.llm_client.message_content(resp), {})
         except Exception:
             return {}
 
@@ -1278,13 +1281,10 @@ class ContextExtractionPipeline:
         return self._normalize_free_text(result)
 
     def _llm_available(self) -> bool:
-        api_key = str(self.api_key or "").strip()
         return bool(
             not self.offline_mode
-            and dashscope is not None
-            and Generation is not None
-            and api_key
-            and api_key not in {"YOUR_API_KEY", "sk-xxx"}
+            and self.llm_client.has_generation_api()
+            and self.llm_client.has_valid_api_key()
             and self._system_prompt
             and self._user_prompt
         )

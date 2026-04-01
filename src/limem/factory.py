@@ -49,7 +49,9 @@ from .config import (
     SEARCH_ENABLE_VECTOR_MATCH,
     SEARCH_VECTOR_THRESHOLD,
     SEARCH_VECTOR_TOP_K,
+    normalize_dashscope_base_url,
 )
+from .llm import DashScopeClient
 from .utils import load_prompt
 
 
@@ -65,26 +67,17 @@ class EmbeddingClient:
         base_url: Optional[str] = None,
         embedding_model: Optional[str] = None,
     ):
-        from dashscope import TextEmbedding
-        import dashscope
-
         self.api_key = api_key or DASHSCOPE_API_KEY
-        self.base_url = base_url or DASHSCOPE_BASE_URL
+        self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
         self.embedding_model = embedding_model or EMBEDDING_MODEL
-
-        dashscope.base_http_api_url = self.base_url
-        dashscope.api_key = self.api_key
+        self.client = DashScopeClient(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
 
     def get_embedding(self, text: str) -> list[float]:
         """获取文本嵌入向量"""
-        from dashscope import TextEmbedding
-
-        resp = TextEmbedding.call(model=self.embedding_model, input=text)
-        output = resp.output
-
-        if isinstance(output, dict):
-            return output["embeddings"][0]["embedding"]
-        return output.embeddings[0].embedding
+        return self.client.embed_text(model=self.embedding_model, text=text)
 
 
 def create_ltm_system(
@@ -114,7 +107,7 @@ def create_ltm_system(
     """
     config = config or {}
     api_key = api_key or DASHSCOPE_API_KEY
-    base_url = base_url or DASHSCOPE_BASE_URL
+    base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
     # 1. 创建嵌入客户端
     embedding_client = EmbeddingClient(
         api_key=api_key,
@@ -200,6 +193,7 @@ def create_ltm_system(
         for field in fields(DynamicEvolutionConfig):
             if field.name in config:
                 setattr(dynamic_config, field.name, config[field.name])
+        dynamic_config.__post_init__()
         dynamic_engine = DynamicEvolutionEngine(
             store=store,
             config=dynamic_config,

@@ -30,6 +30,7 @@ from .core import (
 
 # ==================== 工厂方法 ====================
 from .factory import create_ltm, create_ltm_from_env, EmbeddingClient
+from .llm import DashScopeClient
 
 # ==================== 存储层 ====================
 from .storage import GraphStore, KuzuStore
@@ -150,6 +151,7 @@ __all__ = [
     "create_ltm",
     "create_ltm_from_env",
     "EmbeddingClient",
+    "DashScopeClient",
     # ===== 存储层 =====
     "GraphStore",
     "KuzuStore",

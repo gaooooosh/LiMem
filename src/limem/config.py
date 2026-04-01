@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 
 try:
     from dotenv import load_dotenv
@@ -10,11 +11,34 @@ except Exception:  # pragma: no cover - optional dependency
 load_dotenv()
 
 
+DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
+_DASHSCOPE_COMPATIBLE_MODE_BASE_URL_RE = re.compile(
+    r"/compatible-mode(?:/v\d+)?(?:/(?:chat/completions|embeddings))?/?$",
+    re.IGNORECASE,
+)
+
+
 def env_bool(name, default):
     value = os.getenv(name)
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def normalize_dashscope_base_url(base_url: str | None) -> str:
+    """Normalize user-provided DashScope endpoints for the dashscope SDK.
+
+    This project uses the native dashscope SDK, which expects the SDK base path
+    (`.../api/v1`). Users sometimes copy the OpenAI-compatible endpoint
+    (`.../compatible-mode/v1` or a full `/chat/completions` URL) from newer
+    docs, which causes the SDK to append `/services/...` onto the wrong base and
+    return HTTP 404.
+    """
+    value = (base_url or DEFAULT_DASHSCOPE_BASE_URL).strip()
+    if not value:
+        return DEFAULT_DASHSCOPE_BASE_URL
+    value = value.rstrip("/")
+    return _DASHSCOPE_COMPATIBLE_MODE_BASE_URL_RE.sub("/api/v1", value)
 
 
 # =========================
@@ -69,8 +93,8 @@ RANKER_ENTITY_SIGNAL_WEIGHT = float(os.getenv("RANKER_ENTITY_SIGNAL_WEIGHT", "0.
 
 # Dashscope / Aliyun settings.
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
-DASHSCOPE_BASE_URL = os.getenv(
-    "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
+DASHSCOPE_BASE_URL = normalize_dashscope_base_url(
+    os.getenv("DASHSCOPE_BASE_URL", DEFAULT_DASHSCOPE_BASE_URL)
 )
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "qwen3-1.7b")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v2")

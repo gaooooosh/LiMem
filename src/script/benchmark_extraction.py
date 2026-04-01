@@ -408,33 +408,29 @@ def _mock_llm_runner(system_prompt: str, user_message: str, default: Any) -> Any
 
 def _build_online_runner() -> Callable[[str, str, Any], Any]:
     try:
-        import dashscope
-        from dashscope import Generation
+        from limem.llm import DashScopeClient
     except Exception as exc:  # pragma: no cover - depends on local runtime
         raise RuntimeError("dashscope is required for --online benchmark mode.") from exc
 
     if not DASHSCOPE_API_KEY or DASHSCOPE_API_KEY in {"YOUR_API_KEY", "sk-xxx"}:
         raise RuntimeError("Set DASHSCOPE_API_KEY before running --online benchmark mode.")
-
-    dashscope.base_http_api_url = DASHSCOPE_BASE_URL
-    dashscope.api_key = DASHSCOPE_API_KEY
+    client = DashScopeClient(
+        api_key=DASHSCOPE_API_KEY,
+        base_url=DASHSCOPE_BASE_URL,
+    )
 
     def _runner(system_prompt: str, user_message: str, default: Any) -> Any:
-        resp = Generation.call(
-            api_key=DASHSCOPE_API_KEY,
+        resp = client.call_generation(
             model=GENERATION_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
+            messages=client.build_messages(system_prompt, user_message),
             result_format="message",
             enable_thinking=ENABLE_THINKING,
         )
-        if resp.status_code != 200:
+        if not client.is_success(resp):
             raise RuntimeError(
-                f"LLM call failed: status={resp.status_code} code={resp.code} message={resp.message}"
+                f"LLM call failed: {client.error_summary(resp)}"
             )
-        content = resp.output.choices[0].message.content
+        content = client.message_content(resp)
         return robust_json_loads(content, default)
 
     return _runner

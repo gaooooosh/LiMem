@@ -79,10 +79,12 @@ from ..config import (
     RETRIEVAL_WEIGHT_VALIDITY,
     STALE_SECONDS,
     WEAK_EDGE_PRUNE_THRESHOLD,
+    normalize_dashscope_base_url,
 )
 from ..builder.context_extractor import ContextExtractionPipeline
 from ..core.context import Context, ContextDraft
 from ..core.event import Event
+from ..llm import DashScopeClient
 from ..utils import hash_summary, robust_json_loads, safe_json_dumps, safe_json_loads
 
 logger = logging.getLogger(__name__)
@@ -160,6 +162,9 @@ class DynamicEvolutionConfig:
     event_merge_trace_log_path: str = EVENT_MERGE_TRACE_LOG_PATH
     enable_event_relations: bool = ENABLE_EVENT_RELATIONS
 
+    def __post_init__(self) -> None:
+        self.llm_base_url = normalize_dashscope_base_url(self.llm_base_url)
+
 
 class EvolutionReport(TypedDict):
     context_links: int
@@ -178,6 +183,11 @@ class DynamicEvolutionEngine:
         self.store = store
         self.config = config or DynamicEvolutionConfig()
         self._last_consolidation_at = 0
+        self.llm_client = DashScopeClient(
+            api_key=self.config.llm_api_key,
+            base_url=self.config.llm_base_url,
+            generation_api_resolver=lambda: Generation,
+        )
         self.context_extractor = ContextExtractionPipeline(
             api_key=self.config.llm_api_key,
             base_url=self.config.llm_base_url,
@@ -435,10 +445,7 @@ class DynamicEvolutionEngine:
         if not self._llm_relation_available():
             return None
         try:
-            dashscope.base_http_api_url = self.config.llm_base_url
-            dashscope.api_key = self.config.llm_api_key
-            resp = Generation.call(
-                api_key=self.config.llm_api_key,
+            resp = self.llm_client.call_generation(
                 model=self.config.llm_model,
                 messages=[
                     {
@@ -457,9 +464,9 @@ class DynamicEvolutionEngine:
                 result_format="message",
                 enable_thinking=False,
             )
-            if getattr(resp, "status_code", None) != 200:
+            if not self.llm_client.is_success(resp):
                 return None
-            content = resp.output.choices[0].message.content
+            content = self.llm_client.message_content(resp)
             data = robust_json_loads(content, None)
             return data if isinstance(data, dict) else None
         except Exception:
@@ -2930,13 +2937,7 @@ class DynamicEvolutionEngine:
         return "llm" if self._llm_merge_available() else "heuristic"
 
     def _llm_merge_available(self) -> bool:
-        api_key = str(self.config.llm_api_key or "").strip()
-        return bool(
-            dashscope is not None
-            and Generation is not None
-            and api_key
-            and api_key not in {"YOUR_API_KEY", "sk-xxx"}
-        )
+        return self.llm_client.has_generation_api() and self.llm_client.has_valid_api_key()
 
     def _llm_event_merge_decision(
         self,
@@ -3010,10 +3011,7 @@ class DynamicEvolutionEngine:
         if not self._llm_merge_available():
             return None
         try:
-            dashscope.base_http_api_url = self.config.llm_base_url
-            dashscope.api_key = self.config.llm_api_key
-            resp = Generation.call(
-                api_key=self.config.llm_api_key,
+            resp = self.llm_client.call_generation(
                 model=self.config.llm_model,
                 messages=[
                     {
@@ -3032,9 +3030,9 @@ class DynamicEvolutionEngine:
                 result_format="message",
                 enable_thinking=False,
             )
-            if getattr(resp, "status_code", None) != 200:
+            if not self.llm_client.is_success(resp):
                 return None
-            content = resp.output.choices[0].message.content
+            content = self.llm_client.message_content(resp)
             data = robust_json_loads(content, None)
             return data if isinstance(data, dict) else None
         except Exception:
