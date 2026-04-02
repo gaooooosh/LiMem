@@ -80,7 +80,7 @@ class LTMemoryImpl(LTMemory):
         episodes: list[Episode],
         concurrency: int = 4,
         progress_cb=None,
-    ) -> list[IngestResult]:
+    ) -> list[IngestResult | Exception]:
         """Batch ingest with parallel LLM extraction and serial DB writes.
 
         Args:
@@ -89,7 +89,7 @@ class LTMemoryImpl(LTMemory):
             progress_cb: Optional callback(idx, total, result_or_error) per episode.
 
         Returns:
-            List of IngestResult (one per episode, same order).
+            List of IngestResult or Exception (one per episode, same order).
         """
         if not episodes:
             return []
@@ -112,17 +112,23 @@ class LTMemoryImpl(LTMemory):
                     errors[idx] = exc
 
         # Phase 2: serial DB persistence (thread-safe for single connection)
-        results: list[Optional[IngestResult]] = [None] * len(episodes)
+        results: list[IngestResult | Exception] = [
+            RuntimeError("ingest_batch result not set") for _ in episodes
+        ]
         for idx in range(len(episodes)):
             if errors[idx] is not None:
+                results[idx] = errors[idx]
                 if progress_cb:
                     progress_cb(idx, len(episodes), errors[idx])
                 continue
             try:
                 result = self.builder.persist_extraction(bundles[idx])
+                if result is None:
+                    raise RuntimeError("persist_extraction returned None")
                 results[idx] = result
             except Exception as exc:
                 errors[idx] = exc
+                results[idx] = exc
             if progress_cb:
                 progress_cb(idx, len(episodes), results[idx] or errors[idx])
 

@@ -75,7 +75,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--split-ratio",
         type=float,
-        default=0.7,
+        default=1.0,
         help="Base-phase ratio used when split-index is 0.",
     )
     parser.add_argument(

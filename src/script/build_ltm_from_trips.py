@@ -226,7 +226,12 @@ def _run_phase(
                 }
                 if isinstance(result, Exception) or result is None:
                     errors += 1
-                    timeline_entry["error"] = str(result)
+                    err_msg = (
+                        repr(result)
+                        if isinstance(result, Exception)
+                        else "extraction returned None"
+                    )
+                    timeline_entry["error"] = err_msg
                 else:
                     timeline_entry["ingest_result"] = _ingest_result_to_dict(result)
                     if run_deferred_evolution:
@@ -256,7 +261,7 @@ def _run_phase(
                 _record_ingest_metrics(timing, result)
             except Exception as ex:  # pragma: no cover - debug flow should keep going
                 errors += 1
-                timeline_entry["error"] = str(ex)
+                timeline_entry["error"] = repr(ex)
             if capture_every > 0 and (
                 idx == 1 or idx % capture_every == 0 or idx == total
             ):

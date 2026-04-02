@@ -25,7 +25,6 @@ from ..llm import DashScopeClient
 from ..utils import (
     load_prompt,
     normalize_event_payload,
-    robust_json_loads,
 )
 from .input_classifier import InputClassifier, StructureLevel
 from .plugin import ExtractorPlugin
@@ -407,12 +406,12 @@ class TwoStageExtractor(LLMExtractor):
         user_message: str,
         default: Any,
     ) -> Any:
-        resp = self.llm_client.call_generation(
+        return self.llm_client.call_generation_json(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            default=default,
             model=self.generation_model,
-            messages=self.llm_client.build_messages(system_prompt, user_message),
         )
-        content = self.llm_client.message_content(resp)
-        return robust_json_loads(content, default)
 
     def _collect_raw_event_items(self, payload: Any) -> list[dict[str, Any]]:
         if payload is None:

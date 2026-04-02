@@ -24,15 +24,17 @@ class KuzuStore(GraphStore):
     职责：实现 GraphStore 接口，提供 Kuzu 数据库的具体操作。
     """
 
-    def __init__(self, db_path: str, embedding_client=None):
+    def __init__(self, db_path: str, embedding_client=None, embedding_dim: int = 1024):
         """初始化 Kuzu 存储
 
         Args:
             db_path: 数据库文件路径
             embedding_client: 嵌入向量客户端（用于实体嵌入生成）
+            embedding_dim: 嵌入向量维度（需与 embedding 模型输出一致）
         """
         self.db_path = self._normalize_db_path(db_path)
         self.embedding_client = embedding_client
+        self.embedding_dim = embedding_dim
 
         # 打开连接
         print(f"📁 Using Kuzu DB file: {self.db_path}")
@@ -54,6 +56,7 @@ class KuzuStore(GraphStore):
 
     def _init_schema(self) -> None:
         """初始化数据库 Schema"""
+        dim = self.embedding_dim
         # 节点表
         self.conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS Episode(
@@ -64,7 +67,7 @@ class KuzuStore(GraphStore):
             )
         """)
 
-        self.conn.execute("""
+        self.conn.execute(f"""
             CREATE NODE TABLE IF NOT EXISTS Event(
                 id STRING,
                 summary STRING,
@@ -82,16 +85,16 @@ class KuzuStore(GraphStore):
                 valid_to INT64,
                 status STRING,
                 support_count INT64,
-                embedding FLOAT[1536],
+                embedding FLOAT[{dim}],
                 PRIMARY KEY(id)
             )
         """)
 
-        self.conn.execute("""
+        self.conn.execute(f"""
             CREATE NODE TABLE IF NOT EXISTS Entity(
                 id STRING,
                 type STRING,
-                embedding FLOAT[1536],
+                embedding FLOAT[{dim}],
                 PRIMARY KEY(id)
             )
         """)
@@ -102,7 +105,7 @@ class KuzuStore(GraphStore):
                 PRIMARY KEY(id)
             )
         """)
-        self.conn.execute("""
+        self.conn.execute(f"""
             CREATE NODE TABLE IF NOT EXISTS Context(
                 id STRING,
                 context_type STRING,
@@ -119,7 +122,7 @@ class KuzuStore(GraphStore):
                 status STRING,
                 source_refs STRING,
                 merged_from STRING,
-                embedding FLOAT[1536],
+                embedding FLOAT[{dim}],
                 PRIMARY KEY(id)
             )
         """)
@@ -188,6 +191,7 @@ class KuzuStore(GraphStore):
 
     def _run_migrations(self) -> None:
         """运行数据库迁移"""
+        dim = self.embedding_dim
         migrations = [
             "ALTER TABLE Event ADD participants STRING",
             "ALTER TABLE Event ADD time_range STRING",
@@ -203,7 +207,7 @@ class KuzuStore(GraphStore):
             "ALTER TABLE Event ADD valid_to INT64",
             "ALTER TABLE Event ADD status STRING",
             "ALTER TABLE Event ADD support_count INT64",
-            "ALTER TABLE Entity ADD embedding FLOAT[1536]",
+            f"ALTER TABLE Entity ADD embedding FLOAT[{dim}]",
             "ALTER TABLE INVOLVES ADD t_expired INT64",
             "ALTER TABLE INVOLVES ADD t_valid INT64",
             "ALTER TABLE INVOLVES ADD t_invalid INT64",
@@ -219,7 +223,7 @@ class KuzuStore(GraphStore):
             "ALTER TABLE Context ADD status STRING",
             "ALTER TABLE Context ADD source_refs STRING",
             "ALTER TABLE Context ADD merged_from STRING",
-            "ALTER TABLE Context ADD embedding FLOAT[1536]",
+            f"ALTER TABLE Context ADD embedding FLOAT[{dim}]",
             "ALTER TABLE IN_REL ADD original_signal STRING",
             "ALTER TABLE IN_REL ADD evidence_span STRING",
             "ALTER TABLE IN_REL ADD confidence DOUBLE",

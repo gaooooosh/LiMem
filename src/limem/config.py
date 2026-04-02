@@ -96,6 +96,7 @@ DASHSCOPE_BASE_URL = normalize_dashscope_base_url(
 )
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "qwen3-1.7b")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v2")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "25"))
 ENABLE_THINKING = env_bool("ENABLE_THINKING", False)
 EXTRACTOR_TYPE = os.getenv("EXTRACTOR_TYPE", "adaptive").strip().lower()

@@ -30,6 +30,7 @@ from .config import (
     ENABLE_EVENT_RELATIONS,
     EXTRACTOR_TYPE,
     GENERATION_MODEL,
+    EMBEDDING_DIM,
     EMBEDDING_MODEL,
     LLM_CONCURRENCY,
     SIMILARITY_THRESHOLD,
@@ -95,9 +96,11 @@ def create_ltm_system(
     )
 
     # 2. 创建存储层
+    embedding_dim = config.get("embedding_dim", EMBEDDING_DIM)
     store = KuzuStore(
         db_path=config.get("db_path", db_path),
         embedding_client=llm_client,
+        embedding_dim=embedding_dim,
     )
 
     # 3. 创建提取器
