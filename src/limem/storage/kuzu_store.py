@@ -983,6 +983,30 @@ class KuzuStore(GraphStore):
             result.append(Context.from_db_row(list(resp.get_next()), cols))
         return result
 
+    def find_contexts_summary_index(
+        self,
+        context_type: str,
+        only_active: bool = True,
+    ) -> list[tuple[str, str]]:
+        filters = ["c.context_type = $context_type"]
+        params: dict[str, Any] = {"context_type": context_type}
+        if only_active:
+            filters.append("c.status = 'active'")
+        where_clause = " AND ".join(filters)
+        resp = self.conn.execute(
+            f"""
+            MATCH (c:Context)
+            WHERE {where_clause}
+            RETURN c.id, c.summary
+            """,
+            params,
+        )
+        result: list[tuple[str, str]] = []
+        while resp.has_next():
+            row = resp.get_next()
+            result.append((str(row[0]), str(row[1] or "")))
+        return result
+
     def link_event_to_context(
         self,
         event_id: str,

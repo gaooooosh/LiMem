@@ -644,6 +644,11 @@ class DynamicEvolutionEngine:
     ) -> Context:
         match = self.match_existing_context(context_draft)
         if match is None:
+            predicted_id = self._new_context_id(context_draft)
+            existing = self.store.get_context(predicted_id)
+            if existing is not None and existing.status != "merged":
+                match = existing
+        if match is None:
             return self.create_context(context_draft)
 
         if self.detect_conflict(match, context_draft):
@@ -659,12 +664,29 @@ class DynamicEvolutionEngine:
             only_active=True,
         )
         draft_summary_key = self._normalized_context_text(self._context_summary(context_draft))
+        seen_candidate_ids = {candidate.id for candidate in all_candidates}
         exact_matches = [
             candidate for candidate in all_candidates
             if self._normalized_context_text(candidate.summary) == draft_summary_key
         ]
         if exact_matches:
             return max(exact_matches, key=self._context_rank_key)
+
+        if draft_summary_key:
+            global_exact_matches: list[Context] = []
+            for context_id, summary in self.store.find_contexts_summary_index(
+                context_type=context_draft.context_type,
+                only_active=True,
+            ):
+                if context_id in seen_candidate_ids:
+                    continue
+                if self._normalized_context_text(summary) != draft_summary_key:
+                    continue
+                context = self.store.get_context(context_id)
+                if context is not None:
+                    global_exact_matches.append(context)
+            if global_exact_matches:
+                return max(global_exact_matches, key=self._context_rank_key)
 
         candidates = self.store.find_context_candidates(
             context_type=context_draft.context_type,

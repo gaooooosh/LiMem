@@ -298,6 +298,13 @@ class GraphStore(ABC):
     ) -> list[Any]:
         raise NotImplementedError("find_context_candidates is not implemented")
 
+    def find_contexts_summary_index(
+        self,
+        context_type: str,
+        only_active: bool = True,
+    ) -> list[tuple[str, str]]:
+        raise NotImplementedError("find_contexts_summary_index is not implemented")
+
     def link_event_to_context(
         self,
         event_id: str,

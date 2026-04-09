@@ -1404,6 +1404,63 @@ class TestDynamicEvolution(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.id, existing.id)
 
+    def test_match_existing_context_uses_global_exact_summary_beyond_recent_limit(self):
+        class _Store:
+            def __init__(self, recent_candidates, all_contexts):
+                self._recent_candidates = recent_candidates
+                self._all_contexts = {context.id: context for context in all_contexts}
+
+            def find_context_candidates(self, context_type, subtype="", limit=20, only_active=True):
+                del context_type, limit, only_active
+                candidates = list(self._recent_candidates)
+                if subtype:
+                    candidates = [item for item in candidates if item.subtype == subtype]
+                return candidates
+
+            def find_contexts_summary_index(self, context_type, only_active=True):
+                del context_type, only_active
+                return [
+                    (context.id, context.summary)
+                    for context in self._all_contexts.values()
+                ]
+
+            def get_context(self, context_id):
+                return self._all_contexts.get(context_id)
+
+        exact_but_not_recent = Context(
+            id="ctx_global_exact",
+            subtype="state",
+            summary="音乐播放场景",
+            structured_slots={"state": "音乐播放场景"},
+            support_count=5,
+            last_seen_at=50,
+            status="active",
+        )
+        recent_other = Context(
+            id="ctx_recent_other",
+            subtype="situation",
+            summary="会议场景",
+            structured_slots={"situation": "会议场景"},
+            support_count=2,
+            last_seen_at=100,
+            status="active",
+        )
+        engine = DynamicEvolutionEngine(
+            store=_Store([recent_other], [recent_other, exact_but_not_recent]),
+            config=DynamicEvolutionConfig(context_candidate_limit=1),
+        )
+
+        match = engine.match_existing_context(
+            ContextDraft(
+                subtype="situation",
+                summary="音乐播放场景",
+                structured_slots={"situation": "音乐播放场景"},
+            )
+        )
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.id, exact_but_not_recent.id)
+
     def test_context_slot_containment_ratio_uses_summary_fallback_for_sparse_slots(self):
         engine = DynamicEvolutionEngine(
             store=object(),
