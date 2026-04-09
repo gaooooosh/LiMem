@@ -34,3 +34,5 @@
 4. evidence_span 必须来自对应 item 的原文。
 5. summary 要短、可复用、去事件化，不要复制整句事件。
 6. 只输出 JSON，不要任何解释文本。
+
+{existing_contexts_note}

@@ -159,6 +159,7 @@ class _PreparedContextRequest:
     record_text: str
     event: Optional[Event]
     candidate_spans: list[ContextSpan]
+    existing_contexts: Optional[list[dict[str, Any]]] = None
 
 
 def _merge_context_domain_config(overrides: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -236,12 +237,22 @@ class ContextExtractionPipeline:
         self._user_prompt = load_prompt("extract_context_user.txt")
         self._batch_user_prompt = load_prompt("extract_context_batch_user.txt")
 
-    def extract(self, record: Any, event: Optional[Event] = None) -> list[ContextDraft]:
-        prepared = self._prepare_context_request(record=record, event=event)
+    def extract(
+        self,
+        record: Any,
+        event: Optional[Event] = None,
+        existing_contexts: Optional[list[dict[str, Any]]] = None,
+    ) -> list[ContextDraft]:
+        prepared = self._prepare_context_request(
+            record=record,
+            event=event,
+            existing_contexts=existing_contexts,
+        )
         llm_drafts = self.llm_extract_contexts(
             prepared.record_text,
             prepared.event,
             prepared.candidate_spans,
+            existing_contexts=prepared.existing_contexts,
         )
         return self._finalize_context_extraction(prepared=prepared, llm_drafts=llm_drafts)
 
@@ -249,22 +260,37 @@ class ContextExtractionPipeline:
         self,
         records: list[Any],
         events: list[Optional[Event]],
+        existing_contexts_by_index: Optional[dict[int, list[dict[str, Any]]]] = None,
     ) -> list[list[ContextDraft]]:
         if not records or not events or len(records) != len(events):
             return []
         if len(events) == 1:
-            return [self.extract(records[0], event=events[0])]
+            return [
+                self.extract(
+                    records[0],
+                    event=events[0],
+                    existing_contexts=(existing_contexts_by_index or {}).get(0),
+                )
+            ]
 
         prepared_requests = [
-            self._prepare_context_request(record=record, event=event)
-            for record, event in zip(records, events)
+            self._prepare_context_request(
+                record=record,
+                event=event,
+                existing_contexts=(existing_contexts_by_index or {}).get(idx),
+            )
+            for idx, (record, event) in enumerate(zip(records, events))
         ]
 
         batch_used, llm_drafts_by_index = self.llm_extract_contexts_batch(prepared_requests)
         if not batch_used:
             return [
-                self.extract(record, event=event)
-                for record, event in zip(records, events)
+                self.extract(
+                    record,
+                    event=event,
+                    existing_contexts=prepared.existing_contexts,
+                )
+                for record, event, prepared in zip(records, events, prepared_requests)
             ]
 
         return [
@@ -279,6 +305,7 @@ class ContextExtractionPipeline:
         self,
         record: Any,
         event: Optional[Event],
+        existing_contexts: Optional[list[dict[str, Any]]] = None,
     ) -> _PreparedContextRequest:
         record_text = self._record_text(record, event)
         candidate_spans = self.detect_context_candidates(record, event)
@@ -286,6 +313,11 @@ class ContextExtractionPipeline:
             record_text=record_text,
             event=event,
             candidate_spans=candidate_spans,
+            existing_contexts=(
+                [dict(item) for item in existing_contexts if isinstance(item, dict)]
+                if existing_contexts
+                else None
+            ),
         )
 
     def _finalize_context_extraction(
@@ -415,6 +447,7 @@ class ContextExtractionPipeline:
         record_text: str,
         event: Optional[Event],
         candidate_spans: list[ContextSpan],
+        existing_contexts: Optional[list[dict[str, Any]]] = None,
     ) -> list[ContextDraft]:
         if not self._llm_available():
             return []
@@ -423,6 +456,7 @@ class ContextExtractionPipeline:
                 record_text=record_text,
                 event=event,
                 candidate_spans=candidate_spans,
+                existing_contexts=existing_contexts,
             )
         )
         raw_contexts = parsed.get("contexts", []) if isinstance(parsed, dict) else []
@@ -491,6 +525,7 @@ class ContextExtractionPipeline:
         record_text: str,
         event: Optional[Event],
         candidate_spans: list[ContextSpan],
+        existing_contexts: Optional[list[dict[str, Any]]] = None,
     ) -> str:
         return self._user_prompt.format(
             record_text=record_text or "",
@@ -498,6 +533,7 @@ class ContextExtractionPipeline:
             candidate_spans_json=safe_json_dumps(
                 self._candidate_spans_payload(candidate_spans)
             ),
+            existing_contexts_section=self._existing_contexts_section(existing_contexts),
         )
 
     def _build_context_batch_user_message(
@@ -505,18 +541,47 @@ class ContextExtractionPipeline:
         prepared_requests: list[_PreparedContextRequest],
     ) -> str:
         items = []
+        has_existing_contexts = False
         for idx, prepared in enumerate(prepared_requests):
-            items.append(
-                {
-                    "item_index": idx,
-                    "record_text": prepared.record_text or "",
-                    "event": self._event_payload(prepared.event),
-                    "candidate_spans": self._candidate_spans_payload(prepared.candidate_spans),
-                }
-            )
+            item = {
+                "item_index": idx,
+                "record_text": prepared.record_text or "",
+                "event": self._event_payload(prepared.event),
+                "candidate_spans": self._candidate_spans_payload(prepared.candidate_spans),
+            }
+            if prepared.existing_contexts:
+                item["existing_contexts"] = prepared.existing_contexts
+                has_existing_contexts = True
+            items.append(item)
         return self._batch_user_prompt.format(
             item_total=len(prepared_requests),
             items_json=safe_json_dumps(items),
+            existing_contexts_note=self._existing_contexts_note(has_existing_contexts),
+        )
+
+    def _existing_contexts_section(
+        self,
+        existing_contexts: Optional[list[dict[str, Any]]],
+    ) -> str:
+        if not existing_contexts:
+            return ""
+        return (
+            "\n\n可复用已有 Context（仅在真正语义等价时，复用完全相同的 summary；"
+            "否则正常抽取新的抽象 summary）：\n"
+            + safe_json_dumps(existing_contexts)
+            + "\n\n补充规则：\n"
+            "- 如果某个已有 Context 与当前输入等价，优先直接使用该 summary，保持字面完全一致。\n"
+            "- 如果没有等价项，正常返回新的抽象 summary。\n"
+            "- 不要因为主题相近或处于同一大类场景就强行复用。"
+        )
+
+    def _existing_contexts_note(self, has_existing_contexts: bool) -> str:
+        if not has_existing_contexts:
+            return ""
+        return (
+            "补充字段说明：item 中可能包含 existing_contexts。\n"
+            "只有在与其中某一项真正语义等价时，才复用该项的 summary，并保持字面完全一致；\n"
+            "否则正常产出新的抽象 summary。不要因为主题相关就复用。"
         )
 
     def _candidate_spans_payload(

@@ -16,3 +16,5 @@
 - 如果候选主要是动作/结果，请拒绝并在 rejected_candidates 说明原因
 - 如果没有高质量 Context，返回 contexts: []
 - 只输出 JSON，不要任何解释文本
+
+{existing_contexts_section}

@@ -26,6 +26,7 @@ from ..config import (
     BULK_INGEST_MODE,
     CONSOLIDATION_LOG_PATH,
     CONSOLIDATION_MIN_INTERVAL_SECONDS,
+    CONTEXT_AWARE_EXTRACTION_LIMIT,
     CONTEXT_CANDIDATE_LIMIT,
     CONTEXT_CONFLICT_THRESHOLD,
     CONTEXT_EXTRACTION_BATCH_SIZE,
@@ -112,6 +113,7 @@ class DynamicEvolutionConfig:
     context_candidate_limit: int = CONTEXT_CANDIDATE_LIMIT
     context_query_candidate_limit: int = CONTEXT_QUERY_CANDIDATE_LIMIT
     context_extraction_batch_size: int = CONTEXT_EXTRACTION_BATCH_SIZE
+    context_aware_extraction_limit: int = CONTEXT_AWARE_EXTRACTION_LIMIT
     context_core_slot_weight: float = CONTEXT_CORE_SLOT_WEIGHT
     context_aux_slot_weight: float = CONTEXT_AUX_SLOT_WEIGHT
     context_fuzzy_match_threshold: float = CONTEXT_FUZZY_MATCH_THRESHOLD
@@ -399,6 +401,101 @@ class DynamicEvolutionEngine:
                 return text
         return ""
 
+    def _build_existing_contexts_for_extraction(
+        self,
+        events: list[Event],
+        record: Optional[Any],
+    ) -> Optional[list[dict[str, str]]]:
+        limit = max(0, int(self.config.context_aware_extraction_limit or 0))
+        if limit <= 0:
+            return None
+        find_index = getattr(self.store, "find_contexts_summary_index", None)
+        if not callable(find_index):
+            return None
+        try:
+            all_active = find_index(context_type="context", only_active=True)
+        except Exception:
+            logger.warning("failed to load active context summary index for extraction", exc_info=True)
+            return None
+        if not all_active:
+            return None
+
+        query_text = self._build_extraction_query_text(events=events, record=record)
+        scored: list[tuple[float, str, str]] = []
+        seen_keys: set[str] = set()
+        for context_id, summary in all_active:
+            summary_text = str(summary or "").strip()
+            key = self._normalized_context_text(summary_text)
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            score = self._lexical_similarity(summary_text, query_text) if query_text else 0.0
+            scored.append((score, str(context_id or "").strip(), summary_text))
+        if not scored:
+            return None
+
+        scored.sort(key=lambda item: (-item[0], item[2]))
+        return [
+            self._build_existing_context_payload(context_id=context_id, summary=summary)
+            for _, context_id, summary in scored[:limit]
+        ] or None
+
+    def _build_existing_context_payload(self, context_id: str, summary: str) -> dict[str, str]:
+        payload = {"summary": str(summary or "").strip()}
+        get_context = getattr(self.store, "get_context", None)
+        if not callable(get_context) or not context_id:
+            return payload
+        try:
+            context = get_context(context_id)
+        except Exception:
+            return payload
+        subtype = self._context_subtype(context)
+        if subtype:
+            payload["subtype"] = subtype
+        return payload
+
+    def _build_extraction_query_text(
+        self,
+        events: list[Event],
+        record: Optional[Any],
+    ) -> str:
+        parts: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: Any) -> None:
+            text = str(value or "").strip()
+            if not text:
+                return
+            key = self._normalized_context_text(text)
+            if not key or key in seen:
+                return
+            seen.add(key)
+            parts.append(text)
+
+        add(self._extract_relation_source_text(record=record, events=events))
+        for event in events:
+            add(event.summary)
+            add(event.action)
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            for key in ("context_note", "state", "constraint", "goal", "phase", "task_stage"):
+                add(payload.get(key))
+            context_payload = payload.get("context", {})
+            if isinstance(context_payload, dict):
+                for key in (
+                    "scene",
+                    "state",
+                    "constraint",
+                    "goal",
+                    "phase",
+                    "environment",
+                    "geo_context",
+                    "digital_context",
+                    "time_bucket",
+                    "task_stage",
+                ):
+                    add(context_payload.get(key))
+        return " ".join(parts)
+
     def _same_relation_scope(self, left: Event, right: Event) -> bool:
         left_payload = left.payload if isinstance(left.payload, dict) else {}
         right_payload = right.payload if isinstance(right.payload, dict) else {}
@@ -562,14 +659,37 @@ class DynamicEvolutionEngine:
             return []
 
         drafts_by_index: dict[int, list[ContextDraft]] = {}
+        shared_existing_contexts = self._build_existing_contexts_for_extraction(
+            events=events,
+            record=record,
+        )
+        existing_contexts_by_index = (
+            {
+                idx: [dict(item) for item in shared_existing_contexts]
+                for idx in range(len(events))
+            }
+            if shared_existing_contexts
+            else None
+        )
         batched_extract = getattr(self.context_extractor, "extract_batch", None)
         max_batch_size = max(1, int(self.config.context_extraction_batch_size or 1))
         if callable(batched_extract) and len(events) > 1:
             for start in range(0, len(events), max_batch_size):
                 batch_events = events[start : start + max_batch_size]
                 batch_records = [record if record is not None else event for event in batch_events]
+                batch_existing_contexts = None
+                if existing_contexts_by_index:
+                    batch_existing_contexts = {
+                        offset: existing_contexts_by_index[start + offset]
+                        for offset in range(len(batch_events))
+                        if existing_contexts_by_index.get(start + offset)
+                    }
                 try:
-                    batch_drafts = batched_extract(records=batch_records, events=batch_events)
+                    batch_drafts = batched_extract(
+                        records=batch_records,
+                        events=batch_events,
+                        existing_contexts_by_index=batch_existing_contexts,
+                    )
                     if len(batch_drafts) != len(batch_events):
                         raise ValueError(
                             f"expected {len(batch_events)} batch context results, got {len(batch_drafts)}"
@@ -590,11 +710,20 @@ class DynamicEvolutionEngine:
             workers = self._llm_workers(task_count=len(missing_indices))
             if workers <= 1:
                 for idx in missing_indices:
-                    drafts_by_index[idx] = self.extract_context_drafts(events[idx], record=record)
+                    drafts_by_index[idx] = self.extract_context_drafts(
+                        events[idx],
+                        record=record,
+                        existing_contexts=(existing_contexts_by_index or {}).get(idx),
+                    )
             else:
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     futures = {
-                        pool.submit(self.extract_context_drafts, events[idx], record): idx
+                        pool.submit(
+                            self.extract_context_drafts,
+                            events[idx],
+                            record,
+                            (existing_contexts_by_index or {}).get(idx),
+                        ): idx
                         for idx in missing_indices
                     }
                     for future in as_completed(futures):
@@ -615,8 +744,13 @@ class DynamicEvolutionEngine:
         self,
         event: Event,
         record: Optional[Any] = None,
+        existing_contexts: Optional[list[dict[str, Any]]] = None,
     ) -> list[ContextDraft]:
-        drafts = self.context_extractor.extract(record=record or event, event=event)
+        drafts = self.context_extractor.extract(
+            record=record or event,
+            event=event,
+            existing_contexts=existing_contexts,
+        )
         return self._filter_valid_context_drafts(drafts)
 
     def resolve_context_pairs(
