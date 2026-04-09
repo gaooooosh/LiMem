@@ -8,6 +8,7 @@ import html
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from typing import Any
 
@@ -206,13 +207,17 @@ def main() -> None:
         batch_size=args.batch_size,
     )
 
+    print("[post] Running consolidation (event merge + context merge + decay) ...")
+    t0 = time.perf_counter()
     consolidation_report: dict[str, Any] = ltm.run_consolidation()
-    print("Consolidation report:", consolidation_report)
+    print(f"[post] Consolidation done in {time.perf_counter() - t0:.1f}s: {consolidation_report}")
 
+    print("[post] Gathering final stats and snapshot ...")
     final_stats = ltm.get_stats()
     final_snapshot = _capture_snapshot(ltm, args.snapshot_limit)
-    print("Stats:", final_stats)
+    print("[post] Stats:", final_stats)
 
+    print("[post] Writing reports ...")
     report = {
         "sessions_path": args.sessions_path,
         "db_path": args.db_path,
@@ -247,6 +252,7 @@ def main() -> None:
 
     # Auto-generate graph visualization
     if not args.skip_visualize:
+        print("[post] Generating graph visualization ...")
         viz_path = os.path.join(args.output_dir, "sessions_graph.html")
         try:
             out = visualize_graph(
@@ -257,6 +263,8 @@ def main() -> None:
             print(f"Graph visualization saved: {out}")
         except Exception as ex:
             print(f"Graph visualization failed: {ex}")
+
+    print("[done] Build complete.")
 
 
 if __name__ == "__main__":

@@ -1571,8 +1571,8 @@ class DynamicEvolutionEngine:
 
         threshold = max(self.config.context_reuse_threshold, 0.58)
         conflict_skip_threshold = min(0.95, self.config.context_conflict_threshold + 0.20)
-        llm_min_score = 0.30
-        llm_cross_subtype_min_score = 0.45
+        llm_min_score = 0.58
+        llm_cross_subtype_min_score = 0.62
         candidates: list[tuple[float, dict[str, Any]]] = []
         for i in range(len(contexts)):
             for j in range(i + 1, len(contexts)):
@@ -2335,7 +2335,7 @@ class DynamicEvolutionEngine:
             valid_from=timestamp,
         )
 
-    def _context_similarity(self, a: Any, b: Any) -> float:
+    def _context_similarity(self, a: Any, b: Any, *, precomputed_summary_sim: Optional[float] = None) -> float:
         slots_a = self._effective_context_slots(a)
         slots_b = self._effective_context_slots(b)
         core_keys = self._core_context_slot_keys()
@@ -2361,7 +2361,7 @@ class DynamicEvolutionEngine:
             + aux_group_weight * aux_slot_sim
         ) / total_slot_weight
         set_slot_sim = self._value_similarity(slots_a, slots_b)
-        summary_sim = self._summary_semantic_similarity(a, b)
+        summary_sim = precomputed_summary_sim if precomputed_summary_sim is not None else self._summary_semantic_similarity(a, b)
         subtype_sim = self._context_subtype_similarity(self._context_subtype(a), self._context_subtype(b))
         active_sim = 1.0 if self._context_status(a) == "active" else 0.75
         temporal_sim = self._context_temporal_compatibility(a, b)
@@ -2385,7 +2385,7 @@ class DynamicEvolutionEngine:
 
     def _context_merge_score(self, a: Context, b: Context) -> float:
         summary_sim = self._summary_semantic_similarity(a, b)
-        base = self._context_similarity(a, b)
+        base = self._context_similarity(a, b, precomputed_summary_sim=summary_sim)
         if summary_sim >= 0.7:
             return max(base, 0.5 + 0.5 * summary_sim)
         containment = self._context_slot_containment_ratio(a, b)
