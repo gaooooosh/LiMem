@@ -9,12 +9,6 @@ import json
 import logging
 import re
 
-try:
-    pass
-except Exception:  # pragma: no cover - optional dependency for offline mode
-    dashscope = None
-    Generation = None
-
 from ..config import (
     CONTEXT_EXTRACTION_BATCH_SIZE,
     DASHSCOPE_API_KEY,
@@ -22,7 +16,6 @@ from ..config import (
     GENERATION_MODEL,
     normalize_dashscope_base_url,
 )
-from ..llm import DashScopeClient
 from ..core.context import (
     ALLOWED_CONTEXT_SUBTYPES,
     CanonicalContextKey,
@@ -31,127 +24,10 @@ from ..core.context import (
     normalize_context_subtype,
 )
 from ..core.event import Event
+from ..llm import DashScopeClient
 from ..utils import load_prompt, robust_json_loads, safe_json_dumps
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_HABIT_LIKE_MARKERS = ("通常", "经常", "总是", "一向", "偏好", "习惯")
-_DEFAULT_EVENT_LIKE_MARKERS = (
-    "打开", "搜索", "开始", "完成", "成功", "失败", "找到", "支付", "导航", "播放", "推荐", "决定",
-    "说", "回答", "开启", "关闭", "调高", "调低", "前往", "去",
-)
-_DEFAULT_STRONG_CONTEXT_SIGNAL_MARKERS = (
-    "由于", "因为", "当前", "目前", "此时", "只剩", "仅剩", "不足", "需要", "希望", "目标", "条件",
-    "限制", "状态", "环境", "情况下",
-)
-_DEFAULT_GENERIC_CLAUSE_PATTERNS = (
-    (r"由于[^，。；,;]+", "constraint", "causal_clause"),
-    (r"因为[^，。；,;]+", "constraint", "causal_clause"),
-    (r"在[^，。；,;]{1,40}情况下", "situation", "situation_clause"),
-    (r"(当前|目前|此时)[^，。；,;]+", "state", "current_clause"),
-    (r"(只剩|仅剩|不足)[^，。；,;]+", "constraint", "remaining_clause"),
-    (r"(需要|希望|想要|目标是)[^，。；,;]+", "goal", "goal_clause"),
-    (r"(正在|处于)[^，。；,;]{0,24}(阶段|中)", "phase", "phase_clause"),
-    (r"(执行中|准备中|进行中|等待中|收尾中)", "phase", "phase_clause"),
-)
-_FALLBACK_SLOT_KEYS = {
-    "situation": "situation",
-    "state": "state",
-    "constraint": "constraint",
-    "goal": "goal",
-    "environment": "environment",
-    "phase": "phase",
-}
-_SUMMARY_PREFIXES = (
-    "由于",
-    "因为",
-    "当前",
-    "目前",
-    "此时",
-    "需要",
-    "希望",
-    "想要",
-    "目标是",
-    "正在",
-    "处于",
-)
-_LOW_REUSE_TIME_PATTERNS = (
-    r"\d{4}[年/-]\d{1,2}[月/-]\d{1,2}日?",
-    r"(上午|下午|晚上|凌晨|中午)?\d{1,2}点(半|\d{1,2}分)?",
-    r"\d{1,2}:\d{2}",
-)
-_DEFAULT_DOMAIN_LITERAL_PATTERNS = (
-    r"《[^》]{1,40}》",  # media titles, often event payload details
-    r"-阶段[A-Za-z0-9一二三四五六七八九十]+",
-)
-_DEFAULT_LOW_VALUE_LITERAL_MARKERS = (
-    "qq音乐",
-    "网易云",
-    "酷狗",
-    "酷我",
-    "喜马拉雅",
-    "app",
-    "阶段a",
-    "阶段b",
-    "阶段c",
-)
-_DEFAULT_MINIMUM_CONTEXT_SUBTYPE_RULES = (
-    (("需要", "不足", "紧张", "受限"), "constraint"),
-    (("目标", "希望", "想要"), "goal"),
-    (("车内", "app", "系统", "设备"), "environment"),
-)
-_DEFAULT_MINIMUM_CONTEXT_PHRASE_RULES = (
-    (("会议", "开会"), "situation", "会议场景"),
-)
-_DEFAULT_EVENT_LIKE_MINIMUM_CONTEXT_RULES = (
-    (("导航",), "situation", "出行导航场景"),
-    (("勿扰",), "constraint", "减少打扰需求"),
-)
-_DEFAULT_ABSTRACT_CONTEXT_RULES = (
-    (("qq音乐", "网易云", "酷狗", "酷我", "歌曲", "歌单", "播放"), None, "音乐播放场景"),
-    (("导航", "地图", "路线", "充电桩", "目的地"), None, "出行导航场景"),
-    (("会议", "开会", "勿扰"), "constraint", "减少打扰需求"),
-    (("会议", "开会", "勿扰"), None, "会议场景"),
-)
-_DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE = {
-    "constraint": "当前约束条件",
-    "goal": "当前目标",
-    "state": "当前状态",
-    "environment": "当前环境",
-    "phase": "当前阶段",
-}
-_DEFAULT_INVALID_CONTEXT_DATA_MARKERS = (
-    "[车辆状态]",
-    "[舱内摄像头]",
-    "[日程数据]",
-    "[屏幕]",
-    "[环境感知]",
-    "来源:",
-    "payload",
-    "cal_evt",
-    "door_status",
-    "vehicle_stat",
-)
-_DEFAULT_INVALID_CONTEXT_DIALOGUE_MARKERS = (
-    "->",
-    "车机回答",
-    "车机主动播报",
-)
-_DEFAULT_CONTEXT_DOMAIN_CONFIG = {
-    "habit_like_markers": _DEFAULT_HABIT_LIKE_MARKERS,
-    "event_like_markers": _DEFAULT_EVENT_LIKE_MARKERS,
-    "strong_context_signal_markers": _DEFAULT_STRONG_CONTEXT_SIGNAL_MARKERS,
-    "generic_clause_patterns": _DEFAULT_GENERIC_CLAUSE_PATTERNS,
-    "domain_literal_patterns": _DEFAULT_DOMAIN_LITERAL_PATTERNS,
-    "low_value_literal_markers": _DEFAULT_LOW_VALUE_LITERAL_MARKERS,
-    "minimum_context_subtype_rules": _DEFAULT_MINIMUM_CONTEXT_SUBTYPE_RULES,
-    "minimum_context_phrase_rules": _DEFAULT_MINIMUM_CONTEXT_PHRASE_RULES,
-    "event_like_minimum_context_rules": _DEFAULT_EVENT_LIKE_MINIMUM_CONTEXT_RULES,
-    "abstract_context_rules": _DEFAULT_ABSTRACT_CONTEXT_RULES,
-    "abstract_context_fallback_by_subtype": _DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE,
-    "invalid_context_data_markers": _DEFAULT_INVALID_CONTEXT_DATA_MARKERS,
-    "invalid_context_dialogue_markers": _DEFAULT_INVALID_CONTEXT_DIALOGUE_MARKERS,
-}
 
 
 @dataclass
@@ -162,21 +38,6 @@ class _PreparedContextRequest:
     existing_contexts: Optional[list[dict[str, Any]]] = None
 
 
-def _merge_context_domain_config(overrides: Optional[dict[str, Any]]) -> dict[str, Any]:
-    config = dict(_DEFAULT_CONTEXT_DOMAIN_CONFIG)
-    fallback_by_subtype = dict(_DEFAULT_ABSTRACT_CONTEXT_FALLBACK_BY_SUBTYPE)
-    if overrides:
-        for key, value in overrides.items():
-            if value is None:
-                continue
-            if key == "abstract_context_fallback_by_subtype" and isinstance(value, dict):
-                fallback_by_subtype.update(value)
-                continue
-            config[key] = value
-    config["abstract_context_fallback_by_subtype"] = fallback_by_subtype
-    return config
-
-
 @dataclass
 class ContextExtractionPipeline:
     """Extract reusable ContextDraft objects from record/Event input."""
@@ -184,8 +45,6 @@ class ContextExtractionPipeline:
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     generation_model: Optional[str] = None
-    offline_mode: bool = False
-    domain_config: Optional[dict[str, Any]] = None
     llm_client: Optional[DashScopeClient] = None
 
     def __post_init__(self) -> None:
@@ -199,40 +58,6 @@ class ContextExtractionPipeline:
                 api_key=self.api_key,
                 base_url=self.base_url,
             )
-        self._domain_config = _merge_context_domain_config(self.domain_config)
-        self._habit_like_markers = tuple(self._domain_config["habit_like_markers"])
-        self._event_like_markers = tuple(self._domain_config["event_like_markers"])
-        self._strong_context_signal_markers = tuple(
-            self._domain_config["strong_context_signal_markers"]
-        )
-        self._generic_clause_patterns = tuple(self._domain_config["generic_clause_patterns"])
-        self._domain_literal_patterns = tuple(self._domain_config["domain_literal_patterns"])
-        self._low_value_literal_markers = tuple(self._domain_config["low_value_literal_markers"])
-        self._minimum_context_subtype_rules = tuple(
-            (tuple(markers), subtype)
-            for markers, subtype in self._domain_config["minimum_context_subtype_rules"]
-        )
-        self._minimum_context_phrase_rules = tuple(
-            (tuple(markers), subtype, summary)
-            for markers, subtype, summary in self._domain_config["minimum_context_phrase_rules"]
-        )
-        self._event_like_minimum_context_rules = tuple(
-            (tuple(markers), subtype, summary)
-            for markers, subtype, summary in self._domain_config["event_like_minimum_context_rules"]
-        )
-        self._abstract_context_rules = tuple(
-            (tuple(markers), required_subtype, summary)
-            for markers, required_subtype, summary in self._domain_config["abstract_context_rules"]
-        )
-        self._abstract_context_fallback_by_subtype = dict(
-            self._domain_config["abstract_context_fallback_by_subtype"]
-        )
-        self._invalid_context_data_markers = tuple(
-            self._domain_config["invalid_context_data_markers"]
-        )
-        self._invalid_context_dialogue_markers = tuple(
-            self._domain_config["invalid_context_dialogue_markers"]
-        )
         self._system_prompt = load_prompt("extract_context_system.txt")
         self._user_prompt = load_prompt("extract_context_user.txt")
         self._batch_user_prompt = load_prompt("extract_context_batch_user.txt")
@@ -294,9 +119,17 @@ class ContextExtractionPipeline:
             ]
 
         return [
-            self._finalize_context_extraction(
-                prepared=prepared,
-                llm_drafts=llm_drafts_by_index.get(idx, []),
+            (
+                self._finalize_context_extraction(
+                    prepared=prepared,
+                    llm_drafts=llm_drafts_by_index[idx],
+                )
+                if idx in llm_drafts_by_index
+                else self.extract(
+                    records[idx],
+                    event=events[idx],
+                    existing_contexts=prepared.existing_contexts,
+                )
             )
             for idx, prepared in enumerate(prepared_requests)
         ]
@@ -325,30 +158,16 @@ class ContextExtractionPipeline:
         prepared: _PreparedContextRequest,
         llm_drafts: Optional[list[ContextDraft]] = None,
     ) -> list[ContextDraft]:
-        record_text = prepared.record_text
-        event = prepared.event
-        candidate_spans = prepared.candidate_spans
-        fallback_drafts = self._fallback_extract_contexts(record_text, event, candidate_spans)
-        drafts: list[ContextDraft] = []
-        if llm_drafts:
-            drafts.extend(llm_drafts)
-            # LLM is primary, but keep a small amount of heuristic recall to avoid sparse misses.
-            if len(llm_drafts) < self._target_context_count(record_text):
-                drafts.extend(fallback_drafts)
-        else:
-            drafts = fallback_drafts
-        validated = self.validate_context_drafts(drafts, record_text, event)
-        reranked = self._rerank_context_drafts(validated, record_text, event)
+        validated = self.validate_context_drafts(
+            llm_drafts or [],
+            prepared.record_text,
+            prepared.event,
+        )
         canonicalized = [
-            draft for draft in (self.canonicalize_context(item) for item in reranked)
+            draft
+            for draft in (self.canonicalize_context(item) for item in validated)
             if self.is_valid_context_draft(draft)
         ]
-        if not canonicalized:
-            inferred = self._infer_minimum_context(event=event, record_text=record_text)
-            if inferred is not None:
-                inferred_canonical = self.canonicalize_context(inferred)
-                if self.is_valid_context_draft(inferred_canonical):
-                    canonicalized = [inferred_canonical]
         return self._dedupe_drafts(canonicalized)
 
     def detect_context_candidates(
@@ -360,87 +179,58 @@ class ContextExtractionPipeline:
         spans: list[ContextSpan] = []
         seen: set[tuple[str, str]] = set()
 
-        for clause, start, end in self._split_text_clauses(text):
-            if not clause:
-                continue
-            for pattern, subtype, signal in self._generic_clause_patterns:
-                if not re.search(pattern, clause):
-                    continue
-                key = (clause, signal)
-                if key in seen:
-                    continue
-                seen.add(key)
-                spans.append(
-                    ContextSpan(
-                        text=clause,
-                        signal=signal,
-                        subtype_hint=subtype,
-                        source="record",
-                        start=start,
-                        end=end,
-                    )
+        def add_span(text_value: Any, signal: str, subtype_hint: str, source: str) -> None:
+            candidate = self._normalize_free_text(text_value)
+            if not candidate:
+                return
+            key = (candidate, signal)
+            if key in seen:
+                return
+            seen.add(key)
+            spans.append(
+                ContextSpan(
+                    text=candidate,
+                    signal=signal,
+                    subtype_hint=subtype_hint,
+                    source=source,
                 )
-                break
+            )
 
-        if event is not None:
-            payload = event.payload if isinstance(event.payload, dict) else {}
+        if text:
+            add_span(text, "record", "situation", "record")
+
+        if event is not None and isinstance(event.payload, dict):
+            payload = event.payload
             for key, subtype in (
                 ("context_note", "situation"),
-                ("state", "state"),
-                ("constraint", "constraint"),
-                ("constraint_hint", "constraint"),
-                ("goal", "goal"),
-                ("goal_hint", "goal"),
-                ("phase", "phase"),
-                ("task_stage", "phase"),
-            ):
-                value = payload.get(key)
-                text_value = str(value or "").strip()
-                if not text_value:
-                    continue
-                dedupe_key = (text_value, key)
-                if dedupe_key in seen:
-                    continue
-                seen.add(dedupe_key)
-                spans.append(
-                    ContextSpan(
-                        text=text_value,
-                        signal=f"event_payload:{key}",
-                        subtype_hint=subtype,
-                        source="event",
-                    )
-                )
-            context_payload = payload.get("context", {}) if isinstance(payload.get("context", {}), dict) else {}
-            context_key_map: list[tuple[str, str]] = [
-                ("scene", "situation"),
                 ("state", "state"),
                 ("constraint", "constraint"),
                 ("goal", "goal"),
                 ("phase", "phase"),
                 ("environment", "environment"),
-                ("geo_context", "environment"),
-                ("digital_context", "environment"),
-                ("time_bucket", "state"),
-                ("task_stage", "phase"),
-            ]
-            for key, subtype in context_key_map:
-                value = context_payload.get(key)
-                text_value = str(value or "").strip()
-                if not text_value:
-                    continue
-                dedupe_key = (text_value, f"context:{key}")
-                if dedupe_key in seen:
-                    continue
-                seen.add(dedupe_key)
-                spans.append(
-                    ContextSpan(
-                        text=text_value,
-                        signal=f"event_payload:context.{key}",
-                        subtype_hint=subtype,
-                        source="event",
+            ):
+                add_span(payload.get(key), f"event_payload:{key}", subtype, "event")
+
+            context_payload = payload.get("context", {})
+            if isinstance(context_payload, dict):
+                for key, subtype in (
+                    ("scene", "situation"),
+                    ("state", "state"),
+                    ("constraint", "constraint"),
+                    ("goal", "goal"),
+                    ("phase", "phase"),
+                    ("environment", "environment"),
+                    ("geo_context", "environment"),
+                    ("digital_context", "environment"),
+                ):
+                    add_span(
+                        context_payload.get(key),
+                        f"event_payload:context.{key}",
+                        subtype,
+                        "event",
                     )
-                )
-        return spans[: self._candidate_span_limit(text=text, event=event)]
+
+        return spans[: max(1, CONTEXT_EXTRACTION_BATCH_SIZE)]
 
     def llm_extract_contexts(
         self,
@@ -449,8 +239,6 @@ class ContextExtractionPipeline:
         candidate_spans: list[ContextSpan],
         existing_contexts: Optional[list[dict[str, Any]]] = None,
     ) -> list[ContextDraft]:
-        if not self._llm_available():
-            return []
         parsed = self._call_context_llm_json(
             self._build_context_user_message(
                 record_text=record_text,
@@ -472,7 +260,6 @@ class ContextExtractionPipeline:
     ) -> tuple[bool, dict[int, list[ContextDraft]]]:
         if (
             len(prepared_requests) <= 1
-            or not self._llm_available()
             or not str(self._batch_user_prompt or "").strip()
         ):
             return False, {}
@@ -490,8 +277,7 @@ class ContextExtractionPipeline:
             raw_items = self._collect_batched_context_items(parsed)
             if len(raw_items) != len(batch_requests):
                 logger.warning(
-                    "context batch extraction returned %s items for %s requests; "
-                    "falling back to heuristic extraction for this batch",
+                    "context batch extraction returned %s items for %s requests",
                     len(raw_items),
                     len(batch_requests),
                 )
@@ -504,11 +290,7 @@ class ContextExtractionPipeline:
                         item_total=len(batch_requests),
                     )
                 except ValueError as exc:
-                    logger.warning(
-                        "context batch extraction returned invalid item index; "
-                        "falling back to heuristic extraction for this item: %s",
-                        exc,
-                    )
+                    logger.warning("invalid context batch item index: %s", exc)
                     continue
                 absolute_index = batch_start + item_index
                 prepared = batch_requests[item_index]
@@ -679,72 +461,39 @@ class ContextExtractionPipeline:
                 continue
             if draft.subtype not in ALLOWED_CONTEXT_SUBTYPES:
                 continue
-            if not draft.summary:
-                continue
             if not isinstance(draft.structured_slots, dict):
                 continue
             if not self.is_valid_context_draft(draft):
                 continue
 
-            evidence_span = draft.evidence_span or draft.summary
-            evidence_overlap = self._evidence_overlap_ratio(evidence_span, record_text)
-            if evidence_overlap <= 0.0:
-                continue
-            primary_source = ""
-            if draft.source_refs and isinstance(draft.source_refs[0], dict):
-                primary_source = str(draft.source_refs[0].get("source", "") or "")
-            from_llm = "llm_context_extraction" in primary_source
-            quality = self._context_quality_score(
-                draft=draft,
-                evidence_span=evidence_span,
-                record_text=record_text,
-                event=event,
-                from_llm=from_llm,
-                evidence_overlap=evidence_overlap,
-            )
-            accept_gate = 0.42 if from_llm else 0.54
-            if quality < accept_gate:
-                continue
-
             cleaned_slots = self._clean_structured_slots(draft.structured_slots)
             if not cleaned_slots:
-                slot_key = _FALLBACK_SLOT_KEYS.get(draft.subtype, "condition")
-                cleaned_slots = {
-                    slot_key: self._normalize_free_text(
-                        self._abstract_context_phrase(
-                            self._normalize_context_surface(draft.summary),
-                            evidence_span=evidence_span,
-                            subtype=draft.subtype,
-                        )
-                    )
-                }
+                slot_key = self._default_slot_key(draft.subtype)
+                slot_value = self._normalize_free_text(draft.summary or draft.evidence_span)
+                if slot_value:
+                    cleaned_slots = {slot_key: slot_value}
 
-            normalized_summary = self._abstract_context_phrase(
-                self._normalize_context_surface(draft.summary),
-                evidence_span=evidence_span,
-                subtype=draft.subtype,
-            )
-            if not normalized_summary:
+            evidence_span = self._normalize_free_text(draft.evidence_span or draft.summary)
+            if evidence_span and record_text and not self._evidence_matches_text(evidence_span, record_text):
                 continue
 
-            candidate = ContextDraft(
-                subtype=draft.subtype,
-                summary=self._normalize_free_text(normalized_summary),
-                structured_slots=cleaned_slots,
-                confidence=max(0.1, min(1.0, 0.75 * draft.confidence + 0.25 * quality)),
-                evidence_span=evidence_span,
-                source_refs=draft.source_refs or self._make_source_refs(
-                    event=event,
-                    evidence_span=evidence_span,
-                    signal="validated_context",
-                    source="context_validation",
-                ),
-                valid_from=draft.valid_from or self._event_timestamp(event),
-                valid_to=draft.valid_to,
+            validated.append(
+                ContextDraft(
+                    subtype=normalize_context_subtype(draft.subtype),
+                    summary=self._normalize_free_text(draft.summary),
+                    structured_slots=cleaned_slots,
+                    confidence=max(0.0, min(1.0, float(draft.confidence or 0.0))),
+                    evidence_span=evidence_span or self._normalize_free_text(draft.summary),
+                    source_refs=draft.source_refs or self._make_source_refs(
+                        event=event,
+                        evidence_span=evidence_span or self._normalize_free_text(draft.summary),
+                        signal="validated_context",
+                        source="context_validation",
+                    ),
+                    valid_from=draft.valid_from or self._event_timestamp(event),
+                    valid_to=draft.valid_to,
+                )
             )
-            if not self.is_valid_context_draft(candidate):
-                continue
-            validated.append(candidate)
         return validated
 
     def is_valid_context_draft(self, draft: ContextDraft) -> bool:
@@ -753,19 +502,9 @@ class ContextExtractionPipeline:
         summary = str(draft.summary or "").strip()
         if not summary:
             return False
-        if len(summary) > 40:
-            return False
-
-        summary_lower = summary.lower()
-        if any(marker.lower() in summary_lower for marker in self._invalid_context_data_markers):
+        if len(summary) > 64:
             return False
         if any(ch in summary for ch in ('{', '}', '"')):
-            return False
-        if any(marker in summary for marker in self._invalid_context_dialogue_markers):
-            return False
-
-        evidence_span = str(draft.evidence_span or "").strip()
-        if evidence_span and summary == evidence_span and len(summary) > 15:
             return False
         return True
 
@@ -791,50 +530,6 @@ class ContextExtractionPipeline:
             canonical_key=canonical_key,
         )
 
-    def _fallback_extract_contexts(
-        self,
-        record_text: str,
-        event: Optional[Event],
-        candidate_spans: list[ContextSpan],
-    ) -> list[ContextDraft]:
-        drafts: list[ContextDraft] = []
-        for span in candidate_spans:
-            normalized_text = self._strip_discourse_prefix(span.text)
-            if not normalized_text:
-                continue
-            if self._looks_like_habit_not_context(normalized_text):
-                continue
-            if self._looks_like_event_or_result(normalized_text, event):
-                continue
-            if self._looks_low_reusability_context(normalized_text, span.text, strict=False):
-                continue
-            subtype = normalize_context_subtype(span.subtype_hint)
-            summary = self._abstract_context_phrase(
-                self._normalize_context_surface(normalized_text),
-                evidence_span=span.text,
-                subtype=subtype,
-            )
-            draft = ContextDraft(
-                subtype=subtype,
-                summary=summary,
-                structured_slots={
-                    _FALLBACK_SLOT_KEYS.get(subtype, "condition"): summary
-                },
-                confidence=0.58,
-                evidence_span=span.text,
-                source_refs=self._make_source_refs(
-                    event=event,
-                    evidence_span=span.text,
-                    signal=span.signal or "fallback_context",
-                    source="fallback_context_extraction",
-                ),
-                valid_from=self._event_timestamp(event),
-            )
-            if not self.is_valid_context_draft(draft):
-                continue
-            drafts.append(draft)
-        return drafts
-
     def _clean_structured_slots(self, structured_slots: dict[str, Any]) -> dict[str, Any]:
         cleaned: dict[str, Any] = {}
         for raw_key, raw_value in structured_slots.items():
@@ -847,10 +542,7 @@ class ContextExtractionPipeline:
 
     def _canonicalize_slots(self, structured_slots: dict[str, Any]) -> dict[str, Any]:
         cleaned = self._clean_structured_slots(structured_slots)
-        return {
-            key: cleaned[key]
-            for key in sorted(cleaned.keys())
-        }
+        return {key: cleaned[key] for key in sorted(cleaned.keys())}
 
     def _normalize_slot_key(self, value: Any) -> str:
         text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -862,7 +554,11 @@ class ContextExtractionPipeline:
                 self._normalize_slot_key(key): self._normalize_slot_value(sub_value)
                 for key, sub_value in value.items()
             }
-            return {key: nested[key] for key in sorted(nested.keys()) if key and nested[key] not in (None, "", [], {})}
+            return {
+                key: nested[key]
+                for key in sorted(nested.keys())
+                if key and nested[key] not in (None, "", [], {})
+            }
         if isinstance(value, list):
             result = []
             for item in value:
@@ -886,9 +582,7 @@ class ContextExtractionPipeline:
         return self._normalize_free_text(text)
 
     def _canonicalize_summary(self, summary: str, evidence_span: str) -> str:
-        text = self._normalize_free_text(summary or evidence_span)
-        text = self._strip_discourse_prefix(text)
-        return text or self._normalize_free_text(evidence_span)
+        return self._normalize_free_text(summary or evidence_span)
 
     def _dedupe_drafts(self, drafts: list[ContextDraft]) -> list[ContextDraft]:
         deduped: list[ContextDraft] = []
@@ -947,14 +641,6 @@ class ContextExtractionPipeline:
             return 0
         return int(event.valid_from or event.timestamp or event.last_active or 0)
 
-    def _split_text_clauses(self, text: str) -> list[tuple[str, int, int]]:
-        clauses: list[tuple[str, int, int]] = []
-        for match in re.finditer(r"[^。！？!?；;]+", text):
-            chunk = match.group(0).strip(" ，,\n\t")
-            if chunk:
-                clauses.append((chunk, match.start(), match.end()))
-        return clauses
-
     def _evidence_matches_text(self, evidence_span: str, record_text: str) -> bool:
         if not evidence_span:
             return False
@@ -969,316 +655,7 @@ class ContextExtractionPipeline:
         if not evidence_tokens:
             return False
         overlap = len(evidence_tokens & record_tokens)
-        return overlap / max(1, len(evidence_tokens)) >= 0.55
-
-    def _evidence_overlap_ratio(self, evidence_span: str, record_text: str) -> float:
-        if not evidence_span:
-            return 0.0
-        if not record_text:
-            return 1.0
-        evidence_norm = self._normalize_text(evidence_span)
-        record_norm = self._normalize_text(record_text)
-        if evidence_norm and evidence_norm in record_norm:
-            return 1.0
-        evidence_tokens = self._tokenize_text(evidence_span)
-        record_tokens = self._tokenize_text(record_text)
-        if not evidence_tokens:
-            return 0.0
-        overlap = len(evidence_tokens & record_tokens)
-        return overlap / max(1, len(evidence_tokens))
-
-    def _looks_like_event_or_result(self, text: str, event: Optional[Event]) -> bool:
-        normalized = self._normalize_free_text(text)
-        if not normalized:
-            return True
-        has_strong_context_signal = any(
-            marker in normalized for marker in self._strong_context_signal_markers
-        )
-        event_marker_count = sum(1 for marker in self._event_like_markers if marker in normalized)
-        if event_marker_count > 0:
-            if not has_strong_context_signal:
-                return True
-        if event is not None:
-            event_text = " ".join(part for part in [event.summary, event.action, event.causality] if part)
-            lexical_sim = self._lexical_similarity(normalized, event_text)
-            similarity_gate = 0.80 if event_marker_count > 0 else 0.88
-            if lexical_sim >= similarity_gate:
-                return True
-            if normalized == self._normalize_free_text(event.summary) or normalized == self._normalize_free_text(event.action):
-                return True
-        return False
-
-    def _looks_low_reusability_context(self, summary: str, evidence_span: str, strict: bool = True) -> bool:
-        text = self._normalize_free_text(summary or evidence_span)
-        if not text:
-            return True
-        text_lower = text.lower()
-        event_marker_count = sum(1 for marker in self._event_like_markers if marker in text)
-
-        if not strict:
-            # LLM path is primary; keep only very coarse guardrails.
-            if len(text) >= 48 and event_marker_count >= 2:
-                return True
-            return False
-
-        for pattern in _LOW_REUSE_TIME_PATTERNS:
-            if re.search(pattern, text):
-                if event_marker_count >= 1:
-                    return True
-        for pattern in self._domain_literal_patterns:
-            if re.search(pattern, text):
-                return True
-        # Overly specific one-shot narration is usually not reusable as Context.
-        if len(text) >= 30 and event_marker_count >= 1:
-            return True
-        if "播放" in text_lower and ("qq音乐" in text_lower or "网易云" in text_lower):
-            return True
-        return False
-
-    def _normalize_context_surface(self, text: str) -> str:
-        normalized = self._normalize_free_text(text)
-        if not normalized:
-            return normalized
-        # Strip leading timeline fragments such as "2026-03-12 下午5点半左右,"
-        normalized = re.sub(
-            r"^\s*(\d{4}[年/-]\d{1,2}[月/-]\d{1,2}日?\s*)?"
-            r"((上午|下午|晚上|凌晨|中午)?\d{1,2}点(半|\d{1,2}分)?\s*(左右)?)?\s*[，,]?",
-            "",
-            normalized,
-        ).strip(" ，,")
-        return self._normalize_free_text(normalized)
-
-    def _looks_like_habit_not_context(self, text: str) -> bool:
-        normalized = str(text or "").strip()
-        return any(marker in normalized for marker in self._habit_like_markers)
-
-    def _context_quality_score(
-        self,
-        draft: ContextDraft,
-        evidence_span: str,
-        record_text: str,
-        event: Optional[Event],
-        from_llm: bool,
-        evidence_overlap: float,
-    ) -> float:
-        summary = draft.summary or ""
-        event_like = self._looks_like_event_or_result(summary, event)
-        low_reuse = self._looks_low_reusability_context(
-            summary,
-            evidence_span,
-            strict=not from_llm,
-        )
-        habit_like = self._looks_like_habit_not_context(evidence_span)
-        has_slots = bool(self._clean_structured_slots(draft.structured_slots))
-        context_signal = any(marker in summary for marker in self._strong_context_signal_markers)
-        abstraction_score = self._abstraction_quality_score(summary, evidence_span)
-
-        score = 0.25
-        score += 0.35 * max(0.0, min(1.0, evidence_overlap))
-        score += 0.20 * max(0.0, min(1.0, draft.confidence))
-        score += 0.15 * abstraction_score
-        if has_slots:
-            score += 0.12
-        if context_signal:
-            score += 0.08
-        if event_like:
-            score -= 0.30 if from_llm else 0.40
-        if low_reuse:
-            score -= 0.18 if from_llm else 0.25
-        if habit_like:
-            score -= 0.25
-        return max(0.0, min(1.0, score))
-
-    def _abstraction_quality_score(self, summary: str, evidence_span: str) -> float:
-        text = self._normalize_free_text(summary)
-        if not text:
-            return 0.0
-        lowered = text.lower()
-        score = 0.55
-        # Reward concise reusable labels.
-        if len(text) <= 14:
-            score += 0.20
-        elif len(text) <= 24:
-            score += 0.10
-        # Penalize literal one-shot details leaking into summary.
-        for pattern in self._domain_literal_patterns:
-            if re.search(pattern, text):
-                score -= 0.30
-        if re.search(r"\d{1,2}(:|点)\d{0,2}", text):
-            score -= 0.20
-        if any(marker in lowered for marker in self._low_value_literal_markers):
-            score -= 0.18
-        if any(token in text for token in ("播放", "打开", "搜索", "开始", "前往")) and len(text) >= 16:
-            score -= 0.15
-        # If summary is near-copy of evidence, abstraction is weak.
-        sim = self._lexical_similarity(text, evidence_span or "")
-        if sim >= 0.75 and len(text) >= 14:
-            score -= 0.18
-        return max(0.0, min(1.0, score))
-
-    def _candidate_span_limit(self, text: str, event: Optional[Event]) -> int:
-        text_len = len(self._normalize_free_text(text))
-        payload_bonus = 0
-        if event is not None and isinstance(event.payload, dict):
-            payload = event.payload
-            if isinstance(payload.get("context"), dict):
-                payload_bonus += min(4, len(payload.get("context", {})))
-            payload_bonus += 1 if payload.get("context_note") else 0
-            payload_bonus += 1 if payload.get("constraint") else 0
-            payload_bonus += 1 if payload.get("goal") else 0
-        base = 10
-        length_bonus = min(8, text_len // 80)
-        return max(8, min(24, base + length_bonus + payload_bonus))
-
-    def _target_context_count(self, record_text: str) -> int:
-        text_len = len(self._normalize_free_text(record_text))
-        if text_len <= 36:
-            return 2
-        if text_len <= 120:
-            return 3
-        if text_len <= 220:
-            return 4
-        return 5
-
-    def _rerank_context_drafts(
-        self,
-        drafts: list[ContextDraft],
-        record_text: str,
-        event: Optional[Event],
-    ) -> list[ContextDraft]:
-        if not drafts:
-            return []
-        scored: list[tuple[float, ContextDraft]] = []
-        for draft in drafts:
-            evidence_span = draft.evidence_span or draft.summary
-            overlap = self._evidence_overlap_ratio(evidence_span, record_text)
-            source = ""
-            if draft.source_refs and isinstance(draft.source_refs[0], dict):
-                source = str(draft.source_refs[0].get("source", "") or "")
-            from_llm = "llm_context_extraction" in source
-            score = self._context_quality_score(
-                draft=draft,
-                evidence_span=evidence_span,
-                record_text=record_text,
-                event=event,
-                from_llm=from_llm,
-                evidence_overlap=overlap,
-            )
-            scored.append((score, draft))
-        scored.sort(key=lambda item: (item[0], item[1].confidence), reverse=True)
-
-        target = self._target_context_count(record_text)
-        max_keep = max(target + 1, min(8, target * 2))
-        selected: list[ContextDraft] = []
-        used_subtypes: set[str] = set()
-        for score, draft in scored:
-            if len(selected) >= max_keep:
-                break
-            # Prefer subtype diversity in the first pass, then backfill by score.
-            if len(selected) < target and draft.subtype in used_subtypes:
-                continue
-            selected.append(draft)
-            used_subtypes.add(draft.subtype)
-        if len(selected) < min(max_keep, len(scored)):
-            for _score, draft in scored:
-                if draft in selected:
-                    continue
-                selected.append(draft)
-                if len(selected) >= max_keep:
-                    break
-        return selected
-
-    def _infer_minimum_context(self, event: Optional[Event], record_text: str) -> Optional[ContextDraft]:
-        if event is None:
-            return None
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        candidates = [
-            str(payload.get("context_note", "") or "").strip(),
-            str(payload.get("state", "") or "").strip(),
-            str(payload.get("constraint", "") or "").strip(),
-            str(payload.get("goal", "") or "").strip(),
-            str((payload.get("context", {}) or {}).get("scene", "") if isinstance(payload.get("context", {}), dict) else "").strip(),
-            str(event.summary or "").strip(),
-            str(event.action or "").strip(),
-        ]
-        text = next((item for item in candidates if item), "")
-        if not text:
-            text = self._normalize_free_text(record_text)
-        if not text:
-            return None
-
-        subtype = "situation"
-        summary = self._normalize_context_surface(text)
-        lowered = summary.lower()
-        for markers, configured_subtype in self._minimum_context_subtype_rules:
-            if any(marker.lower() in lowered for marker in markers):
-                subtype = configured_subtype
-                break
-        for markers, configured_subtype, configured_summary in self._minimum_context_phrase_rules:
-            if any(marker.lower() in lowered for marker in markers):
-                subtype = configured_subtype
-                summary = configured_summary
-                break
-
-        if self._looks_like_event_or_result(summary, event):
-            matched_rule = False
-            for markers, configured_subtype, configured_summary in self._event_like_minimum_context_rules:
-                if any(marker.lower() in lowered for marker in markers):
-                    summary = configured_summary
-                    subtype = configured_subtype
-                    matched_rule = True
-                    break
-            if not matched_rule:
-                summary = self._normalize_context_surface(record_text) or "当前场景"
-        summary = self._abstract_context_phrase(
-            summary,
-            evidence_span=text,
-            subtype=normalize_context_subtype(subtype),
-        )
-
-        slot_key = _FALLBACK_SLOT_KEYS.get(subtype, "condition")
-        evidence = self._normalize_free_text(text) or summary
-        draft = ContextDraft(
-            subtype=normalize_context_subtype(subtype),
-            summary=self._normalize_free_text(summary),
-            structured_slots={slot_key: self._normalize_free_text(summary)},
-            confidence=0.45,
-            evidence_span=evidence,
-            source_refs=self._make_source_refs(
-                event=event,
-                evidence_span=evidence,
-                signal="event_minimum_context",
-                source="event_minimum_context_inference",
-            ),
-            valid_from=self._event_timestamp(event),
-        )
-        return draft if self.is_valid_context_draft(draft) else None
-
-    def _abstract_context_phrase(self, text: str, evidence_span: str = "", subtype: str = "situation") -> str:
-        normalized = self._normalize_context_surface(text)
-        if not normalized:
-            return normalized
-        source = f"{normalized} {evidence_span}".lower()
-
-        for markers, required_subtype, configured_summary in self._abstract_context_rules:
-            if required_subtype is not None and required_subtype != subtype:
-                continue
-            if any(marker.lower() in source for marker in markers):
-                return configured_summary
-
-        abstracted = normalized
-        for pattern in self._domain_literal_patterns:
-            abstracted = re.sub(pattern, "", abstracted).strip(" ，,。；;：:")
-        abstracted = re.sub(
-            r"(在)?(qq音乐|网易云|酷狗|酷我|喜马拉雅)(上)?",
-            "",
-            abstracted,
-            flags=re.IGNORECASE,
-        ).strip(" ，,。；;：:")
-        abstracted = re.sub(r"(打开|播放|搜索|开始|继续|切换|前往|去往).{0,16}$", "", abstracted).strip(" ，,。；;：:")
-        if not abstracted:
-            return self._abstract_context_fallback_by_subtype.get(subtype, "当前场景")
-        return self._normalize_free_text(abstracted)
+        return overlap / max(1, len(evidence_tokens)) >= 0.5
 
     def _make_source_refs(
         self,
@@ -1305,7 +682,17 @@ class ContextExtractionPipeline:
                 return span.signal
         return "llm_context"
 
-    def _normalize_free_text(self, text: str) -> str:
+    def _default_slot_key(self, subtype: str) -> str:
+        return {
+            "situation": "situation",
+            "state": "state",
+            "constraint": "constraint",
+            "goal": "goal",
+            "environment": "environment",
+            "phase": "phase",
+        }.get(normalize_context_subtype(subtype), "condition")
+
+    def _normalize_free_text(self, text: Any) -> str:
         normalized = re.sub(r"\s+", " ", str(text or "")).strip(" ，,。；;：:")
         return normalized[:64]
 
@@ -1321,31 +708,3 @@ class ContextExtractionPipeline:
         elif compact:
             tokens.add(compact)
         return {token for token in tokens if token}
-
-    def _lexical_similarity(self, left: str, right: str) -> float:
-        left_tokens = self._tokenize_text(left)
-        right_tokens = self._tokenize_text(right)
-        if not left_tokens or not right_tokens:
-            return 0.0
-        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
-
-    def _strip_discourse_prefix(self, text: str) -> str:
-        result = self._normalize_free_text(text)
-        changed = True
-        while changed and result:
-            changed = False
-            for prefix in _SUMMARY_PREFIXES:
-                if result.startswith(prefix):
-                    result = result[len(prefix):].strip(" ：:，,")
-                    changed = True
-        result = re.sub(r"^(在.+情况下)", "", result).strip(" ：:，,")
-        return self._normalize_free_text(result)
-
-    def _llm_available(self) -> bool:
-        return bool(
-            not self.offline_mode
-            and self.llm_client.has_generation_api()
-            and self.llm_client.has_valid_api_key()
-            and self._system_prompt
-            and self._user_prompt
-        )

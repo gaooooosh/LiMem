@@ -8,6 +8,20 @@ from limem.builder.extractor import ExtractionResult
 from script.trips_debugger import TripsDebuggerConfig, TripsDebuggerSession
 
 
+def _stub_episode_embeddings(engine) -> None:
+    episode_vectors: dict[str, list[float]] = {}
+
+    def fake_ensure_event_embedding(event):
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        episode_id = str(payload.get("episode_id", "") or "").strip() or str(event.id or "")
+        if episode_id not in episode_vectors:
+            index = len(episode_vectors)
+            episode_vectors[episode_id] = [1.0, 0.0] if index % 2 == 0 else [0.0, 1.0]
+        return episode_vectors[episode_id]
+
+    engine._ensure_event_embedding = fake_ensure_event_embedding
+
+
 class TestTripsDebuggerSession(unittest.TestCase):
     def test_session_supports_episode_write_and_manual_ops(self):
         sample = [
@@ -76,7 +90,7 @@ class TestTripsDebuggerSession(unittest.TestCase):
 
             preview = session.auto_merge(
                 scope="context",
-                strategy="heuristic",
+                strategy="llm",
                 dry_run=True,
                 max_pairs=5,
             )
@@ -84,14 +98,14 @@ class TestTripsDebuggerSession(unittest.TestCase):
 
             merge_result = session.auto_merge(
                 scope="context",
-                strategy="heuristic",
+                strategy="llm",
                 dry_run=False,
                 max_pairs=5,
             )
             self.assertGreaterEqual(merge_result["result"]["merged_contexts"], 1)
             self.assertEqual(
                 merge_result["state"]["latest_auto_merge"]["resolved_strategy"],
-                "heuristic",
+                "llm",
             )
             self.assertGreaterEqual(len(merge_result["state"]["operation_log"]), 1)
 
@@ -184,6 +198,7 @@ class TestTripsDebuggerSession(unittest.TestCase):
                 "confidence": 0.95,
             }
             session._ltm.dynamic_engine._call_relation_llm = lambda payload: {"should_link": False}
+            _stub_episode_embeddings(session._ltm.dynamic_engine)
 
             write_result = session.write_selected([0, 1])
             auto_merge = write_result["auto_merge"]
@@ -300,6 +315,7 @@ class TestTripsDebuggerSession(unittest.TestCase):
                 "confidence": 0.95,
             }
             session._ltm.dynamic_engine._call_relation_llm = lambda payload: {"should_link": False}
+            _stub_episode_embeddings(session._ltm.dynamic_engine)
 
             session.write_selected([0, 1], auto_merge=False)
             merge_result = session.auto_merge(scope="event", strategy="llm", dry_run=False, max_pairs=10)

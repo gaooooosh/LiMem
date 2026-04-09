@@ -41,8 +41,6 @@ from .builder import (
     TwoStageExtractor,
     ExtractionResult,
     ContextExtractionPipeline,
-    Consolidator,
-    ConsolidationResult,
     MemoryBuilder,
     BuilderConfig,
 )
@@ -77,13 +75,6 @@ from .visualization import (
 
 # ==================== 配置（从 config.py 重新导出）====================
 from .config import (
-    # 实验参数
-    SIMILARITY_THRESHOLD,
-    MERGE_WEIGHT_SEMANTIC,
-    MERGE_WEIGHT_ENTITY,
-    MERGE_WEIGHT_TIME,
-    MERGE_WEIGHT_ACTION,
-    MERGE_TIME_WINDOW,
     DECAY_RATE,
     EPISODE_TTL,
     PRUNE_C_VALID_THRESHOLD,
@@ -159,8 +150,6 @@ __all__ = [
     "TwoStageExtractor",
     "ExtractionResult",
     "ContextExtractionPipeline",
-    "Consolidator",
-    "ConsolidationResult",
     "MemoryBuilder",
     "BuilderConfig",
     # ===== 检索层 =====
@@ -185,12 +174,6 @@ __all__ = [
     "visualize_graph",
     "export_graph_html",
     # ===== 配置 =====
-    "SIMILARITY_THRESHOLD",
-    "MERGE_WEIGHT_SEMANTIC",
-    "MERGE_WEIGHT_ENTITY",
-    "MERGE_WEIGHT_TIME",
-    "MERGE_WEIGHT_ACTION",
-    "MERGE_TIME_WINDOW",
     "DECAY_RATE",
     "EPISODE_TTL",
     "PRUNE_C_VALID_THRESHOLD",

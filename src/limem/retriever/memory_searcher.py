@@ -12,12 +12,6 @@ from typing import Any, Optional
 import json
 import time
 
-try:
-    pass
-except Exception:  # pragma: no cover - optional dependency for offline mode
-    dashscope = None
-    Generation = None
-
 from ..core.memory import SearchResult
 from ..core.event import RankedEvent
 from ..config import (
@@ -71,7 +65,6 @@ class MemorySearcher:
         base_url: Optional[str] = None,
         generation_model: Optional[str] = None,
         dynamic_engine=None,
-        offline_mode: Optional[bool] = None,
         llm_client: Optional[DashScopeClient] = None,
     ):
         """初始化记忆搜索器
@@ -93,7 +86,6 @@ class MemorySearcher:
 
         self.generation_model = generation_model or GENERATION_MODEL
         self.dynamic_engine = dynamic_engine
-        self.offline_mode = False if offline_mode is None else offline_mode
         if llm_client is not None:
             self.llm_client = llm_client
         else:
@@ -104,12 +96,6 @@ class MemorySearcher:
                 base_url=self.base_url,
             )
 
-        if (not self.offline_mode) and (not self.llm_client.has_valid_api_key()):
-            raise ValueError("Set DASHSCOPE_API_KEY in .env or environment.")
-        if (not self.offline_mode) and (not self.llm_client.has_generation_api()):
-            raise ImportError("dashscope is required for online MemorySearcher mode.")
-
-        # 加载提示词
         self._entity_extraction_system = load_prompt("entity_extraction_system.txt")
         self._entity_extraction_user = load_prompt("entity_extraction_user.txt")
         self._answer_generation_system = load_prompt("generate_answer_system.txt")
@@ -338,11 +324,6 @@ class MemorySearcher:
         del query
         return []
 
-    def _extract_entities_fallback(self, query: str) -> list[str]:
-        import re
-        tokens = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_]{1,20}|\d{2,}", query)
-        return self._filter_entities(tokens, source_text=query)
-
     def _filter_entities(self, entities: Any, source_text: str = "") -> list[str]:
         """过滤并收敛实体粒度。"""
         return normalize_entity_candidates(entities, source_text=source_text)
@@ -393,9 +374,6 @@ class MemorySearcher:
                         if rel.t_invalid is not None:
                             t_invalid = rel.t_invalid
 
-            # 确定匹配类型
-            match_type = self._determine_match_type(weights)
-
             result.append({
                 "event_id": event_id,
                 "id": event_id,
@@ -412,33 +390,10 @@ class MemorySearcher:
                 "status": event.status,
                 "support_count": event.support_count,
                 "entity_match_weights": weights,
-                "match_type": match_type,
+                "match_type": "entity" if weights else "unknown",
             })
 
         return result
-
-    def _determine_match_type(self, weights: dict[str, float]) -> str:
-        """确定匹配类型
-
-        Args:
-            weights: 实体匹配权重
-
-        Returns:
-            匹配类型字符串
-        """
-        if not weights:
-            return "unknown"
-
-        types = set()
-        for w in weights.values():
-            if w >= 1.0:
-                types.add("exact")
-            elif w >= 0.9:
-                types.add("containment")
-            else:
-                types.add("fuzzy")
-
-        return "+".join(sorted(types))
 
     def _generate_answer(self, query: str, events: list[RankedEvent]) -> str:
         """使用LLM生成回答
@@ -452,10 +407,6 @@ class MemorySearcher:
         """
         if not events:
             return "抱歉，我没有找到相关的记忆来回答这个问题。"
-
-        if self.offline_mode:
-            bullets = [f"- {e.summary}" for e in events[:3]]
-            return "根据当前记忆检索到的相关事件：\n" + "\n".join(bullets)
 
         # 格式化事件上下文
         events_context = []
@@ -476,10 +427,6 @@ class MemorySearcher:
             events_context=events_str,
             query=query,
         )
-
-        if self.offline_mode or (not self.llm_client.has_generation_api()):
-            bullets = [f"- {e.summary}" for e in events[:3]]
-            return "根据当前记忆检索到的相关事件：\n" + "\n".join(bullets)
 
         try:
             resp = self.llm_client.call_generation(

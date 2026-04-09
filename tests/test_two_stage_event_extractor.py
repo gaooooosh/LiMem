@@ -20,6 +20,7 @@ def _make_extractor() -> TwoStageExtractor:
     extractor._event_user_prompt = "{episode_text}"
     extractor._entity_system_prompt = "ENTITY_SYSTEM"
     extractor._entity_user_prompt = "{episode_text}"
+    extractor._TWO_STAGE_TEXT_THRESHOLD = 0
     return extractor
 
 
@@ -293,8 +294,9 @@ class TestTwoStageEventExtractor(unittest.TestCase):
 
         self.assertEqual(len(deduped), 2)
 
-    def test_single_pass_metadata_false_positive_is_filtered_out(self):
+    def test_single_pass_keeps_llm_output_without_heuristic_filtering(self):
         extractor = _make_extractor()
+        extractor._TWO_STAGE_TEXT_THRESHOLD = 4000
 
         def fake_call_generation_json(system_prompt, user_message, default):
             if system_prompt == "SEGMENT_SYSTEM":
@@ -313,7 +315,9 @@ class TestTwoStageEventExtractor(unittest.TestCase):
         extractor._call_generation_json = fake_call_generation_json
 
         events = extractor._extract_events("[屏幕操作数据] 屏幕: 副驾屏 | 应用: QQ音乐")
-        self.assertEqual(events, [])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["summary"], "系统设置")
+        self.assertEqual(events[0]["action"], "设置")
 
     def test_single_pass_media_title_summary_is_preserved(self):
         extractor = _make_extractor()

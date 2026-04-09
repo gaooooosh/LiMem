@@ -5,8 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ..config import SKIP_DYNAMIC_CHANGE_FILTER
-from ..utils import _SKIP_DYNAMIC_CHECK, normalize_event_payload, robust_json_loads
+from ..utils import normalize_event_payload, robust_json_loads
 
 
 class UnstructuredExtractor:
@@ -18,12 +17,10 @@ class UnstructuredExtractor:
         llm_caller: Callable[[str, str, Any], Any] | None = None,
         system_prompt: str = "",
         user_prompt: str = "{episode_text}",
-        skip_dynamic_change_filter: bool = SKIP_DYNAMIC_CHANGE_FILTER,
     ):
         self.llm_caller = llm_caller
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
-        self.skip_dynamic_change_filter = bool(skip_dynamic_change_filter)
 
     def extract(self, text: str):
         from .extractor import ExtractionResult
@@ -44,15 +41,7 @@ class UnstructuredExtractor:
 
         events: list[dict[str, Any]] = []
         for item in self._collect_raw_event_items(payload):
-            normalized = normalize_event_payload(
-                {"event": item},
-                episode_text=text,
-                dynamic_hints=_SKIP_DYNAMIC_CHECK if self.skip_dynamic_change_filter else None,
-                telemetry_markers=(),
-                passive_screen_prefix="",
-                passive_screen_markers=(),
-                passive_screen_dynamic_hints=(),
-            )
+            normalized = normalize_event_payload({"event": item}, episode_text=text)
             if self._has_event(normalized):
                 events.append(normalized)
 

@@ -14,12 +14,6 @@ import re
 import time
 import uuid
 
-try:
-    pass
-except Exception:  # pragma: no cover - optional dependency for offline mode
-    dashscope = None
-    Generation = None
-
 from ..config import (
     APPEND_FIRST_MODE,
     ARCHIVE_EVENT_SECONDS,
@@ -30,27 +24,8 @@ from ..config import (
     CONTEXT_CANDIDATE_LIMIT,
     CONTEXT_CONFLICT_THRESHOLD,
     CONTEXT_EXTRACTION_BATCH_SIZE,
-    CONTEXT_CORE_SLOT_WEIGHT,
-    CONTEXT_AUX_SLOT_WEIGHT,
-    CONTEXT_FUZZY_MATCH_THRESHOLD,
-    CONTEXT_MERGE_CONTAINMENT_WEIGHT_DENSE,
-    CONTEXT_MERGE_CONTAINMENT_WEIGHT_MID,
-    CONTEXT_MERGE_CONTAINMENT_WEIGHT_SPARSE,
     CONTEXT_QUERY_CANDIDATE_LIMIT,
     CONTEXT_REUSE_THRESHOLD,
-    CONTEXT_SIMILARITY_ACTIVE_WEIGHT,
-    CONTEXT_SIMILARITY_EMBEDDING_WEIGHT,
-    CONTEXT_SIMILARITY_SET_SLOT_WEIGHT,
-    CONTEXT_SIMILARITY_SLOT_WEIGHT,
-    CONTEXT_SIMILARITY_SUBTYPE_WEIGHT,
-    CONTEXT_SIMILARITY_SUMMARY_WEIGHT,
-    CONTEXT_SIMILARITY_TEMPORAL_WEIGHT,
-    CONTEXT_SPARSE_SLOT_SUMMARY_FALLBACK,
-    CONTEXT_SUBTYPE_COMPATIBLE_SCORE,
-    CONTEXT_SUBTYPE_MISMATCH_FLOOR,
-    CONTEXT_SUMMARY_CONTAINMENT_BONUS,
-    CONTEXT_SUMMARY_SEMANTIC_EMBEDDING_WEIGHT,
-    CONTEXT_SUMMARY_SEMANTIC_LEXICAL_WEIGHT,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     DECAY_RATE,
@@ -60,11 +35,7 @@ from ..config import (
     EVENT_CONSOLIDATION_CANDIDATE_LIMIT,
     EVENT_CONSOLIDATION_EMBEDDING_CANDIDATE_THRESHOLD,
     EVENT_CONSOLIDATION_EMBEDDING_TOP_K,
-    EVENT_CONSOLIDATION_PAYLOAD_WEIGHT,
-    EVENT_CONSOLIDATION_TEXT_WEIGHT,
-    EVENT_CONSOLIDATION_CONTEXT_WEIGHT,
     EVENT_CONSOLIDATION_THRESHOLD,
-    EVENT_CONSOLIDATION_TIME_WEIGHT,
     EVENT_CONSOLIDATION_WINDOW_SECONDS,
     EVENT_MERGE_TRACE_LOG_PATH,
     EVENT_MERGE_TRACE_STRATEGY_VERSION,
@@ -85,7 +56,7 @@ from ..builder.context_extractor import ContextExtractionPipeline
 from ..core.context import Context, ContextDraft
 from ..core.event import Event
 from ..llm import DashScopeClient
-from ..utils import hash_summary, robust_json_loads, safe_json_dumps, safe_json_loads
+from ..utils import hash_summary, load_prompt, robust_json_loads, safe_json_dumps, safe_json_loads
 
 logger = logging.getLogger(__name__)
 
@@ -114,25 +85,6 @@ class DynamicEvolutionConfig:
     context_query_candidate_limit: int = CONTEXT_QUERY_CANDIDATE_LIMIT
     context_extraction_batch_size: int = CONTEXT_EXTRACTION_BATCH_SIZE
     context_aware_extraction_limit: int = CONTEXT_AWARE_EXTRACTION_LIMIT
-    context_core_slot_weight: float = CONTEXT_CORE_SLOT_WEIGHT
-    context_aux_slot_weight: float = CONTEXT_AUX_SLOT_WEIGHT
-    context_fuzzy_match_threshold: float = CONTEXT_FUZZY_MATCH_THRESHOLD
-    context_summary_containment_bonus: float = CONTEXT_SUMMARY_CONTAINMENT_BONUS
-    context_summary_semantic_lexical_weight: float = CONTEXT_SUMMARY_SEMANTIC_LEXICAL_WEIGHT
-    context_summary_semantic_embedding_weight: float = CONTEXT_SUMMARY_SEMANTIC_EMBEDDING_WEIGHT
-    context_sparse_slot_summary_fallback: float = CONTEXT_SPARSE_SLOT_SUMMARY_FALLBACK
-    context_merge_containment_weight_dense: float = CONTEXT_MERGE_CONTAINMENT_WEIGHT_DENSE
-    context_merge_containment_weight_mid: float = CONTEXT_MERGE_CONTAINMENT_WEIGHT_MID
-    context_merge_containment_weight_sparse: float = CONTEXT_MERGE_CONTAINMENT_WEIGHT_SPARSE
-    context_similarity_slot_weight: float = CONTEXT_SIMILARITY_SLOT_WEIGHT
-    context_similarity_set_slot_weight: float = CONTEXT_SIMILARITY_SET_SLOT_WEIGHT
-    context_similarity_summary_weight: float = CONTEXT_SIMILARITY_SUMMARY_WEIGHT
-    context_similarity_subtype_weight: float = CONTEXT_SIMILARITY_SUBTYPE_WEIGHT
-    context_similarity_active_weight: float = CONTEXT_SIMILARITY_ACTIVE_WEIGHT
-    context_similarity_temporal_weight: float = CONTEXT_SIMILARITY_TEMPORAL_WEIGHT
-    context_similarity_embedding_weight: float = CONTEXT_SIMILARITY_EMBEDDING_WEIGHT
-    context_subtype_compatible_score: float = CONTEXT_SUBTYPE_COMPATIBLE_SCORE
-    context_subtype_mismatch_floor: float = CONTEXT_SUBTYPE_MISMATCH_FLOOR
 
     reinforcement_step: float = REINFORCEMENT_STEP
     decay_step: float = DECAY_STEP
@@ -155,10 +107,6 @@ class DynamicEvolutionConfig:
     event_consolidation_embedding_candidate_threshold: float = EVENT_CONSOLIDATION_EMBEDDING_CANDIDATE_THRESHOLD
     event_consolidation_embedding_top_k: int = EVENT_CONSOLIDATION_EMBEDDING_TOP_K
     event_consolidation_threshold: float = EVENT_CONSOLIDATION_THRESHOLD
-    event_consolidation_text_weight: float = EVENT_CONSOLIDATION_TEXT_WEIGHT
-    event_consolidation_context_weight: float = EVENT_CONSOLIDATION_CONTEXT_WEIGHT
-    event_consolidation_payload_weight: float = EVENT_CONSOLIDATION_PAYLOAD_WEIGHT
-    event_consolidation_time_weight: float = EVENT_CONSOLIDATION_TIME_WEIGHT
     event_merge_trace_strategy_version: str = EVENT_MERGE_TRACE_STRATEGY_VERSION
     event_merge_trace_log_path: str = EVENT_MERGE_TRACE_LOG_PATH
     enable_event_relations: bool = ENABLE_EVENT_RELATIONS
@@ -198,9 +146,10 @@ class DynamicEvolutionEngine:
             )
         self.context_extractor = ContextExtractionPipeline(
             generation_model=self.config.llm_model,
-            offline_mode=False,
             llm_client=self.llm_client,
         )
+        self._rewrite_merged_event_system_prompt = load_prompt("rewrite_merged_event_system.txt")
+        self._rewrite_merged_event_user_prompt = load_prompt("rewrite_merged_event_user.txt")
 
     # -------------------------------------------------------------------------
     # Algorithm 1: Incremental Event Ingestion
@@ -421,6 +370,9 @@ class DynamicEvolutionEngine:
             return None
 
         query_text = self._build_extraction_query_text(events=events, record=record)
+        query_norm = self._normalized_context_text(query_text)
+        query_embedding = self._maybe_embed_context(query_text) if query_text else None
+        get_context = getattr(self.store, "get_context", None)
         scored: list[tuple[float, str, str]] = []
         seen_keys: set[str] = set()
         for context_id, summary in all_active:
@@ -429,7 +381,20 @@ class DynamicEvolutionEngine:
             if not key or key in seen_keys:
                 continue
             seen_keys.add(key)
-            score = self._lexical_similarity(summary_text, query_text) if query_text else 0.0
+            score = 0.0
+            if query_norm and key == query_norm:
+                score = 1.0
+            elif query_embedding:
+                context_obj = None
+                if callable(get_context) and context_id:
+                    try:
+                        context_obj = get_context(str(context_id or "").strip())
+                    except Exception:
+                        context_obj = None
+                context_embedding = getattr(context_obj, "embedding", None) if context_obj is not None else None
+                if not context_embedding:
+                    context_embedding = self._maybe_embed_context(summary_text)
+                score = self._event_embedding_similarity(query_embedding, context_embedding)
             scored.append((score, str(context_id or "").strip(), summary_text))
         if not scored:
             return None
@@ -1173,7 +1138,7 @@ class DynamicEvolutionEngine:
         visited_pairs: set[tuple[str, str]] = set()
         planned_canonicals: set[str] = set()
         plans: list[dict[str, Any]] = []
-        llm_gate = self.config.event_consolidation_threshold * 0.72
+        llm_gate = self.config.event_consolidation_threshold
 
         for event in events:
             if event.id in merged_sources or event.status in {"merged", "archived"}:
@@ -1201,7 +1166,7 @@ class DynamicEvolutionEngine:
 
                 canonical, merged = self._pick_canonical_event(event, candidate)
                 plan_reason = self._build_event_merge_reason(
-                    source="embedding_preselect+heuristic_gate",
+                    source="embedding_preselect",
                     local_reason=reason,
                     embedding_similarity=embedding_similarity,
                     llm_reason="",
@@ -1410,7 +1375,7 @@ class DynamicEvolutionEngine:
         resolved_strategy = self._resolve_merge_strategy(strategy)
         if resolved_strategy == "disabled":
             return report
-        llm_gate = self.config.event_consolidation_threshold * 0.72
+        llm_gate = self.config.event_consolidation_threshold
         events = self.store.get_recent_events(
             current_time=now,
             window_seconds=self.config.event_consolidation_window_seconds,
@@ -1453,7 +1418,7 @@ class DynamicEvolutionEngine:
 
                 canonical, merged = self._pick_canonical_event(event, candidate)
                 merge_reason = self._build_event_merge_reason(
-                    source="embedding_preselect+heuristic_gate",
+                    source="embedding_preselect",
                     local_reason=reason,
                     embedding_similarity=embedding_similarity,
                     llm_reason="",
@@ -1655,63 +1620,30 @@ class DynamicEvolutionEngine:
         event_map: dict[str, Event],
         now: int,
     ) -> list[Event]:
-        candidates: dict[str, Event] = {}
-
-        def add_candidate(candidate: Optional[Event]) -> None:
-            if not candidate or candidate.id == event.id:
-                return
-            if candidate.status in {"merged", "archived"}:
-                return
-            candidates[candidate.id] = candidate
-
-        # Step 1: embedding-high candidates as the primary candidate set.
         base_embedding = self._ensure_event_embedding(event)
-        if base_embedding:
-            ranked: list[tuple[float, Event]] = []
-            threshold = float(self.config.event_consolidation_embedding_candidate_threshold or 0.0)
-            for candidate in event_map.values():
-                if candidate.id == event.id or candidate.status in {"merged", "archived"}:
-                    continue
-                similarity = self._event_embedding_similarity(
-                    base_embedding,
-                    self._ensure_event_embedding(candidate),
-                )
-                if similarity < threshold:
-                    continue
-                ranked.append((similarity, candidate))
-            ranked.sort(key=lambda item: item[0], reverse=True)
-            top_k = max(
-                1,
-                min(
-                    int(self.config.event_consolidation_embedding_top_k or 1),
-                    int(self.config.event_consolidation_candidate_limit or 1),
-                ),
+        if not base_embedding:
+            return []
+        ranked: list[tuple[float, Event]] = []
+        threshold = float(self.config.event_consolidation_embedding_candidate_threshold or 0.0)
+        for candidate in event_map.values():
+            if candidate.id == event.id or candidate.status in {"merged", "archived"}:
+                continue
+            similarity = self._event_embedding_similarity(
+                base_embedding,
+                self._ensure_event_embedding(candidate),
             )
-            for _, candidate in ranked[:top_k]:
-                add_candidate(candidate)
-
-        # Step 2: temporal/context fallback to keep recall when embeddings are missing/noisy.
-        event_time = event.last_active or event.timestamp or now
-        recent = self.store.get_recent_events(
-            current_time=event_time,
-            window_seconds=self.config.event_consolidation_window_seconds,
-            limit=self.config.event_consolidation_candidate_limit,
+            if similarity < threshold:
+                continue
+            ranked.append((similarity, candidate))
+        ranked.sort(key=lambda item: (item[0], item[1].last_active or item[1].timestamp or now), reverse=True)
+        top_k = max(
+            1,
+            min(
+                int(self.config.event_consolidation_embedding_top_k or 1),
+                int(self.config.event_consolidation_candidate_limit or 1),
+            ),
         )
-        for candidate in recent:
-            add_candidate(event_map.get(candidate.id, candidate))
-
-        for context in self.store.get_event_contexts(event.id)[:2]:
-            for candidate in self.store.retrieve_events_by_contexts(
-                [context.id],
-                limit=self.config.event_consolidation_candidate_limit,
-            ):
-                add_candidate(event_map.get(candidate.id, candidate))
-
-        ordered = sorted(
-            candidates.values(),
-            key=lambda item: abs((item.last_active or item.timestamp or 0) - event_time),
-        )
-        return ordered[: self.config.event_consolidation_candidate_limit]
+        return [candidate for _, candidate in ranked[:top_k]]
 
     def _event_merge_similarity(
         self,
@@ -1719,26 +1651,20 @@ class DynamicEvolutionEngine:
         event_b: Event,
         now: int,
     ) -> tuple[float, str]:
-        text_similarity = self._lexical_similarity(event_a.summary, event_b.summary)
-        context_similarity = self._context_overlap_for_events(event_a.id, event_b.id)
-        payload_similarity = self._payload_similarity(event_a, event_b)
-        time_similarity = self._time_similarity(event_a, event_b, now)
-        score = (
-            self.config.event_consolidation_text_weight * text_similarity
-            + self.config.event_consolidation_context_weight * context_similarity
-            + self.config.event_consolidation_payload_weight * payload_similarity
-            + self.config.event_consolidation_time_weight * time_similarity
+        embedding_similarity = self._event_embedding_similarity(
+            self._ensure_event_embedding(event_a),
+            self._ensure_event_embedding(event_b),
         )
-        reasons = []
-        if context_similarity > 0.0:
-            reasons.append("shared_context")
-        if payload_similarity >= 0.5:
-            reasons.append("payload_similarity")
-        if text_similarity >= 0.5:
-            reasons.append("summary_similarity")
-        if time_similarity >= 0.5:
-            reasons.append("time_window")
-        return score, ",".join(reasons) or "local_similarity"
+        ts_a = event_a.last_active or event_a.timestamp or now
+        ts_b = event_b.last_active or event_b.timestamp or now
+        diff = abs(ts_a - ts_b)
+        window = max(1, int(self.config.event_consolidation_window_seconds or 1))
+        temporal_bonus = 0.05 * math.exp(-diff / window)
+        score = min(1.0, embedding_similarity + temporal_bonus)
+        reasons = ["event_embedding_similarity"]
+        if temporal_bonus >= 0.02:
+            reasons.append("temporal_proximity")
+        return score, ",".join(reasons)
 
     def _pick_canonical_event(self, event_a: Event, event_b: Event) -> tuple[Event, Event]:
         def rank_key(event: Event) -> tuple[int, float, int]:
@@ -1870,387 +1796,63 @@ class DynamicEvolutionEngine:
         return f"{left}；{right}"
 
     def _rewrite_merged_event_semantics(self, canonical: Event, merged: Event) -> dict[str, str]:
-        fragments = self._collect_event_summary_fragments(canonical, merged)
-        entities = sorted(set(self.store.get_event_entities(canonical.id)) | set(self.store.get_event_entities(merged.id)))
-        actor = self._primary_event_actor_label(canonical.participants)
+        rewritten = self._llm_rewrite_merged_event(canonical, merged)
+        if rewritten:
+            summary = str(rewritten.get("summary", "") or "").strip()
+            action = str(rewritten.get("action", "") or "").strip()
+            causality = str(rewritten.get("causality", "") or "").strip()
+            if summary:
+                return {
+                    "summary": summary[:180],
+                    "action": action[:120],
+                    "causality": causality[:120],
+                }
+        return self._fallback_merged_event_semantics(canonical, merged)
 
-        summary = self._rewrite_merged_event_summary(canonical, merged)
-        action = self._rewrite_merged_event_action(
-            canonical,
-            merged,
-            summary=summary,
-            entities=entities,
-            actor=actor,
-        )
-        causality = self._rewrite_merged_event_causality(
-            canonical,
-            merged,
-            summary=summary,
-            action=action,
-            fragments=fragments,
-            actor=actor,
-        )
+    def _llm_rewrite_merged_event(
+        self,
+        canonical: Event,
+        merged: Event,
+    ) -> Optional[dict[str, Any]]:
+        if not self._rewrite_merged_event_system_prompt or not self._rewrite_merged_event_user_prompt:
+            return None
+        payload = {
+            "canonical": self._event_prompt_payload(canonical),
+            "merged": self._event_prompt_payload(merged),
+            "output_schema": {
+                "summary": "rewritten summary",
+                "action": "rewritten action",
+                "causality": "rewritten causality",
+            },
+        }
+        try:
+            response = self.llm_client.call_generation(
+                model=self.config.llm_model,
+                messages=self.llm_client.build_messages(
+                    self._rewrite_merged_event_system_prompt,
+                    self._rewrite_merged_event_user_prompt.format(
+                        payload_json=json.dumps(payload, ensure_ascii=False)
+                    ),
+                ),
+            )
+            data = robust_json_loads(self.llm_client.message_content(response), None)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def _fallback_merged_event_semantics(
+        self,
+        canonical: Event,
+        merged: Event,
+    ) -> dict[str, str]:
+        summary = self._merge_event_summary(canonical.summary, merged.summary)[:180]
+        action = str(canonical.action or merged.action or summary).strip()[:120]
+        causality = str(canonical.causality or merged.causality or "").strip()[:120]
         return {
             "summary": summary,
             "action": action,
             "causality": causality,
         }
-
-    def _rewrite_merged_event_summary(self, canonical: Event, merged: Event) -> str:
-        fragments = self._collect_event_summary_fragments(canonical, merged)
-        if not fragments:
-            return self._merge_event_summary(canonical.summary, merged.summary)
-
-        entities = sorted(set(self.store.get_event_entities(canonical.id)) | set(self.store.get_event_entities(merged.id)))
-        actor = self._primary_event_actor_label(canonical.participants)
-        main_fragment = self._select_main_event_fragment(fragments, entities=entities, actor=actor)
-        if not main_fragment:
-            return self._merge_event_summary(canonical.summary, merged.summary)
-
-        summary = self._normalize_main_event_fragment(main_fragment, actor=actor)
-        detail_fragments = self._select_detail_fragments(
-            fragments,
-            main_fragment=main_fragment,
-            actor=actor,
-        )
-        details: list[str] = []
-        detail_signatures: set[str] = set()
-        for fragment in detail_fragments:
-            normalized = self._normalize_detail_fragment(fragment, actor=actor, main_summary=summary)
-            signature = self._detail_signature(normalized)
-            if not normalized or normalized == summary or signature in detail_signatures:
-                continue
-            details.append(normalized)
-            if signature:
-                detail_signatures.add(signature)
-            if len(details) >= 2:
-                break
-        if details:
-            summary = f"{summary}，{'，'.join(details)}"
-        return summary[:180]
-
-    def _rewrite_merged_event_action(
-        self,
-        canonical: Event,
-        merged: Event,
-        summary: str,
-        entities: list[str],
-        actor: str,
-    ) -> str:
-        action_candidates = self._collect_event_action_fragments(canonical, merged)
-        if self._looks_like_navigation_cluster(summary, action_candidates, entities):
-            return f"导航到{entities[0]}"[:120]
-
-        best = self._select_best_action_fragment(action_candidates, summary=summary, actor=actor)
-        if best:
-            return best[:120]
-
-        fallback = self._action_from_summary(summary=summary, actor=actor)
-        return fallback[:120]
-
-    def _rewrite_merged_event_causality(
-        self,
-        canonical: Event,
-        merged: Event,
-        summary: str,
-        action: str,
-        fragments: list[str],
-        actor: str,
-    ) -> str:
-        explicit_candidates = self._collect_event_causality_fragments(canonical, merged)
-        for candidate in explicit_candidates:
-            normalized = self._normalize_causality_fragment(candidate, actor=actor, action=action)
-            if normalized:
-                return normalized[:120]
-
-        main_fragment = summary.split("，", 1)[0].strip()
-        detail_candidates = self._select_detail_fragments(
-            fragments,
-            main_fragment=main_fragment,
-            actor=actor,
-        )
-        for fragment in detail_candidates:
-            normalized = self._normalize_causality_fragment(fragment, actor=actor, action=action)
-            if normalized:
-                return normalized[:120]
-        return ""
-
-    def _collect_event_summary_fragments(self, canonical: Event, merged: Event) -> list[str]:
-        fragments: list[str] = []
-
-        def add_fragment(value: Any) -> None:
-            text = str(value or "").strip()
-            if not text or text in fragments:
-                return
-            fragments.append(text)
-
-        add_fragment(canonical.summary)
-        add_fragment(merged.summary)
-
-        payloads: list[dict[str, Any]] = []
-        if isinstance(canonical.payload, dict):
-            payloads.append(canonical.payload)
-            merge_inputs = canonical.payload.get("merge_inputs", [])
-            if isinstance(merge_inputs, list):
-                payloads.extend(item for item in merge_inputs if isinstance(item, dict))
-        if isinstance(merged.payload, dict):
-            payloads.append(merged.payload)
-
-        for payload in payloads:
-            add_fragment(payload.get("summary", ""))
-            add_fragment(payload.get("action", ""))
-            add_fragment(payload.get("causality", ""))
-
-        return fragments
-
-    def _collect_event_action_fragments(self, canonical: Event, merged: Event) -> list[str]:
-        fragments: list[str] = []
-
-        def add_fragment(value: Any) -> None:
-            text = str(value or "").strip()
-            if not text or text in fragments:
-                return
-            fragments.append(text)
-
-        add_fragment(canonical.action)
-        add_fragment(merged.action)
-        if isinstance(canonical.payload, dict):
-            add_fragment(canonical.payload.get("action", ""))
-            merge_inputs = canonical.payload.get("merge_inputs", [])
-            if isinstance(merge_inputs, list):
-                for payload in merge_inputs:
-                    if isinstance(payload, dict):
-                        add_fragment(payload.get("action", ""))
-                        add_fragment(payload.get("summary", ""))
-        return fragments
-
-    def _collect_event_causality_fragments(self, canonical: Event, merged: Event) -> list[str]:
-        fragments: list[str] = []
-
-        def add_fragment(value: Any) -> None:
-            text = str(value or "").strip()
-            if not text or text in fragments:
-                return
-            fragments.append(text)
-
-        add_fragment(canonical.causality)
-        add_fragment(merged.causality)
-
-        for payload in [canonical.payload, merged.payload]:
-            if not isinstance(payload, dict):
-                continue
-            add_fragment(payload.get("causality", ""))
-            merge_inputs = payload.get("merge_inputs", [])
-            if isinstance(merge_inputs, list):
-                for item in merge_inputs:
-                    if isinstance(item, dict):
-                        add_fragment(item.get("causality", ""))
-                        add_fragment(item.get("summary", ""))
-        return fragments
-
-    def _primary_event_actor_label(self, participants: list[Any]) -> str:
-        if not isinstance(participants, list):
-            return ""
-        for item in participants:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "") or "").strip()
-            if role:
-                return role
-        return ""
-
-    def _event_fragment_kind(self, fragment: str) -> str:
-        text = str(fragment or "").strip()
-        if not text:
-            return "empty"
-        if re.search(r"(耗时|用时|时长|历时|持续)\s*\d*", text) or re.search(r"\d+\s*(分钟|小时|秒|公里|米|次)", text):
-            return "metric"
-        if any(token in text for token in ["发起", "请求", "准备", "提出", "尝试", "要求"]):
-            return "trigger"
-        if text.startswith(("已", "已经")) or (
-            any(token in text for token in ["车机", "系统"])
-            and any(token in text for token in ["启动", "开启", "关闭", "切换", "设置", "调整", "开始", "停止"])
-        ):
-            return "result"
-        if any(token in text for token in ["导航到", "导航去", "前往", "去往", "播放", "开启", "打开", "关闭", "切换", "设置", "调整", "启动", "停止", "暂停", "恢复", "提醒"]):
-            return "main"
-        return "generic"
-
-    def _select_main_event_fragment(
-        self,
-        fragments: list[str],
-        entities: list[str],
-        actor: str,
-    ) -> str:
-        best_fragment = ""
-        best_score = float("-inf")
-        for fragment in fragments:
-            kind = self._event_fragment_kind(fragment)
-            score = 0.0
-            if kind == "main":
-                score += 6.0
-            elif kind == "result":
-                score += 4.0
-            elif kind == "generic":
-                score += 3.0
-            elif kind == "trigger":
-                score += 1.0
-            elif kind == "metric":
-                score -= 2.0
-            if 6 <= len(fragment) <= 28:
-                score += 1.5
-            if actor and actor in fragment:
-                score += 0.5
-            if any(entity and entity in fragment for entity in entities):
-                score += 2.0
-            if any(token in fragment for token in ["导航到", "导航去", "前往", "去往", "到", "去"]):
-                score += 1.5
-            if re.search(r"\d+\s*(分钟|小时|秒)", fragment):
-                score -= 1.0
-            if score > best_score:
-                best_score = score
-                best_fragment = fragment
-        return best_fragment
-
-    def _normalize_main_event_fragment(self, fragment: str, actor: str) -> str:
-        text = str(fragment or "").strip(" ，,。；;")
-        if not text:
-            return ""
-        if actor and actor not in {"车机", "系统"} and not text.startswith(("用户", "车机", "系统", "环境")):
-            text = f"{actor}{text}"
-        return text
-
-    def _detail_signature(self, text: str) -> str:
-        value = str(text or "").strip(" ，,。；;")
-        if not value:
-            return ""
-        value = re.sub(r"^(用户|车机|系统|环境)", "", value).strip(" ：:，,。；;")
-        if self._event_fragment_kind(value) == "metric":
-            metric_match = re.search(r"(耗时|用时|时长|历时|持续).*$", value)
-            if metric_match:
-                value = metric_match.group(0)
-        return value
-
-    def _select_detail_fragments(
-        self,
-        fragments: list[str],
-        main_fragment: str,
-        actor: str,
-    ) -> list[str]:
-        metric_fragments = []
-        result_fragments = []
-        auxiliary_fragments = []
-        for fragment in fragments:
-            if fragment == main_fragment:
-                continue
-            kind = self._event_fragment_kind(fragment)
-            if kind == "metric":
-                metric_fragments.append(fragment)
-                continue
-            if kind == "result":
-                result_fragments.append(fragment)
-                continue
-            if kind == "main" and fragment != main_fragment:
-                normalized = self._normalize_main_event_fragment(fragment, actor=actor)
-                if normalized != self._normalize_main_event_fragment(main_fragment, actor=actor):
-                    auxiliary_fragments.append(fragment)
-        return metric_fragments + result_fragments + auxiliary_fragments
-
-    def _normalize_detail_fragment(self, fragment: str, actor: str, main_summary: str) -> str:
-        text = str(fragment or "").strip(" ，,。；;")
-        if not text:
-            return ""
-        if self._event_fragment_kind(text) == "metric":
-            metric_match = re.search(r"(耗时|用时|时长|历时|持续).*$", text)
-            if metric_match:
-                text = metric_match.group(0)
-        if actor and main_summary.startswith(actor) and text.startswith(actor):
-            text = text[len(actor):].strip(" ，,。；;")
-        detail_signature = self._detail_signature(text)
-        if main_summary and text and (
-            text in main_summary or (detail_signature and detail_signature in self._detail_signature(main_summary))
-        ):
-            return ""
-        return text
-
-    def _looks_like_navigation_cluster(
-        self,
-        summary: str,
-        action_candidates: list[str],
-        entities: list[str],
-    ) -> bool:
-        if not entities:
-            return False
-        combined = " ".join([summary] + list(action_candidates)).strip()
-        return "导航" in combined or "前往" in combined or "去往" in combined
-
-    def _action_from_summary(self, summary: str, actor: str) -> str:
-        head = str(summary or "").split("，", 1)[0].split("；", 1)[0].strip(" ，,。；;")
-        if actor and head.startswith(actor):
-            head = head[len(actor):].strip(" ，,。；;")
-        return head
-
-    def _normalize_action_candidate(self, candidate: str, actor: str) -> str:
-        text = str(candidate or "").strip(" ，,。；;")
-        if not text:
-            return ""
-        if actor and text.startswith(actor):
-            text = text[len(actor):].strip(" ，,。；;")
-        return text
-
-    def _select_best_action_fragment(
-        self,
-        candidates: list[str],
-        summary: str,
-        actor: str,
-    ) -> str:
-        summary_head = self._action_from_summary(summary, actor)
-        best = ""
-        best_score = float("-inf")
-        for candidate in candidates:
-            normalized = self._normalize_action_candidate(candidate, actor)
-            if not normalized:
-                continue
-            kind = self._event_fragment_kind(normalized)
-            score = 0.0
-            if kind == "main":
-                score += 4.0
-            elif kind == "generic":
-                score += 2.5
-            elif kind == "trigger":
-                score += 1.0
-            elif kind == "result":
-                score += 0.5
-            elif kind == "metric":
-                score -= 3.0
-            if normalized == summary_head:
-                score += 2.0
-            elif normalized and normalized in summary_head:
-                score += 1.5
-            if 2 <= len(normalized) <= 16:
-                score += 1.0
-            elif len(normalized) <= 24:
-                score += 0.5
-            if score > best_score:
-                best = normalized
-                best_score = score
-        return best
-
-    def _normalize_causality_fragment(self, fragment: str, actor: str, action: str) -> str:
-        text = str(fragment or "").strip(" ，,。；;")
-        if not text:
-            return ""
-        if self._event_fragment_kind(text) == "trigger":
-            return ""
-        if actor and text.startswith(actor):
-            text = text[len(actor):].strip(" ，,。；;")
-        if self._detail_signature(text) == self._detail_signature(action):
-            return ""
-        if self._event_fragment_kind(text) == "metric":
-            metric_match = re.search(r"(耗时|用时|时长|历时|持续).*$", text)
-            if metric_match:
-                text = metric_match.group(0)
-        return text
 
     def _merge_list_values(self, left: Any, right: Any) -> list[Any]:
         result: list[Any] = []
@@ -2320,105 +1922,27 @@ class DynamicEvolutionEngine:
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
-    def _build_context_draft(self, event: Event) -> ContextDraft:
-        timestamp = event.last_active or event.timestamp or int(time.time())
-        slots = self._extract_context_slots(event)
-        subtype = self._infer_context_subtype(event, slots)
-        summary = self._build_context_summary(subtype, slots)
-        return ContextDraft(
-            subtype=subtype,
-            summary=summary,
-            structured_slots=slots,
-            confidence=max(0.4, 0.7),
-            evidence_span=summary,
-            source_refs=[{"source": "event_payload", "event_id": event.id, "signal": "event_payload"}],
-            valid_from=timestamp,
-        )
-
     def _context_similarity(self, a: Any, b: Any, *, precomputed_summary_sim: Optional[float] = None) -> float:
-        slots_a = self._effective_context_slots(a)
-        slots_b = self._effective_context_slots(b)
-        core_keys = self._core_context_slot_keys()
-        aux_keys = self._aux_context_slot_keys()
-        core_slot_sim = self._slot_group_similarity(slots_a, slots_b, core_keys)
-        aux_slot_sim = self._slot_group_similarity(slots_a, slots_b, aux_keys)
-        core_group_weight = (
-            float(self.config.context_core_slot_weight or 0.0)
-            if self._slot_group_has_signal(slots_a, slots_b, core_keys)
-            else 0.0
+        summary_sim = (
+            precomputed_summary_sim
+            if precomputed_summary_sim is not None
+            else self._summary_semantic_similarity(a, b)
         )
-        aux_group_weight = (
-            float(self.config.context_aux_slot_weight or 0.0)
-            if self._slot_group_has_signal(slots_a, slots_b, aux_keys)
-            else 0.0
-        )
-        total_slot_weight = max(
-            1e-6,
-            core_group_weight + aux_group_weight,
-        )
-        slot_sim = (
-            core_group_weight * core_slot_sim
-            + aux_group_weight * aux_slot_sim
-        ) / total_slot_weight
-        set_slot_sim = self._value_similarity(slots_a, slots_b)
-        summary_sim = precomputed_summary_sim if precomputed_summary_sim is not None else self._summary_semantic_similarity(a, b)
-        subtype_sim = self._context_subtype_similarity(self._context_subtype(a), self._context_subtype(b))
-        active_sim = 1.0 if self._context_status(a) == "active" else 0.75
-        temporal_sim = self._context_temporal_compatibility(a, b)
         embedding_sim = self._context_embedding_similarity(a, b)
-        slot_weight = float(self.config.context_similarity_slot_weight or 0.0)
-        set_slot_weight = float(self.config.context_similarity_set_slot_weight or 0.0)
-        summary_weight = float(self.config.context_similarity_summary_weight or 0.0)
-        if not slots_a and not slots_b:
-            summary_weight += slot_weight + set_slot_weight
-            slot_weight = 0.0
-            set_slot_weight = 0.0
-        return (
-            slot_weight * slot_sim
-            + set_slot_weight * set_slot_sim
-            + summary_weight * summary_sim
-            + float(self.config.context_similarity_subtype_weight or 0.0) * subtype_sim
-            + float(self.config.context_similarity_active_weight or 0.0) * active_sim
-            + float(self.config.context_similarity_temporal_weight or 0.0) * temporal_sim
-            + float(self.config.context_similarity_embedding_weight or 0.0) * embedding_sim
-        )
+        base = max(summary_sim, embedding_sim)
+        if self._normalized_context_text(self._context_summary(a)) == self._normalized_context_text(self._context_summary(b)):
+            base = max(base, 1.0)
+        subtype_bonus = 0.05 if self._context_subtype(a) == self._context_subtype(b) else 0.0
+        if self._context_status(a) != "active" or self._context_status(b) != "active":
+            base *= 0.85
+        return max(0.0, min(1.0, base + subtype_bonus))
 
     def _context_merge_score(self, a: Context, b: Context) -> float:
         summary_sim = self._summary_semantic_similarity(a, b)
-        base = self._context_similarity(a, b, precomputed_summary_sim=summary_sim)
-        if summary_sim >= 0.7:
-            return max(base, 0.5 + 0.5 * summary_sim)
-        containment = self._context_slot_containment_ratio(a, b)
-        slot_density = min(
-            len(self._filled_slot_values(self._effective_context_slots(a))),
-            len(self._filled_slot_values(self._effective_context_slots(b))),
+        return max(
+            summary_sim,
+            self._context_similarity(a, b, precomputed_summary_sim=summary_sim),
         )
-        if slot_density >= 3:
-            containment_weight = float(self.config.context_merge_containment_weight_dense or 0.0)
-        elif slot_density >= 1:
-            containment_weight = float(self.config.context_merge_containment_weight_mid or 0.0)
-        else:
-            containment_weight = float(self.config.context_merge_containment_weight_sparse or 0.0)
-        return (1.0 - containment_weight) * base + containment_weight * containment
-
-    def _context_slot_containment_ratio(self, a: Any, b: Any) -> float:
-        values_a = self._filled_slot_values(self._effective_context_slots(a))
-        values_b = self._filled_slot_values(self._effective_context_slots(b))
-        if not values_a and not values_b:
-            return self._summary_containment(a, b)
-        if not values_a or not values_b:
-            return float(self.config.context_sparse_slot_summary_fallback or 0.0) * self._summary_containment(a, b)
-
-        def contains(smaller: dict[str, Any], larger: dict[str, Any]) -> float:
-            if not smaller:
-                return 0.0
-            matched = 0.0
-            for key, value in smaller.items():
-                if key in larger:
-                    matched += self._value_overlap_score(value, larger.get(key))
-            return matched / len(smaller)
-
-        return max(contains(values_a, values_b), contains(values_b, values_a))
 
     def _pick_canonical_context(self, left: Context, right: Context) -> tuple[Context, Context]:
         if self._context_rank_key(left) >= self._context_rank_key(right):
@@ -2466,63 +1990,7 @@ class DynamicEvolutionEngine:
     def _context_subtype_similarity(self, left: str, right: str) -> float:
         left_norm = str(left or "").strip().lower()
         right_norm = str(right or "").strip().lower()
-        if left_norm == right_norm:
-            return 1.0
-        compatible_groups = [
-            {"situation", "environment", "state"},
-            {"constraint", "goal"},
-            {"phase", "state"},
-            {"situation", "phase"},
-        ]
-        for group in compatible_groups:
-            if left_norm in group and right_norm in group:
-                return float(self.config.context_subtype_compatible_score or 0.0)
-        return float(self.config.context_subtype_mismatch_floor or 0.0)
-
-    def _infer_context_subtype(self, event: Event, slots: dict[str, Any]) -> str:
-        if str(slots.get("phase", "") or slots.get("task_stage", "")).strip():
-            return "phase"
-        if str(slots.get("goal", "") or slots.get("goal_hint", "")).strip():
-            return "goal"
-        if str(slots.get("constraint", "") or slots.get("constraint_hint", "")).strip():
-            return "constraint"
-        if str(slots.get("state", "")).strip():
-            return "state"
-        if str(slots.get("environment", "") or slots.get("geo_context", "") or slots.get("digital_context", "")).strip():
-            return "environment"
-        return "situation"
-
-    def _extract_context_slots(self, event: Event) -> dict[str, Any]:
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        time_range = event.time_range if isinstance(event.time_range, dict) else {}
-        payload_context = payload.get("context", {}) if isinstance(payload.get("context", {}), dict) else {}
-        participants = self._participant_labels(event.participants)
-        scene_hint = self._infer_scene_hint(event)
-        scene = str(
-            payload.get("scene")
-            or payload_context.get("scene", "")
-            or payload_context.get("geo_context", "")
-            or payload_context.get("digital_context", "")
-            or scene_hint
-            or ""
-            or "generic"
-        )
-        slots = {
-            "scene": scene,
-            "geo_context": str(payload_context.get("geo_context", "") or ""),
-            "digital_context": str(payload_context.get("digital_context", "") or ""),
-            "time_bucket": str(time_range.get("display_time_bucket") or payload.get("time_bucket", "") or ""),
-            "task_stage": str(payload.get("task_stage", "") or ""),
-            "goal_hint": str(payload.get("goal_hint") or payload.get("goal") or scene_hint),
-            "constraint_hint": str(payload.get("constraint_hint") or payload.get("constraint") or ""),
-            "participants": participants,
-            "device": self._collect_slot_values(payload, payload_context, key="device"),
-            "app": self._collect_slot_values(payload, payload_context, key="app"),
-            "place": self._collect_slot_values(payload, payload_context, key="place"),
-            # Action is kept only as low-weight metadata for compatibility, not as subtype driver.
-            "action_hint": str(event.action or payload.get("action", "") or ""),
-        }
-        return {key: value for key, value in slots.items() if value not in (None, "", [], {})}
+        return 1.0 if left_norm and left_norm == right_norm else 0.0
 
     def _build_context_summary(self, subtype: str, slots: dict[str, Any]) -> str:
         preferred_keys = (
@@ -2596,17 +2064,23 @@ class DynamicEvolutionEngine:
     def _context_embedding_similarity(self, left: Any, right: Any) -> float:
         left_embedding = getattr(left, "embedding", None)
         right_embedding = getattr(right, "embedding", None)
+        if not left_embedding:
+            left_embedding = self._maybe_embed_context(self._context_summary(left))
+            if left_embedding is not None and hasattr(left, "embedding"):
+                try:
+                    left.embedding = left_embedding
+                except Exception:
+                    pass
+        if not right_embedding:
+            right_embedding = self._maybe_embed_context(self._context_summary(right))
+            if right_embedding is not None and hasattr(right, "embedding"):
+                try:
+                    right.embedding = right_embedding
+                except Exception:
+                    pass
         if not left_embedding or not right_embedding:
             return 0.0
-        try:
-            numerator = sum(float(a) * float(b) for a, b in zip(left_embedding, right_embedding))
-            left_norm = math.sqrt(sum(float(a) * float(a) for a in left_embedding))
-            right_norm = math.sqrt(sum(float(b) * float(b) for b in right_embedding))
-            if left_norm <= 0.0 or right_norm <= 0.0:
-                return 0.0
-            return max(0.0, min(1.0, numerator / (left_norm * right_norm)))
-        except Exception:
-            return 0.0
+        return self._event_embedding_similarity(left_embedding, right_embedding)
 
     def _context_temporal_compatibility(self, left: Any, right: Any) -> float:
         left_start = int(getattr(left, "valid_from", 0) or getattr(left, "created_at", 0) or 0)
@@ -2652,79 +2126,15 @@ class DynamicEvolutionEngine:
         return merged
 
     def _maybe_embed_context(self, text: str) -> Optional[list[float]]:
-        if not text or not hasattr(self.store, "embedding_client"):
+        if not text:
             return None
         embedding_client = getattr(self.store, "embedding_client", None)
-        if embedding_client is None or not hasattr(embedding_client, "get_embedding"):
-            return None
         try:
-            return embedding_client.get_embedding(text)
+            if embedding_client is not None and hasattr(embedding_client, "get_embedding"):
+                return embedding_client.get_embedding(text)
+            return self.llm_client.embed_text(text=text)
         except Exception:
             return None
-
-    def _infer_scene_hint(self, event: Event) -> str:
-        text = f"{event.summary} {event.action} {safe_json_dumps(event.payload)}".lower()
-        keyword_map = {
-            "会议": "会议场景",
-            "开会": "会议场景",
-            "导航": "导航场景",
-            "停车": "停车场景",
-            "充电": "充电场景",
-            "健身": "健身出行",
-            "影院": "观影场景",
-            "勿扰": "勿扰场景",
-            "离车": "离车场景",
-            "疲劳": "疲劳干预",
-            "儿童": "儿童安抚",
-        }
-        for keyword, label in keyword_map.items():
-            if keyword in text:
-                return label
-        return ""
-
-    def _core_context_slot_keys(self) -> list[str]:
-        return [
-            "scene",
-            "geo_context",
-            "digital_context",
-            "time_bucket",
-            "task_stage",
-            "goal_hint",
-            "constraint_hint",
-        ]
-
-    def _aux_context_slot_keys(self) -> list[str]:
-        return ["participants", "device", "app", "place", "action_hint"]
-
-    def _slot_group_similarity(
-        self,
-        slots_a: dict[str, Any],
-        slots_b: dict[str, Any],
-        keys: list[str],
-    ) -> float:
-        score_sum = 0.0
-        total = 0
-        for key in keys:
-            va = slots_a.get(key)
-            vb = slots_b.get(key)
-            if self._is_empty_slot_value(va) and self._is_empty_slot_value(vb):
-                continue
-            total += 1
-            if self._is_empty_slot_value(va) or self._is_empty_slot_value(vb):
-                continue
-            score_sum += self._value_overlap_score(va, vb)
-        return (score_sum / total) if total else 0.0
-
-    def _slot_group_has_signal(
-        self,
-        slots_a: dict[str, Any],
-        slots_b: dict[str, Any],
-        keys: list[str],
-    ) -> bool:
-        for key in keys:
-            if not self._is_empty_slot_value(slots_a.get(key)) or not self._is_empty_slot_value(slots_b.get(key)):
-                return True
-        return False
 
     def _participant_labels(self, participants: list[Any]) -> list[str]:
         if not isinstance(participants, list):
@@ -2740,167 +2150,15 @@ class DynamicEvolutionEngine:
                 labels.append(label)
         return sorted(set(labels))
 
-    def _collect_slot_values(self, *sources: dict[str, Any], key: str) -> list[str]:
-        values: list[str] = []
-        for source in sources:
-            if not isinstance(source, dict):
-                continue
-            raw = source.get(key)
-            if isinstance(raw, list):
-                values.extend(str(item).strip() for item in raw if str(item).strip())
-            elif raw not in (None, ""):
-                values.append(str(raw).strip())
-        return sorted(set(value for value in values if value))
-
-    def _lexical_similarity(self, left: str, right: str) -> float:
-        left_tokens = self._tokenize_text(left)
-        right_tokens = self._tokenize_text(right)
-        if not left_tokens and not right_tokens:
-            return 0.0
-        jaccard = len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
-        if left_tokens and right_tokens:
-            smaller, larger = (
-                (left_tokens, right_tokens)
-                if len(left_tokens) <= len(right_tokens)
-                else (right_tokens, left_tokens)
-            )
-            containment = len(smaller & larger) / len(smaller)
-            jaccard = max(
-                jaccard,
-                float(self.config.context_summary_containment_bonus or 0.0) * containment,
-            )
-        return max(jaccard, self._fuzzy_string_score(left, right))
-
-    def _summary_containment(self, a: Any, b: Any) -> float:
-        tokens_a = self._tokenize_text(self._context_summary(a))
-        tokens_b = self._tokenize_text(self._context_summary(b))
-        if not tokens_a or not tokens_b:
-            return 0.0
-        smaller, larger = (
-            (tokens_a, tokens_b) if len(tokens_a) <= len(tokens_b) else (tokens_b, tokens_a)
-        )
-        return len(smaller & larger) / len(smaller)
-
     def _summary_semantic_similarity(self, a: Any, b: Any) -> float:
-        lexical = self._lexical_similarity(self._context_summary(a), self._context_summary(b))
-        embedding = self._context_embedding_similarity(a, b)
-        if embedding > 0.0:
-            lexical_weight = float(self.config.context_summary_semantic_lexical_weight or 0.0)
-            embedding_weight = float(self.config.context_summary_semantic_embedding_weight or 0.0)
-            total_weight = max(1e-6, lexical_weight + embedding_weight)
-            return (lexical_weight * lexical + embedding_weight * embedding) / total_weight
-        return lexical
-
-    def _tokenize_text(self, text: str) -> set[str]:
-        raw = str(text or "").lower()
-        tokens = set(re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9_]+", raw))
-        compact = re.sub(r"\s+", "", raw)
-        if len(compact) >= 2:
-            tokens.update(compact[idx: idx + 2] for idx in range(len(compact) - 1))
-        elif compact:
-            tokens.add(compact)
-        return {token for token in tokens if token}
-
-    def _context_overlap_for_events(self, event_a_id: str, event_b_id: str) -> float:
-        left = {context.id for context in self.store.get_event_contexts(event_a_id)}
-        right = {context.id for context in self.store.get_event_contexts(event_b_id)}
-        if not left and not right:
-            return 0.0
-        return len(left & right) / len(left | right)
-
-    def _payload_similarity(self, event_a: Event, event_b: Event) -> float:
-        participant_similarity = self._value_similarity(
-            self._participant_labels(event_a.participants),
-            self._participant_labels(event_b.participants),
-        )
-        location_similarity = self._value_similarity(
-            self._extract_context_slots(event_a).get("place", []),
-            self._extract_context_slots(event_b).get("place", []),
-        )
-        action_similarity = self._text_token_similarity(event_a.action, event_b.action)
-        causality_similarity = self._text_token_similarity(event_a.causality, event_b.causality)
-        return 0.35 * participant_similarity + 0.30 * location_similarity + 0.20 * action_similarity + 0.15 * causality_similarity
-
-    def _time_similarity(self, event_a: Event, event_b: Event, now: int) -> float:
-        ts_a = event_a.last_active or event_a.timestamp or now
-        ts_b = event_b.last_active or event_b.timestamp or now
-        diff = abs(ts_a - ts_b)
-        window = max(1, self.config.event_consolidation_window_seconds)
-        return math.exp(-diff / window)
-
-    def _value_similarity(self, left: Any, right: Any) -> float:
-        left_set = self._as_value_set(left)
-        right_set = self._as_value_set(right)
-        if not left_set and not right_set:
-            return 0.0
-        exact = len(left_set & right_set) / len(left_set | right_set)
-        if exact > 0.0:
-            return exact
-        if len(left_set) <= 5 and len(right_set) <= 5:
-            best_scores = [
-                max((self._fuzzy_string_score(left_value, right_value) for right_value in right_set), default=0.0)
-                for left_value in left_set
-            ]
-            if best_scores:
-                return sum(best_scores) / len(left_set | right_set)
-        return exact
-
-    def _fuzzy_string_score(self, a: str, b: str) -> float:
-        a_norm = str(a or "").strip().lower()
-        b_norm = str(b or "").strip().lower()
-        if not a_norm or not b_norm:
-            return 0.0
-        if a_norm == b_norm:
+        left = self._normalized_context_text(self._context_summary(a))
+        right = self._normalized_context_text(self._context_summary(b))
+        if left and left == right:
             return 1.0
-        if a_norm in b_norm or b_norm in a_norm:
-            shorter, longer = (
-                (a_norm, b_norm) if len(a_norm) <= len(b_norm) else (b_norm, a_norm)
-            )
-            return len(shorter) / max(1, len(longer))
-        bg_a = {a_norm[idx: idx + 2] for idx in range(max(1, len(a_norm) - 1))}
-        bg_b = {b_norm[idx: idx + 2] for idx in range(max(1, len(b_norm) - 1))}
-        bigram_score = 0.0
-        if bg_a and bg_b:
-            bigram_score = len(bg_a & bg_b) / len(bg_a | bg_b)
-        char_a = {ch for ch in a_norm if not ch.isspace()}
-        char_b = {ch for ch in b_norm if not ch.isspace()}
-        char_score = 0.0
-        if char_a and char_b:
-            char_score = len(char_a & char_b) / len(char_a | char_b)
-        return max(bigram_score, char_score)
-
-    @staticmethod
-    def _text_token_similarity(a: Optional[str], b: Optional[str]) -> float:
-        """Character-level token overlap similarity for short Chinese/mixed texts."""
-        a_str = (a or "").strip()
-        b_str = (b or "").strip()
-        if not a_str or not b_str:
-            return 0.0
-        if a_str == b_str:
-            return 1.0
-        # Use character-level bigrams for Chinese text robustness
-        def _bigrams(s: str) -> set[str]:
-            s = s.lower()
-            if len(s) < 2:
-                return {s}
-            return {s[i : i + 2] for i in range(len(s) - 1)}
-        bg_a = _bigrams(a_str)
-        bg_b = _bigrams(b_str)
-        if not bg_a or not bg_b:
-            return 0.0
-        return len(bg_a & bg_b) / len(bg_a | bg_b)
-
-    def _as_value_set(self, value: Any) -> set[str]:
-        if isinstance(value, list):
-            return {str(item).strip() for item in value if str(item).strip()}
-        if isinstance(value, dict):
-            return {f"{key}:{item}".strip() for key, item in value.items() if str(item).strip()}
-        if value in (None, ""):
-            return set()
-        return {str(value).strip()}
+        return self._context_embedding_similarity(a, b)
 
     def _value_overlap(self, va: Any, vb: Any) -> bool:
-        return self._value_overlap_score(va, vb) >= float(self.config.context_fuzzy_match_threshold or 0.0)
+        return self._value_overlap_score(va, vb) > 0.0
 
     def _value_overlap_score(self, va: Any, vb: Any) -> float:
         if isinstance(va, list) or isinstance(vb, list):
@@ -2908,18 +2166,14 @@ class DynamicEvolutionEngine:
             sb = {str(item).strip() for item in (vb if isinstance(vb, list) else [vb]) if str(item).strip()}
             if not sa and not sb:
                 return 0.0
-            exact = len(sa & sb) / len(sa | sb)
-            if exact > 0.0:
-                return exact
-            return max(
-                (self._fuzzy_string_score(left_value, right_value) for left_value in sa for right_value in sb),
-                default=0.0,
-            )
-        a_str = str(va).strip()
-        b_str = str(vb).strip()
-        if a_str == b_str:
-            return 1.0
-        return self._fuzzy_string_score(a_str, b_str)
+            return len(sa & sb) / len(sa | sb)
+        if isinstance(va, dict) or isinstance(vb, dict):
+            left = safe_json_dumps(va)
+            right = safe_json_dumps(vb)
+            return 1.0 if left == right else 0.0
+        a_str = str(va).strip().lower()
+        b_str = str(vb).strip().lower()
+        return 1.0 if a_str and a_str == b_str else 0.0
 
     def _merge_slots(self, a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         merged = dict(a)
@@ -3087,14 +2341,10 @@ class DynamicEvolutionEngine:
             requested = "auto"
         if requested == "disabled":
             return "disabled"
-        if requested == "heuristic":
-            return "heuristic"
-        if requested == "llm":
-            return "llm" if self._llm_merge_available() else "disabled"
-        return "llm" if self._llm_merge_available() else "heuristic"
+        return "llm"
 
     def _llm_merge_available(self) -> bool:
-        return self.llm_client.has_generation_api() and self.llm_client.has_valid_api_key()
+        return True
 
     def _llm_event_merge_decision(
         self,
@@ -3165,8 +2415,6 @@ class DynamicEvolutionEngine:
         return self._call_merge_llm(prompt)
 
     def _call_merge_llm(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
-        if not self._llm_merge_available():
-            return None
         try:
             resp = self.llm_client.call_generation(
                 model=self.config.llm_model,
@@ -3301,12 +2549,15 @@ class DynamicEvolutionEngine:
         last_active = int(event_data.get("last_active", event_data.get("t_valid", 0)) or 0)
         status = str(event_data.get("status", "active") or "active")
         support_count = int(event_data.get("support_count", event_data.get("c_valid", 1)) or 1)
-
-        # Event similarity via lexical overlap (low-cost endpoint-safe).
-        event_similarity = max(
-            self._lexical_similarity(query, summary),
-            1.0 if query and query.lower() in summary.lower() else 0.0,
-        )
+        query_embedding = self._maybe_embed_context(query)
+        event_embedding = event_data.get("embedding")
+        if not event_embedding and event_id and hasattr(self.store, "get_event"):
+            event = self.store.get_event(event_id)
+            if event is not None:
+                event_embedding = self._ensure_event_embedding(event)
+        if not event_embedding and summary:
+            event_embedding = self._maybe_embed_context(summary)
+        event_similarity = self._event_embedding_similarity(query_embedding, event_embedding)
 
         contexts = self.store.get_event_contexts(event_id) if event_id else []
 
@@ -3321,8 +2572,6 @@ class DynamicEvolutionEngine:
             validity = 0.5
 
         support_norm = min(1.0, math.log1p(support_count) / math.log1p(20))
-        drift_penalty = 0.0
-        decay_penalty = 1.0 - recency
 
         evolution_score = (
             self.config.retrieval_weight_event_sim * event_similarity
@@ -3330,8 +2579,6 @@ class DynamicEvolutionEngine:
             + self.config.retrieval_weight_recency * recency
             + self.config.retrieval_weight_validity * validity
             + self.config.retrieval_weight_support * support_norm
-            - 0.10 * drift_penalty
-            - 0.06 * decay_penalty
         )
 
         return {
@@ -3343,22 +2590,22 @@ class DynamicEvolutionEngine:
             "recency_factor": recency,
             "validity": validity,
             "support_norm": support_norm,
-            "decay_penalty": decay_penalty,
-            "drift_penalty": drift_penalty,
+            "decay_penalty": 1.0 - recency,
+            "drift_penalty": 0.0,
             "compressed_contexts": [c.summary for c in contexts[:2]],
         }
 
     def _context_query_match(self, contexts: list[Context], query_entities: list[str], query: str) -> float:
+        del query_entities
         if not contexts:
             return 0.0
-        q = query.lower()
+        query_embedding = self._maybe_embed_context(query)
+        if not query_embedding:
+            return 0.0
         best = 0.0
-        entity_set = {e.lower() for e in query_entities}
         for c in contexts:
-            text = (c.summary + " " + safe_json_dumps(c.structured_slots)).lower()
-            hits = sum(1 for e in entity_set if e and e in text)
-            lexical = 1.0 if q and q in text else 0.0
-            score = min(1.0, 0.2 * hits + 0.5 * lexical + 0.3 * c.confidence)
+            context_embedding = c.embedding or self._maybe_embed_context(c.summary)
+            score = self._event_embedding_similarity(query_embedding, context_embedding)
             if c.status != "active":
                 score *= 0.5
             best = max(best, score)

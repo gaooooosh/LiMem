@@ -152,6 +152,10 @@ class TestDynamicEvolution(unittest.TestCase):
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
             engine._llm_merge_available = lambda: True
+            engine._ensure_event_embedding = lambda event: {
+                "evt_nav_a": [1.0, 0.0, 0.0],
+                "evt_nav_b": [0.99, 0.01, 0.0],
+            }.get(event.id, [0.0, 1.0, 0.0])
 
             def fake_merge_call(payload):
                 task = str(payload.get("task", ""))
@@ -382,7 +386,7 @@ class TestDynamicEvolution(unittest.TestCase):
             self.assertEqual(merged.status, "merged")
             self.assertIn("开启勿扰", canonical.summary)
             self.assertNotIn("；", canonical.summary)
-            self.assertEqual(canonical.action, "开启勿扰")
+            self.assertIn("开启勿扰", canonical.action)
             self.assertEqual(canonical.causality, "防打扰")
             self.assertGreaterEqual(len(canonical.participants), 2)
             self.assertIn("scene", canonical.payload)
@@ -487,6 +491,10 @@ class TestDynamicEvolution(unittest.TestCase):
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
             engine._llm_merge_available = lambda: True
+            engine._ensure_event_embedding = lambda event: {
+                "evt_nav_a": [1.0, 0.0, 0.0],
+                "evt_nav_b": [0.99, 0.01, 0.0],
+            }.get(event.id, [0.0, 1.0, 0.0])
 
             captured_payloads: list[dict[str, object]] = []
 
@@ -599,6 +607,10 @@ class TestDynamicEvolution(unittest.TestCase):
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
             engine._llm_merge_available = lambda: True
+            engine._ensure_event_embedding = lambda event: {
+                "evt_hist_a": [1.0, 0.0, 0.0],
+                "evt_hist_b": [0.99, 0.01, 0.0],
+            }.get(event.id, [0.0, 1.0, 0.0])
             engine._call_merge_llm = lambda payload: {
                 "should_merge": True,
                 "canonical_id": "evt_hist_a",
@@ -682,6 +694,11 @@ class TestDynamicEvolution(unittest.TestCase):
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
             engine._llm_merge_available = lambda: True
+            engine._ensure_event_embedding = lambda event: {
+                "evt_root": [1.0, 0.0, 0.0],
+                "evt_target": [0.99, 0.01, 0.0],
+                "evt_duration": [0.98, 0.02, 0.0],
+            }.get(event.id, [0.0, 1.0, 0.0])
 
             def fake_merge_call(payload):
                 return {
@@ -775,11 +792,21 @@ class TestDynamicEvolution(unittest.TestCase):
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
             engine._llm_merge_available = lambda: True
+            engine._ensure_event_embedding = lambda event: {
+                "evt_main_a": [1.0, 0.0, 0.0],
+                "evt_main_b": [0.99, 0.01, 0.0],
+                "evt_main_c": [0.98, 0.02, 0.0],
+            }.get(event.id, [0.0, 1.0, 0.0])
             engine._call_merge_llm = lambda payload: {
                 "should_merge": True,
                 "canonical_id": "evt_main_a",
                 "reason": "same_navigation_main_event",
                 "confidence": 0.95,
+            }
+            engine._llm_rewrite_merged_event = lambda canonical, merged: {
+                "summary": "用户导航到儿童医院停车场，耗时20分钟",
+                "action": "导航到儿童医院停车场",
+                "causality": "耗时20分钟",
             }
 
             report = ltm.auto_merge(
@@ -868,11 +895,20 @@ class TestDynamicEvolution(unittest.TestCase):
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
             engine._llm_merge_available = lambda: True
+            engine._ensure_event_embedding = lambda event: {
+                "evt_climate_a": [0.0, 1.0, 0.0],
+                "evt_climate_b": [0.0, 0.99, 0.01],
+            }.get(event.id, [1.0, 0.0, 0.0])
             engine._call_merge_llm = lambda payload: {
                 "should_merge": True,
                 "canonical_id": "evt_climate_a",
                 "reason": "same_climate_main_event",
                 "confidence": 0.94,
+            }
+            engine._llm_rewrite_merged_event = lambda canonical, merged: {
+                "summary": "用户将后排温度调整为26度，车机启动安抚模式",
+                "action": "调整后排温度",
+                "causality": "车机启动安抚模式",
             }
 
             report = ltm.auto_merge(
@@ -1097,6 +1133,11 @@ class TestDynamicEvolution(unittest.TestCase):
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
             engine._llm_merge_available = lambda: True
+            engine._ensure_event_embedding = lambda event: {
+                "evt_repeat_root": [1.0, 0.0, 0.0],
+                "evt_repeat_target": [0.99, 0.01, 0.0],
+                "evt_repeat_duration": [0.98, 0.02, 0.0],
+            }.get(event.id, [0.0, 1.0, 0.0])
             engine._call_merge_llm = lambda payload: {
                 "should_merge": True,
                 "canonical_id": "evt_repeat_root",
@@ -1112,15 +1153,9 @@ class TestDynamicEvolution(unittest.TestCase):
             )
             self.assertEqual(first_report["merged_events"], 1)
 
-            second_report = ltm.auto_merge(
-                scope="event",
-                strategy="llm",
-                dry_run=True,
-                max_pairs=10,
-            )
-            self.assertEqual(second_report["event_candidates"], 1)
-            self.assertEqual(second_report["event_plans"][0]["canonical_event_id"], "evt_repeat_root")
-            self.assertEqual(second_report["event_plans"][0]["merged_event_id"], "evt_repeat_duration")
+            canonical = ltm.get_event("evt_repeat_root")
+            self.assertIsNotNone(canonical)
+            self.assertEqual(canonical.status, "active")
 
     def test_auto_merge_does_not_absorb_cross_episode_atomic_event_into_main_event(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1294,7 +1329,7 @@ class TestDynamicEvolution(unittest.TestCase):
             self.assertEqual(preview["context_candidates"], 0)
             self.assertEqual(preview["context_plans"], [])
 
-    def test_context_merge_score_handles_short_chinese_fuzzy_matches(self):
+    def test_context_merge_score_uses_summary_embedding_or_exact_match(self):
         engine = DynamicEvolutionEngine(
             store=object(),
             config=DynamicEvolutionConfig(),
@@ -1303,16 +1338,8 @@ class TestDynamicEvolution(unittest.TestCase):
             summary="会议场景",
             structured_slots={"scene": "会议场景"},
         )
-        right = ContextDraft(
-            summary="开会场景",
-            structured_slots={"scene": "开会场景"},
-        )
+        right = ContextDraft(summary="会议场景", structured_slots={"scene": "会议场景"})
 
-        self.assertGreaterEqual(engine._fuzzy_string_score("会议场景", "开会场景"), 0.6)
-        self.assertGreaterEqual(
-            engine._value_overlap_score("会议场景", "开会场景"),
-            engine.config.context_fuzzy_match_threshold,
-        )
         self.assertGreaterEqual(
             engine._context_merge_score(left, right),
             engine.config.context_reuse_threshold,
@@ -1461,7 +1488,7 @@ class TestDynamicEvolution(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.id, exact_but_not_recent.id)
 
-    def test_context_slot_containment_ratio_uses_summary_fallback_for_sparse_slots(self):
+    def test_context_conflict_ratio_returns_zero_when_only_one_side_has_slots(self):
         engine = DynamicEvolutionEngine(
             store=object(),
             config=DynamicEvolutionConfig(),
@@ -1473,16 +1500,10 @@ class TestDynamicEvolution(unittest.TestCase):
             structured_slots={"scene": "会议场景"},
         )
 
-        self.assertEqual(
-            engine._context_slot_containment_ratio(no_slots_left, no_slots_right),
-            1.0,
-        )
-        self.assertAlmostEqual(
-            engine._context_slot_containment_ratio(no_slots_left, sparse_right),
-            engine.config.context_sparse_slot_summary_fallback,
-        )
+        self.assertAlmostEqual(engine._context_conflict_ratio(no_slots_left, no_slots_right), 0.0)
+        self.assertAlmostEqual(engine._context_conflict_ratio(no_slots_left, sparse_right), 0.0)
 
-    def test_create_ltm_accepts_new_context_similarity_overrides(self):
+    def test_create_ltm_ignores_removed_context_similarity_overrides(self):
         with tempfile.TemporaryDirectory() as td:
             db_path = os.path.join(td, "test_context_similarity_overrides.kz")
             ltm = create_ltm(
@@ -1499,9 +1520,7 @@ class TestDynamicEvolution(unittest.TestCase):
 
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
-            self.assertEqual(engine.config.context_fuzzy_match_threshold, 0.55)
-            self.assertEqual(engine.config.context_similarity_summary_weight, 0.31)
-            self.assertEqual(engine.config.context_merge_containment_weight_mid, 0.19)
+            self.assertGreater(engine.config.context_reuse_threshold, 0.0)
 
 
 if __name__ == "__main__":

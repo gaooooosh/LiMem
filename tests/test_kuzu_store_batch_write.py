@@ -27,7 +27,7 @@ class TestKuzuStoreBatchWrite(unittest.TestCase):
                 updated_at=101,
                 valid_from=101,
                 valid_to=None,
-                embedding=[0.0] * 1536,
+                embedding=[0.0] * store.embedding_dim,
             )
             event_b = Event(
                 id="evt_batch_b",
@@ -41,7 +41,7 @@ class TestKuzuStoreBatchWrite(unittest.TestCase):
                 updated_at=102,
                 valid_from=102,
                 valid_to=120,
-                embedding=[0.1] * 1536,
+                embedding=[0.1] * store.embedding_dim,
             )
 
             store.save_events_batch([event_a, event_b])

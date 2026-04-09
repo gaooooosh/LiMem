@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""EntityMatcher - 实体匹配器
-
-实现三级实体匹配策略：精确匹配、包含匹配、向量模糊匹配。
-"""
+"""Entity matching with exact and embedding similarity."""
 
 from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple
@@ -23,7 +20,7 @@ class MatchResult:
     Attributes:
         query_entity: 查询实体名称
         matched_entities: 匹配到的数据库实体列表
-        match_type: 匹配类型（exact, containment, fuzzy, exact+fuzzy）
+        match_type: 匹配类型（exact, fuzzy, exact+fuzzy）
         weights: 实体ID到匹配权重的映射
     """
 
@@ -36,13 +33,12 @@ class MatchResult:
 class EntityMatcher:
     """实体匹配器
 
-    职责：实现三级匹配策略，将查询实体匹配到数据库实体。
+    职责：实现精确匹配和向量模糊匹配，将查询实体匹配到数据库实体。
     Entity 是检索索引层（indexing layer），不是动态图语义主干。
 
     匹配策略：
     1. 精确匹配（exact）: query == db_entity, weight = 1.0
-    2. 包含匹配（containment）: query in db_entity, weight = 0.9
-    3. 向量模糊匹配（fuzzy）: 语义相似度, weight = similarity²
+    2. 向量模糊匹配（fuzzy）: 语义相似度, weight = similarity²
     """
 
     def __init__(
@@ -102,15 +98,7 @@ class EntityMatcher:
                 weights[query_entity] = 1.0
                 match_types.add("exact")
 
-            # Level 2: 包含匹配
-            containment_matches = self._containment_match(query_entity, db_entities)
-            for entity in containment_matches:
-                if entity not in weights:
-                    matched.append(entity)
-                    weights[entity] = 0.9
-                match_types.add("containment")
-
-            # Level 3: 向量模糊匹配
+            # Level 2: 向量模糊匹配
             if self.enable_vector:
                 fuzzy_matches = self._vector_match(query_entity, db_entities)
                 for entity, sim in fuzzy_matches:
@@ -151,27 +139,6 @@ class EntityMatcher:
                 if entity_id not in merged or weight > merged[entity_id]:
                     merged[entity_id] = weight
         return merged
-
-    def _containment_match(
-        self, query: str, db_entities: set[str]
-    ) -> list[str]:
-        """包含匹配
-
-        Args:
-            query: 查询实体
-            db_entities: 数据库实体集合
-
-        Returns:
-            匹配到的实体列表
-        """
-        if len(query) < 2:  # 跳过单字符
-            return []
-
-        matches = []
-        for entity in db_entities:
-            if query in entity and query != entity:
-                matches.append(entity)
-        return matches
 
     def _vector_match(
         self, query: str, db_entities: set[str]

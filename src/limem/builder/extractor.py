@@ -1,46 +1,23 @@
-# -*- coding: utf-8 -*-
-"""LLM Extractor - LLM 提取器抽象
-
-从原始文本中提取结构化事件信息。
-"""
+"""LLM-based event extraction."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-try:
-    pass
-except Exception:  # pragma: no cover - optional dependency for offline mode
-    dashscope = None
-    Generation = None
-
 from ..config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
-    GENERATION_MODEL,
     ENABLE_THINKING,
+    GENERATION_MODEL,
     normalize_dashscope_base_url,
 )
 from ..llm import DashScopeClient
-from ..utils import (
-    load_prompt,
-    normalize_event_payload,
-)
-from .input_classifier import InputClassifier, StructureLevel
-from .plugin import ExtractorPlugin
-from .semi_structured_extractor import SemiStructuredExtractor
-from .structured_mapper import FieldMappingConfig, StructuredFieldMapper
-from .unstructured_extractor import UnstructuredExtractor
+from ..utils import load_prompt, normalize_event_payload
 
 
 @dataclass
 class ExtractionResult:
-    """提取结果
-
-    Attributes:
-        event_data: 事件数据字典
-        confidence: 提取置信度
-    """
+    """Canonical extraction output."""
 
     event_data: dict[str, Any]
     events_data: list[dict[str, Any]] = field(default_factory=list)
@@ -55,10 +32,7 @@ class ExtractionResult:
 
 
 class LLMExtractor(ABC):
-    """LLM 提取器抽象接口
-
-    职责：从原始文本中提取结构化信息。
-    """
+    """Abstract extractor interface."""
 
     @abstractmethod
     def extract(
@@ -79,12 +53,7 @@ class LLMExtractor(ABC):
 
 
 class TwoStageExtractor(LLMExtractor):
-    """两阶段提取器
-
-    Stage A: 先对单条 Episode 做最小动态变化切分（segments）
-    Stage B: 对每个 segment 做结构化事件抽取
-    这种分离防止上下文溢出，并允许独立优化。
-    """
+    """Segment first, then structure each event chunk."""
 
     def __init__(
         self,
@@ -95,15 +64,6 @@ class TwoStageExtractor(LLMExtractor):
         llm_concurrency: int = 1,
         llm_client: Optional[DashScopeClient] = None,
     ):
-        """初始化两阶段提取器
-
-        Args:
-            api_key: DashScope API Key
-            base_url: DashScope API URL
-            generation_model: 生成模型名称
-            enable_thinking: 是否启用思维链
-            llm_client: 共享的 DashScopeClient 实例（优先使用）
-        """
         self.generation_model = generation_model or GENERATION_MODEL
         self.enable_thinking = enable_thinking or ENABLE_THINKING
         self.llm_concurrency = max(1, int(llm_concurrency or 1))
@@ -116,13 +76,6 @@ class TwoStageExtractor(LLMExtractor):
                 api_key=self.api_key,
                 base_url=self.base_url,
             )
-
-        if not self.llm_client.has_generation_api():
-            raise ImportError("dashscope is required for TwoStageExtractor.")
-        if not self.llm_client.has_valid_api_key():
-            raise ValueError("Set DASHSCOPE_API_KEY in .env or environment.")
-
-        # 加载提示词
         self._event_segment_system_prompt = load_prompt("extract_event_segments_system.txt")
         self._event_segment_user_prompt = load_prompt("extract_event_segments_user.txt")
         self._event_struct_system_prompt = load_prompt("extract_event_struct_system.txt")
@@ -138,14 +91,6 @@ class TwoStageExtractor(LLMExtractor):
         text: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> ExtractionResult:
-        """执行两阶段提取
-
-        Args:
-            text: 原始文本
-
-        Returns:
-            ExtractionResult
-        """
         del metadata
         events_data = self._extract_events(text)
         event_data = events_data[0] if events_data else {}
@@ -156,24 +101,12 @@ class TwoStageExtractor(LLMExtractor):
             entities=[],
         )
 
-    # Threshold (in chars) above which we fall back to the two-stage
-    # segment→struct pipeline to avoid hitting LLM context limits.
     _TWO_STAGE_TEXT_THRESHOLD = 4000
 
     def _extract_events(self, text: str) -> list[dict[str, Any]]:
-        """事件抽取：短文本走单次 LLM，长文本走两阶段切分+结构化。
-
-        Args:
-            text: 原始文本
-
-        Returns:
-            事件数据列表
-        """
-        # Short texts: single-pass extraction (1 LLM call instead of 2)
         if len(text) <= self._TWO_STAGE_TEXT_THRESHOLD:
             return self._extract_events_single_pass(text)
 
-        # Long texts: two-stage to avoid context overflow
         try:
             segments = self._extract_event_segments(text)
         except Exception as exc:
@@ -259,7 +192,6 @@ class TwoStageExtractor(LLMExtractor):
         return self._dedupe_events(normalized)
 
     def _extract_events_single_pass(self, text: str) -> list[dict[str, Any]]:
-        """兼容回退：一次性抽取事件（旧流程）。"""
         user_msg = self._event_user_prompt.format(episode_text=text)
         data = self._call_generation_json(
             system_prompt=self._event_system_prompt,
@@ -436,93 +368,8 @@ class TwoStageExtractor(LLMExtractor):
         if result:
             return result
 
-        # Fallback: treat this dict as an event object itself when no wrapper keys exist.
         return [payload]
 
     def _extract_entities(self, text: str) -> list[str]:
         del text
         return []
-
-
-class AdaptiveExtractor(LLMExtractor):
-    """Adaptive extractor that routes by structure instead of domain."""
-
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        generation_model: Optional[str] = None,
-        enable_thinking: bool = False,
-        field_config: Optional[FieldMappingConfig] = None,
-        plugins: Optional[list[ExtractorPlugin]] = None,
-        llm_caller=None,
-        llm_client: Optional[DashScopeClient] = None,
-    ):
-        self.generation_model = generation_model or GENERATION_MODEL
-        self.enable_thinking = enable_thinking or ENABLE_THINKING
-        self._custom_llm_caller = llm_caller
-        if llm_client is not None:
-            self.llm_client = llm_client
-        else:
-            self.api_key = api_key or DASHSCOPE_API_KEY
-            self.base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
-            self.llm_client = DashScopeClient(
-                api_key=self.api_key,
-                base_url=self.base_url,
-            )
-
-        self.classifier = InputClassifier()
-        self.structured_mapper = StructuredFieldMapper(field_config)
-        self._extract_combined_system_prompt = load_prompt("extract_combined_system.txt")
-        self._extract_combined_user_prompt = load_prompt("extract_combined_user.txt")
-        self.unstructured = UnstructuredExtractor(
-            llm_caller=self._call_generation_json_optional,
-            system_prompt=self._extract_combined_system_prompt,
-            user_prompt=self._extract_combined_user_prompt,
-        )
-        self.semi_structured = SemiStructuredExtractor(
-            field_mapper=self.structured_mapper,
-            fallback_extractor=self.unstructured,
-        )
-        self.plugins = list(plugins or [])
-
-    def extract(
-        self,
-        text: str,
-        metadata: Optional[dict[str, Any]] = None,
-    ) -> ExtractionResult:
-        classification = self.classifier.classify(text, metadata)
-
-        if classification.level == StructureLevel.STRUCTURED:
-            result = self.structured_mapper.extract(classification.parsed_json, text)
-        elif classification.level == StructureLevel.SEMI_STRUCTURED:
-            result = self.semi_structured.extract(text, classification.detected_patterns)
-        else:
-            result = self.unstructured.extract(text)
-
-        for plugin in self.plugins:
-            if plugin.can_handle(text, metadata, classification):
-                result = plugin.enhance(text, metadata, result)
-        result.entities = []
-        return result
-
-    def _call_generation_json_optional(
-        self,
-        system_prompt: str,
-        user_message: str,
-        default: Any,
-    ) -> Any:
-        if self._custom_llm_caller is not None:
-            return self._custom_llm_caller(system_prompt, user_message, default)
-
-        if not self.llm_client.has_generation_api():
-            return default
-        if not self.llm_client.has_valid_api_key():
-            return default
-
-        return self.llm_client.call_generation_json(
-            model=self.generation_model,
-            system_prompt=system_prompt,
-            user_message=user_message,
-            default=default,
-        )

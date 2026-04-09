@@ -38,16 +38,6 @@ class _FakeExtractor:
         )
 
 
-class _FakeConsolidator:
-    pass
-
-
-class _NoopRelationshipInferrer:
-    def infer(self, events):
-        del events
-        return []
-
-
 class _BatchAwareStore:
     def __init__(self):
         self.events = {}
@@ -131,10 +121,8 @@ class TestMemoryBuilderPerformance(unittest.TestCase):
 
         builder = MemoryBuilder(
             extractor=_FakeExtractor(),
-            consolidator=_FakeConsolidator(),
             store=_BatchAwareStore(),
             config=BuilderConfig(llm_concurrency=4),
-            relationship_inferrer=_NoopRelationshipInferrer(),
             llm_client=client,
         )
         texts = ["x" * (idx + 1) for idx in range(30)]
@@ -153,10 +141,8 @@ class TestMemoryBuilderPerformance(unittest.TestCase):
         store = _BatchAwareStore()
         builder = MemoryBuilder(
             extractor=_FakeExtractor(),
-            consolidator=_FakeConsolidator(),
             store=store,
             config=BuilderConfig(append_first_mode=True),
-            relationship_inferrer=_NoopRelationshipInferrer(),
         )
         builder._get_embeddings = lambda texts: [[0.0] * 1536 for _ in texts]
 
@@ -174,11 +160,9 @@ class TestMemoryBuilderPerformance(unittest.TestCase):
         dynamic_engine = _FakeDynamicEngine()
         builder = MemoryBuilder(
             extractor=_FakeExtractor(),
-            consolidator=_FakeConsolidator(),
             store=store,
             config=BuilderConfig(append_first_mode=True, deferred_evolution=True),
             dynamic_engine=dynamic_engine,
-            relationship_inferrer=_NoopRelationshipInferrer(),
         )
         builder._get_embeddings = lambda texts: [[0.0] * 1536 for _ in texts]
 

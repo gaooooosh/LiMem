@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Benchmark adaptive extraction quality, routing and latency on trips.json."""
+"""Benchmark LLM extraction quality and latency on trips.json."""
 
 from __future__ import annotations
 
@@ -19,11 +19,8 @@ SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from limem.builder.extractor import AdaptiveExtractor, ExtractionResult, TwoStageExtractor
-from limem.builder.input_classifier import InputClassifier, StructureLevel
-from limem.builder.relationship_inferrer import RelationshipInferrer
+from limem.builder.extractor import ExtractionResult, TwoStageExtractor
 from limem.config import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, ENABLE_THINKING, GENERATION_MODEL
-from limem.core.event import Event
 from limem.utils import _normalize_entity_name, load_prompt, robust_json_loads
 from script.trips_loader import load_trips_episodes
 
@@ -34,7 +31,7 @@ NON_NOISE_BUCKETS = (
     "导航记录数据",
     "用户私人日程数据",
 )
-ROUTE_NAMES = tuple(level.name for level in StructureLevel)
+ROUTE_NAMES = ("LLM",)
 
 
 @dataclass
@@ -154,49 +151,13 @@ def _count_valid_entities(entities: list[str]) -> int:
     return sum(1 for item in entities if _normalize_entity_name(item))
 
 
-def _event_from_payload(
-    payload: dict[str, Any],
-    episode_timestamp: int,
-    episode_index: int,
-    event_index: int,
-) -> Event:
-    time_range = payload.get("time_range", {})
-    if not isinstance(time_range, dict):
-        time_range = {}
-    participants = payload.get("participants", [])
-    if not isinstance(participants, list):
-        participants = []
-    return Event(
-        id=f"ep{episode_index:04d}_ev{event_index:02d}",
-        summary=str(payload.get("summary", "") or ""),
-        action=str(payload.get("action", "") or ""),
-        causality=str(payload.get("causality", "") or ""),
-        time_range=time_range,
-        timestamp=int(episode_timestamp or 0),
-        last_active=int(episode_timestamp or 0),
-        participants=participants,
-        payload=payload,
-    )
-
-
-def _infer_relation_counts(
-    inferrer: RelationshipInferrer,
-    events_data: list[dict[str, Any]],
-    episode_timestamp: int,
-    episode_index: int,
-) -> dict[str, int]:
-    events = [
-        _event_from_payload(item, episode_timestamp=episode_timestamp, episode_index=episode_index, event_index=index)
-        for index, item in enumerate(events_data, 1)
-        if isinstance(item, dict)
-    ]
-    relations = inferrer.infer(events)
-    counts = Counter(item.relation_type for item in relations)
+def _infer_relation_counts(events_data: list[dict[str, Any]]) -> dict[str, int]:
+    del events_data
     return {
-        "temporal_next": counts.get("temporal_next", 0),
-        "causality": counts.get("causality", 0),
-        "parallel": counts.get("parallel", 0),
-        "total": len(relations),
+        "temporal_next": 0,
+        "causality": 0,
+        "parallel": 0,
+        "total": 0,
     }
 
 
@@ -340,19 +301,24 @@ def _build_validation(metrics: dict[str, Any]) -> dict[str, Any]:
             "actual": metrics["empty_rate"],
             "threshold": 0.40,
         },
-        "llm_call_rate_lt_0.15": {
-            "passed": metrics["llm_call_rate"] < 0.15,
+        "llm_call_rate_gt_0": {
+            "passed": metrics["llm_call_rate"] > 0.0,
             "actual": metrics["llm_call_rate"],
-            "threshold": 0.15,
+            "threshold": 0.0,
         },
-        "structured_avg_latency_ms_lt_5": {
-            "passed": metrics["by_route"]["STRUCTURED"]["avg_latency_ms"] < 5.0,
-            "actual": metrics["by_route"]["STRUCTURED"]["avg_latency_ms"],
-            "threshold": 5.0,
+        "total_events_gt_0": {
+            "passed": metrics["total_events"] > 0,
+            "actual": metrics["total_events"],
+            "threshold": 0,
         },
-        "temporal_edges_gt_0": {
-            "passed": metrics["relations"]["temporal_next"] > 0,
-            "actual": metrics["relations"]["temporal_next"],
+        "summary_quality_gt_0.50": {
+            "passed": metrics["summary_quality"] > 0.50,
+            "actual": metrics["summary_quality"],
+            "threshold": 0.50,
+        },
+        "error_count_eq_0": {
+            "passed": metrics["error_count"] == 0,
+            "actual": metrics["error_count"],
             "threshold": 0,
         },
     }
@@ -468,14 +434,11 @@ def _benchmark_extractor(
     *,
     progress_every: int,
 ) -> BenchmarkRun:
-    classifier = InputClassifier()
-    inferrer = RelationshipInferrer()
     records: list[dict[str, Any]] = []
     empty_episodes: list[dict[str, Any]] = []
     wall_start = time.perf_counter()
 
     for episode_index, episode in enumerate(episodes, 1):
-        classification = classifier.classify(episode.content, episode.metadata)
         tracker.start_episode()
         start = time.perf_counter()
         error = ""
@@ -486,19 +449,14 @@ def _benchmark_extractor(
             result = ExtractionResult(event_data={}, events_data=[], entities=[], confidence=0.0)
         latency_ms = (time.perf_counter() - start) * 1000.0
         llm_calls = tracker.finish_episode()
-        relation_counts = _infer_relation_counts(
-            inferrer=inferrer,
-            events_data=result.events_data,
-            episode_timestamp=episode.timestamp,
-            episode_index=episode_index,
-        )
+        relation_counts = _infer_relation_counts(result.events_data)
         record = {
             "episode_index": episode_index,
             "bucket_name": str(episode.metadata.get("bucket_name", "") or ""),
             "source": str(episode.metadata.get("source", "") or ""),
-            "route": classification.level.name,
-            "detected_patterns": list(classification.detected_patterns),
-            "route_score": classification.score,
+            "route": "LLM",
+            "detected_patterns": [],
+            "route_score": 1.0,
             "latency_ms": latency_ms,
             "llm_calls": llm_calls,
             "event_count": len(result.events_data),
@@ -554,33 +512,19 @@ def benchmark_offline(
     progress_every: int,
     skip_baseline: bool,
 ) -> tuple[BenchmarkRun, BenchmarkRun | None]:
-    """Mock LLM calls, benchmark routing, rule paths and latency."""
+    """Mock LLM calls to benchmark the LLM extractor pipeline."""
 
-    adaptive_tracker = LLMCallTracker(runner=_mock_llm_runner)
-    adaptive_extractor = AdaptiveExtractor(llm_caller=adaptive_tracker.call)
-    adaptive_tracker.prompt_aliases = {
-        adaptive_extractor._extract_combined_system_prompt: "combined",
-    }
-    adaptive_run = _benchmark_extractor(
-        extractor_name="adaptive",
-        extractor=adaptive_extractor,
+    del skip_baseline
+    tracker = LLMCallTracker(runner=_mock_llm_runner)
+    extractor = _build_two_stage_extractor(tracker)
+    run = _benchmark_extractor(
+        extractor_name="two_stage",
+        extractor=extractor,
         episodes=episodes,
-        tracker=adaptive_tracker,
+        tracker=tracker,
         progress_every=progress_every,
     )
-
-    baseline_run = None
-    if not skip_baseline:
-        baseline_tracker = LLMCallTracker(runner=_mock_llm_runner)
-        baseline_extractor = _build_two_stage_extractor(baseline_tracker)
-        baseline_run = _benchmark_extractor(
-            extractor_name="two_stage",
-            extractor=baseline_extractor,
-            episodes=episodes,
-            tracker=baseline_tracker,
-            progress_every=progress_every,
-        )
-    return adaptive_run, baseline_run
+    return run, None
 
 
 def benchmark_online(
@@ -589,35 +533,20 @@ def benchmark_online(
     progress_every: int,
     skip_baseline: bool,
 ) -> tuple[BenchmarkRun, BenchmarkRun | None]:
-    """Use real DashScope calls to benchmark end-to-end extraction quality."""
+    """Use real DashScope calls to benchmark end-to-end LLM extraction."""
 
+    del skip_baseline
     online_runner = _build_online_runner()
-
-    adaptive_tracker = LLMCallTracker(runner=online_runner)
-    adaptive_extractor = AdaptiveExtractor(llm_caller=adaptive_tracker.call)
-    adaptive_tracker.prompt_aliases = {
-        adaptive_extractor._extract_combined_system_prompt: "combined",
-    }
-    adaptive_run = _benchmark_extractor(
-        extractor_name="adaptive",
-        extractor=adaptive_extractor,
+    tracker = LLMCallTracker(runner=online_runner)
+    extractor = _build_two_stage_extractor(tracker)
+    run = _benchmark_extractor(
+        extractor_name="two_stage",
+        extractor=extractor,
         episodes=episodes,
-        tracker=adaptive_tracker,
+        tracker=tracker,
         progress_every=progress_every,
     )
-
-    baseline_run = None
-    if not skip_baseline:
-        baseline_tracker = LLMCallTracker(runner=online_runner)
-        baseline_extractor = _build_two_stage_extractor(baseline_tracker)
-        baseline_run = _benchmark_extractor(
-            extractor_name="two_stage",
-            extractor=baseline_extractor,
-            episodes=episodes,
-            tracker=baseline_tracker,
-            progress_every=progress_every,
-        )
-    return adaptive_run, baseline_run
+    return run, None
 
 
 def _format_rate(value: float) -> str:
@@ -750,7 +679,7 @@ def _build_report(
     if mode == "offline":
         report["notes"].append(
             "Offline mode uses mock LLM callers that return extractor defaults. "
-            "Adaptive metrics reflect rule paths; TwoStage quality is not representative."
+            "These numbers only cover pipeline overhead, not real model quality."
         )
 
     if baseline_run is not None:

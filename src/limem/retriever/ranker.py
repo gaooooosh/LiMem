@@ -10,7 +10,7 @@ import math
 import time
 
 from ..core.event import RankedEvent, EventRelation
-from ..config import DECAY_RATE, RANKER_ENTITY_SIGNAL_WEIGHT
+from ..config import DECAY_RATE
 
 
 @dataclass
@@ -19,14 +19,10 @@ class RankerConfig:
 
     Attributes:
         decay_rate: 时间衰减率
-        precise_boost: 多精确匹配增益系数
-        fuzzy_discount: 模糊匹配折扣系数
+        decay_rate: 时间衰减率
     """
 
     decay_rate: float = DECAY_RATE
-    precise_boost: float = 0.5
-    fuzzy_discount: float = 0.5
-    entity_signal_weight: float = RANKER_ENTITY_SIGNAL_WEIGHT
 
 
 @dataclass
@@ -225,23 +221,9 @@ class MemoryRanker:
         support_norm = float(event.get("support_norm", 0.0) or 0.0)
         drift_penalty = float(event.get("drift_penalty", 0.0) or 0.0)
         decay_penalty = float(event.get("decay_penalty", 0.0) or 0.0)
-        evolution_factor = max(
-            0.1,
-            1.0
-            + 0.25 * evolution_score
-            + 0.10 * context_match
-            + 0.10 * validity
-            + 0.05 * support_norm
-            - 0.15 * drift_penalty
-            - 0.10 * decay_penalty,
-        )
+        evolution_factor = max(0.1, 1.0 + 0.3 * evolution_score)
 
-        # 综合权重
-        blended_entity_factor = (
-            (1.0 - self.config.entity_signal_weight)
-            + self.config.entity_signal_weight * entity_factor
-        )
-        weight = base_weight * temporal_factor * blended_entity_factor * evolution_factor
+        weight = base_weight * temporal_factor * entity_factor * evolution_factor
 
         debug = WeightDebugInfo(
             event_id=event_id,
@@ -257,7 +239,7 @@ class MemoryRanker:
             time_diff=time_diff,
             base_weight=base_weight,
             temporal_factor=temporal_factor,
-            entity_factor=blended_entity_factor,
+            entity_factor=entity_factor,
             evolution_factor=evolution_factor,
         )
 
@@ -279,12 +261,6 @@ class MemoryRanker:
     def _calculate_entity_factor(self, entity_match_weights: dict[str, float]) -> float:
         """计算实体匹配因子
 
-        分层加权策略：
-        - 精确匹配（weight >= 0.9）: 使用最大权重 * 增益系数
-        - 模糊匹配（weight < 0.9）: 使用权重和 * 折扣系数
-
-        这确保精确匹配不会被大量模糊匹配淹没。
-
         Args:
             entity_match_weights: 实体ID到匹配权重的映射
 
@@ -293,16 +269,4 @@ class MemoryRanker:
         """
         if not entity_match_weights:
             return 1.0
-
-        # 分离精确匹配和模糊匹配
-        precise_weights = [w for w in entity_match_weights.values() if w >= 0.9]
-        fuzzy_weights = [w for w in entity_match_weights.values() if w < 0.9]
-
-        if precise_weights:
-            # 精确匹配：使用最大权重 + 多匹配增益
-            max_precise = max(precise_weights)
-            precise_count = len(precise_weights)
-            return max_precise * (1 + self.config.precise_boost * (precise_count - 1))
-        else:
-            # 仅模糊匹配：折扣
-            return sum(fuzzy_weights) * self.config.fuzzy_discount
+        return max(float(weight or 0.0) for weight in entity_match_weights.values())
