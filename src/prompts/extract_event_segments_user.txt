@@ -1,4 +1,0 @@
-对话内容：
-{episode_text}
-
-请先完成“最小动态变化切分”，返回 segments JSON：

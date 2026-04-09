@@ -3,13 +3,13 @@
 
 提供记忆构建的核心组件：
 - LLMExtractor: LLM提取器抽象
-- TwoStageExtractor: 两阶段提取器实现
+- UnifiedExtractor: 单次调用统一提取器
 - MemoryBuilder: 构建管道编排
 """
 
 from .extractor import (
     LLMExtractor,
-    TwoStageExtractor,
+    UnifiedExtractor,
     ExtractionResult,
 )
 from .context_extractor import ContextExtractionPipeline
@@ -19,7 +19,7 @@ from .unstructured_extractor import UnstructuredExtractor
 __all__ = [
     # Extractor
     "LLMExtractor",
-    "TwoStageExtractor",
+    "UnifiedExtractor",
     "ExtractionResult",
     "ContextExtractionPipeline",
     "UnstructuredExtractor",

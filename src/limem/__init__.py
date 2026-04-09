@@ -36,7 +36,7 @@ from .storage import GraphStore, KuzuStore
 # ==================== 构建层 ====================
 from .builder import (
     LLMExtractor,
-    TwoStageExtractor,
+    UnifiedExtractor,
     ExtractionResult,
     ContextExtractionPipeline,
     MemoryBuilder,
@@ -123,7 +123,7 @@ __all__ = [
     "KuzuStore",
     # ===== 构建层 =====
     "LLMExtractor",
-    "TwoStageExtractor",
+    "UnifiedExtractor",
     "ExtractionResult",
     "ContextExtractionPipeline",
     "MemoryBuilder",

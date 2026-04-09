@@ -19,7 +19,7 @@ SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from limem.builder.extractor import ExtractionResult, TwoStageExtractor
+from limem.builder.extractor import ExtractionResult, UnifiedExtractor
 from limem.config import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, ENABLE_THINKING, GENERATION_MODEL
 from limem.utils import _normalize_entity_name, load_prompt, robust_json_loads
 from script.trips_loader import load_trips_episodes
@@ -97,7 +97,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-baseline",
         action="store_true",
-        help="Skip the TwoStageExtractor baseline benchmark.",
+        help="Skip the UnifiedExtractor baseline benchmark.",
     )
     parser.add_argument(
         "--progress-every",
@@ -402,26 +402,17 @@ def _build_online_runner() -> Callable[[str, str, Any], Any]:
     return _runner
 
 
-def _build_two_stage_extractor(tracker: LLMCallTracker) -> TwoStageExtractor:
-    extractor = object.__new__(TwoStageExtractor)
+def _build_unified_extractor(tracker: LLMCallTracker) -> UnifiedExtractor:
+    extractor = object.__new__(UnifiedExtractor)
     extractor.api_key = DASHSCOPE_API_KEY
     extractor.base_url = DASHSCOPE_BASE_URL
     extractor.generation_model = GENERATION_MODEL
     extractor.enable_thinking = ENABLE_THINKING
-    extractor._event_segment_system_prompt = load_prompt("extract_event_segments_system.txt")
-    extractor._event_segment_user_prompt = load_prompt("extract_event_segments_user.txt")
-    extractor._event_struct_system_prompt = load_prompt("extract_event_struct_system.txt")
-    extractor._event_struct_user_prompt = load_prompt("extract_event_struct_user.txt")
-    extractor._event_system_prompt = load_prompt("extract_event_only_system.txt")
-    extractor._event_user_prompt = load_prompt("extract_event_only_user.txt")
-    extractor._entity_system_prompt = load_prompt("extract_entities_only_system.txt")
-    extractor._entity_user_prompt = load_prompt("extract_entities_only_user.txt")
+    extractor._system_prompt = load_prompt("extract_unified_system.txt")
+    extractor._user_prompt = load_prompt("extract_unified_user.txt")
     extractor._call_generation_json = tracker.call
     tracker.prompt_aliases = {
-        extractor._event_segment_system_prompt: "segment",
-        extractor._event_struct_system_prompt: "struct",
-        extractor._event_system_prompt: "single_pass_event",
-        extractor._entity_system_prompt: "entity",
+        extractor._system_prompt: "unified",
     }
     return extractor
 
@@ -516,9 +507,9 @@ def benchmark_offline(
 
     del skip_baseline
     tracker = LLMCallTracker(runner=_mock_llm_runner)
-    extractor = _build_two_stage_extractor(tracker)
+    extractor = _build_unified_extractor(tracker)
     run = _benchmark_extractor(
-        extractor_name="two_stage",
+        extractor_name="unified",
         extractor=extractor,
         episodes=episodes,
         tracker=tracker,
@@ -538,9 +529,9 @@ def benchmark_online(
     del skip_baseline
     online_runner = _build_online_runner()
     tracker = LLMCallTracker(runner=online_runner)
-    extractor = _build_two_stage_extractor(tracker)
+    extractor = _build_unified_extractor(tracker)
     run = _benchmark_extractor(
-        extractor_name="two_stage",
+        extractor_name="unified",
         extractor=extractor,
         episodes=episodes,
         tracker=tracker,
@@ -609,7 +600,7 @@ def print_report(report: dict[str, Any]) -> None:
         latency_speedup = comparison.get("latency_speedup")
         llm_savings_text = "n/a" if llm_savings is None else _format_rate(llm_savings)
         latency_speedup_text = "n/a" if latency_speedup is None else f"{latency_speedup:.2f}x"
-        print("\n--- Vs TwoStageExtractor ---")
+        print("\n--- Vs UnifiedExtractor ---")
         print(
             f"baseline events: {baseline['total_events']} | "
             f"event_count_delta: {comparison.get('event_count_delta', 0)} | "

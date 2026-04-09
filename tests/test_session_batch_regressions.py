@@ -4,14 +4,14 @@ import tempfile
 import unittest
 
 from limem import Episode, Event, IngestResult, create_ltm
-from limem.builder.extractor import TwoStageExtractor
+from limem.builder.extractor import UnifiedExtractor
 from limem.utils import normalize_event_payload
 from script.build_ltm_from_trips import _run_phase
 
 
 class TestSessionBatchRegressions(unittest.TestCase):
-    def test_two_stage_generation_json_uses_safe_client_wrapper(self):
-        extractor = object.__new__(TwoStageExtractor)
+    def test_unified_generation_json_uses_safe_client_wrapper(self):
+        extractor = object.__new__(UnifiedExtractor)
         extractor.generation_model = "test-generation-model"
 
         class FakeClient:

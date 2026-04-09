@@ -1,7 +1,0 @@
-完整对话：
-{episode_text}
-
-当前 segment（{segment_index}/{segment_total}）：
-{segment_text}
-
-请只针对当前 segment 输出单个 event JSON：

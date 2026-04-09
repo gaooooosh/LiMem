@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from limem.builder.extractor import TwoStageExtractor
+from limem.builder.extractor import UnifiedExtractor
 from limem.config import normalize_dashscope_base_url
 from limem.evolution.dynamic_engine import DynamicEvolutionConfig
 
@@ -23,8 +23,8 @@ class TestDashScopeBaseUrlNormalization(unittest.TestCase):
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
 
-    def test_two_stage_extractor_normalizes_constructor_base_url(self):
-        extractor = TwoStageExtractor(
+    def test_unified_extractor_normalizes_constructor_base_url(self):
+        extractor = UnifiedExtractor(
             api_key="test-key",
             base_url="https://dashscope.aliyuncs.com/api/v1",
             generation_model="qwen-plus",

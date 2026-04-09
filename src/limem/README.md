@@ -88,7 +88,7 @@ src/limem/
 默认主路径是 append-first：
 
 1. 保存原始 `Episode`
-2. 通过 `TwoStageExtractor` 抽取一个或多个事件与实体
+2. 通过 `UnifiedExtractor` 一次抽取一个或多个事件及其内联 contexts
 3. 规范化事件字段
 4. 将 `Event` 直接追加写入图中
 5. 建立 `Event -> Episode`、`Event -> Entity` 关系
@@ -180,7 +180,7 @@ print(report)
 它负责组装：
 
 - `KuzuStore`
-- `TwoStageExtractor`
+- `UnifiedExtractor`
 - `MemoryBuilder`
 - `DynamicEvolutionEngine`
 
@@ -208,7 +208,7 @@ print(report)
 
 ### 2. 提取层
 
-`MemoryBuilder` 依赖 `LLMExtractor` 抽象，默认实现是 `TwoStageExtractor`。如果要切换模型或抽取策略，应替换提取器，而不是改 `LTMemoryImpl`。
+`MemoryBuilder` 依赖 `LLMExtractor` 抽象，默认实现是 `UnifiedExtractor`。如果要切换模型或抽取策略，应替换提取器，而不是改 `LTMemoryImpl`。
 
 ### 3. 上下文抽取规则
 

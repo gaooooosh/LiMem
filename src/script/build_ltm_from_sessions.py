@@ -177,7 +177,7 @@ def main() -> None:
     ltm = create_ltm(
         db_path=args.db_path,
         config={
-            "extractor_type": "two_stage",
+            "extractor_type": "unified",
             "offline_mode": not args.online,
             "enable_dynamic_evolution": True,
             "append_first_mode": not args.legacy_merge,
@@ -219,7 +219,7 @@ def main() -> None:
     report = {
         "sessions_path": args.sessions_path,
         "db_path": args.db_path,
-        "extractor_type": "two_stage",
+        "extractor_type": "unified",
         "offline_mode": not args.online,
         "append_first_mode": not args.legacy_merge,
         "bulk_ingest_mode": True,

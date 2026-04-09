@@ -820,33 +820,28 @@ const INGEST_STAGES = [
     },
   },
   {
-    id: 'two-stage-extract',
-    name: 'Two-Stage 事件抽取',
-    desc: 'LLM 驱动的两阶段抽取：长文本先分段，再结构化提取事件',
+    id: 'unified-extract',
+    name: 'Unified 事件抽取',
+    desc: 'LLM 驱动的单次抽取：直接输出粗粒度事件与内联 contexts',
     color: 'var(--stage-llm)',
     tags: ['LLM', '核心'],
     detail: {
       steps: [
-        { text: '判断文本长度是否超过 <code>4000</code> 字符', sub: '短文本走单次抽取路径，长文本走分段路径' },
-        { text: '<strong>[长文本路径] Stage 1: 文本分段</strong>', sub: 'LLM 调用 extract_event_segments prompts，将长文本切分为独立语义段' },
-        { text: '<strong>[长文本路径] Stage 2: 批量结构化</strong>', sub: 'LLM 调用 extract_event_struct_batch prompts，对所有段落批量提取事件' },
-        { text: '<strong>[短文本路径] 单次抽取</strong>', sub: 'LLM 调用 extract_event_only prompts，直接从原文提取事件' },
-        { text: '标准化抽取结果 <code>normalize_event_payload()</code>', sub: '验证 summary/action/causality，清理 evidence，填充 time_range' },
+        { text: '单次 LLM 调用统一提取', sub: '直接从 Episode.content 输出 coarse events 与内联 contexts' },
+        { text: '按完整交互场景聚合 Event', sub: '一轮意图 -> 响应 -> 结果合并成 1 个事件，同意图链不再拆碎' },
+        { text: '内联输出 0-3 个 contexts', sub: 'summary 要短、可复用、去事件化，evidence_span 保留原文细节' },
+        { text: '标准化抽取结果 <code>normalize_event_payload()</code>', sub: '验证 summary/action/causality，清理 evidence，保留 contexts，填充 time_range' },
       ],
-      prompt: `<div class="prompt-label">System Prompt (extract_event_only_system.txt)</div>
-你是长期记忆的事件抽取器。
+      prompt: `<div class="prompt-label">System Prompt (extract_unified_system.txt)</div>
+你是长期记忆的统一事件抽取器。
 
-Event 是长期记忆中的最小动态变化单元，表示某个主体
-在某个时间点或时间区间内发生的一次可识别变化。
-
-只有满足以下条件的内容才应抽取为 Event：
-1. 有时间锚点或相对时序位置
-2. 有主体或作用源
-3. 发生了变化
-4. 能独立作为图中的一个节点
+目标：
+- 每个 Episode 只调用一次 LLM。
+- 输出粗粒度 Event，每个 Event 表示完整交互场景。
+- 每个 Event 内联 0-3 个可复用 contexts。
 
 输出 JSON：
-{ "events": [{ "summary", "participants", "action", "time", "causality" }] }`,
+{ "events": [{ "summary", "participants", "action", "time", "causality", "contexts" }] }`,
       input: `<span class="comment">// Episode.content (原始文本)</span>
 <span class="str">"今天下午两点和同事在星巴克讨论了新项目的技术方案，
 决定使用 GraphRAG 架构来构建知识图谱。"</span>`,

@@ -10,7 +10,7 @@ from typing import Any, Optional
 from .ltmemory_impl import LTMemoryImpl
 from .storage.kuzu_store import KuzuStore
 from .builder.memory_builder import MemoryBuilder, BuilderConfig
-from .builder.extractor import TwoStageExtractor
+from .builder.extractor import UnifiedExtractor
 from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
 from .config import (
     APPEND_FIRST_MODE,
@@ -84,7 +84,7 @@ def create_ltm_system(
         embedding_dim=embedding_dim,
     )
 
-    extractor = TwoStageExtractor(
+    extractor = UnifiedExtractor(
         generation_model=generation_model,
         enable_thinking=config.get("enable_thinking", False),
         llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),

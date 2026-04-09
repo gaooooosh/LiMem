@@ -326,7 +326,7 @@ def normalize_event_payload(
     if not causality:
         causality = outcome
 
-    return {
+    result = {
         "summary": summary,
         "participants": _normalize_participants(actor_value),
         "time_range": _normalize_time_range(time_value),
@@ -334,6 +334,10 @@ def normalize_event_payload(
         "causality": causality,
         "evidence": _normalize_evidence(event_payload.get("evidence", [])),
     }
+    raw_contexts = event_payload.get("contexts")
+    if isinstance(raw_contexts, list) and raw_contexts:
+        result["contexts"] = raw_contexts
+    return result
 
 
 def time_bucket_from_ts(ts):

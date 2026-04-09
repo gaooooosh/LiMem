@@ -611,6 +611,65 @@ class DynamicEvolutionEngine:
             if isinstance(draft, ContextDraft) and self._is_valid_context_draft(draft)
         ]
 
+    def _build_context_drafts_from_payload(self, event: Event) -> list[ContextDraft]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        raw_contexts = payload.get("contexts", [])
+        if not isinstance(raw_contexts, list) or not raw_contexts:
+            return []
+
+        event_timestamp = int(event.valid_from or event.timestamp or event.last_active or 0)
+        drafts: list[ContextDraft] = []
+        for item in raw_contexts:
+            if not isinstance(item, dict):
+                continue
+            summary = str(item.get("summary", "") or "").strip()
+            evidence_span = str(item.get("evidence_span", "") or "").strip()
+            structured_slots = item.get("structured_slots", {})
+            if not isinstance(structured_slots, dict):
+                structured_slots = {}
+            try:
+                confidence = float(item.get("confidence", 0.6) or 0.6)
+            except (TypeError, ValueError):
+                confidence = 0.6
+            drafts.append(
+                ContextDraft(
+                    subtype=str(item.get("subtype", "situation") or "situation"),
+                    summary=summary,
+                    structured_slots=structured_slots,
+                    confidence=confidence,
+                    evidence_span=evidence_span or summary,
+                    source_refs=[
+                        {
+                            "source": "event_payload_context",
+                            "evidence_span": evidence_span or summary,
+                            "signal": "event_payload_context",
+                            "event_id": event.id,
+                            "timestamp": event_timestamp,
+                        }
+                    ],
+                    valid_from=event_timestamp,
+                )
+            )
+
+        validator = getattr(self.context_extractor, "validate_context_drafts", None)
+        if callable(validator):
+            record_text = str(payload.get("episode_text", "") or event.summary or event.action or "").strip()
+            drafts = validator(drafts, record_text, event)
+
+        canonicalize = getattr(self.context_extractor, "canonicalize_context", None)
+        if callable(canonicalize):
+            drafts = [
+                canonicalize(draft)
+                for draft in drafts
+                if isinstance(draft, ContextDraft)
+            ]
+
+        dedupe = getattr(self.context_extractor, "_dedupe_drafts", None)
+        if callable(dedupe):
+            drafts = dedupe(drafts)
+
+        return self._filter_valid_context_drafts(drafts)
+
     def _resolve_context_pairs_for_event_batch(
         self,
         events: list[Event],
@@ -620,30 +679,47 @@ class DynamicEvolutionEngine:
             return []
 
         drafts_by_index: dict[int, list[ContextDraft]] = {}
+        for idx, event in enumerate(events):
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            raw_contexts = payload.get("contexts")
+            if isinstance(raw_contexts, list) and raw_contexts:
+                drafts_by_index[idx] = self._build_context_drafts_from_payload(event)
+
+        if len(drafts_by_index) == len(events):
+            resolved_batches: list[list[tuple[Context, ContextDraft]]] = []
+            for idx, event in enumerate(events):
+                drafts = drafts_by_index.get(idx, [])
+                resolved_batches.append(
+                    [(self.resolve_context(draft, event=event), draft) for draft in drafts]
+                )
+            return resolved_batches
+
+        missing_indices = [idx for idx in range(len(events)) if idx not in drafts_by_index]
         shared_existing_contexts = self._build_existing_contexts_for_extraction(
-            events=events,
+            events=[events[idx] for idx in missing_indices],
             record=record,
         )
         existing_contexts_by_index = (
             {
                 idx: [dict(item) for item in shared_existing_contexts]
-                for idx in range(len(events))
+                for idx in missing_indices
             }
             if shared_existing_contexts
             else None
         )
         batched_extract = getattr(self.context_extractor, "extract_batch", None)
         max_batch_size = max(1, int(self.config.context_extraction_batch_size or 1))
-        if callable(batched_extract) and len(events) > 1:
-            for start in range(0, len(events), max_batch_size):
-                batch_events = events[start : start + max_batch_size]
-                batch_records = [record if record is not None else event for event in batch_events]
+        if callable(batched_extract) and len(missing_indices) > 1:
+            for start in range(0, len(missing_indices), max_batch_size):
+                batch_indices = missing_indices[start : start + max_batch_size]
+                batch_events = [events[idx] for idx in batch_indices]
+                batch_records = [record if record is not None else events[idx] for idx in batch_indices]
                 batch_existing_contexts = None
                 if existing_contexts_by_index:
                     batch_existing_contexts = {
-                        offset: existing_contexts_by_index[start + offset]
-                        for offset in range(len(batch_events))
-                        if existing_contexts_by_index.get(start + offset)
+                        offset: existing_contexts_by_index[idx]
+                        for offset, idx in enumerate(batch_indices)
+                        if existing_contexts_by_index.get(idx)
                     }
                 try:
                     batch_drafts = batched_extract(
@@ -656,13 +732,13 @@ class DynamicEvolutionEngine:
                             f"expected {len(batch_events)} batch context results, got {len(batch_drafts)}"
                         )
                     for offset, drafts in enumerate(batch_drafts):
-                        drafts_by_index[start + offset] = self._filter_valid_context_drafts(drafts)
+                        drafts_by_index[batch_indices[offset]] = self._filter_valid_context_drafts(drafts)
                 except Exception as exc:
                     logger.warning(
                         "batch context extraction failed for events[%s:%s]; "
                         "falling back to per-event extraction for this slice: %s",
-                        start,
-                        start + len(batch_events),
+                        batch_indices[0],
+                        batch_indices[-1] + 1,
                         exc,
                     )
 
