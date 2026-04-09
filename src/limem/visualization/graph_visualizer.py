@@ -214,7 +214,7 @@ class GraphVisualizer:
                         "source": src,
                         "target": tgt,
                         "type": "relation",
-                        "rel": row[2] if len(row) > 2 and row[2] else "related",
+                        "rel": row[2] if len(row) > 2 and row[2] else "关联",
                         "description": row[3] if len(row) > 3 else "",
                         "confidence": row[4] if len(row) > 4 else None,
                     })

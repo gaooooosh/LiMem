@@ -237,10 +237,10 @@ class TestDynamicEvolution(unittest.TestCase):
             engine._llm_relation_available = lambda: True
             engine._call_relation_llm = lambda payload: {
                 "should_link": True,
-                "relation_type": "enables",
+                "relation_type": "促成",
                 "from_id": "evt_rel_a",
                 "to_id": "evt_rel_b",
-                "reason": "user_request_enables_route_planning",
+                "reason": "用户发起导航请求，促成系统开始规划路线",
                 "confidence": 0.91,
             }
 
@@ -258,10 +258,36 @@ class TestDynamicEvolution(unittest.TestCase):
                 any(
                     edge["from_event_id"] == "evt_rel_a"
                     and edge["to_event_id"] == "evt_rel_b"
-                    and edge["relation_type"] == "enables"
+                    and edge["relation_type"] == "促成"
+                    and edge["description"] == "用户发起导航请求，促成系统开始规划路线"
                     for edge in snapshot["edges"]["event_event"]
                 )
             )
+
+    def test_relation_prompt_payload_is_fully_localized_to_chinese(self):
+        class _Store:
+            @staticmethod
+            def get_event_contexts(event_id):
+                del event_id
+                return []
+
+        engine = DynamicEvolutionEngine(
+            store=_Store(),
+            config=DynamicEvolutionConfig(),
+        )
+        left = Event(id="evt_left", summary="用户说要去公司", action="发起导航请求")
+        right = Event(id="evt_right", summary="系统开始规划路线", action="规划路线")
+
+        payload = engine._relation_prompt_payload(
+            left=left,
+            right=right,
+            source_text="用户说导航去公司，系统开始规划路线。",
+        )
+
+        self.assertIn("判断是否需要创建事件-事件关系边", payload["task"])
+        self.assertIn("relation_type 只能使用：因果、时序相邻、前置条件、促成、后续。", payload["rules"])
+        self.assertEqual(payload["output_schema"]["relation_type"], "因果")
+        self.assertEqual(payload["output_schema"]["reason"], "两个事件之间的详细关系说明")
 
     def test_auto_merge_events_uses_embedding_candidates_and_merges_fields(self):
         with tempfile.TemporaryDirectory() as td:

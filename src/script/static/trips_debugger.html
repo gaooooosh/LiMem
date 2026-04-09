@@ -1570,7 +1570,7 @@
                 const anchorX = from.x - 112;
                 const midX = anchorX - Math.max(40, 80 + (idx % 3) * 18);
                 const midY = (from.y + to.y) / 2;
-                const relationType = String(edge.relation_type || "related");
+                const relationType = String(edge.relation_type || "关联");
                 const relationDesc = String(edge.description || "");
                 eventRelationSegments.push(`
                     <path d="M ${anchorX} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${anchorX} ${to.y}"

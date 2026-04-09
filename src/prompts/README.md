@@ -16,6 +16,7 @@
 | `extract_event_struct_user.txt` | 单片段事件结构化（Stage B）用户模板 | `builder/extractor.py` |
 | `extract_entities_only_system.txt` | 仅提取实体的系统提示 | `builder/extractor.py` |
 | `extract_entities_only_user.txt` | 仅提取实体的用户模板 | `builder/extractor.py` |
+| `extract_relation_system.txt` | 事件关系提取系统提示 | `evolution/dynamic_engine.py` |
 
 ## 检索相关
 

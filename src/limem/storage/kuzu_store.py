@@ -745,7 +745,7 @@ class KuzuStore(GraphStore):
         source_session_id: str,
         timestamp: int,
     ) -> None:
-        relation_type = str(relation_type or "").strip().lower()
+        relation_type = str(relation_type or "").strip()
         if not relation_type or not from_event_id or not to_event_id or from_event_id == to_event_id:
             return
         params = {
@@ -1454,7 +1454,7 @@ class KuzuStore(GraphStore):
             self.upsert_event_relation(
                 from_event_id=target_event_id,
                 to_event_id=dst_id,
-                relation_type=row[1] or "related",
+                relation_type=row[1] or "关联",
                 description=row[2] or "",
                 confidence=float(row[3] or 0.0),
                 evidence_span=row[4] or "",
@@ -1487,7 +1487,7 @@ class KuzuStore(GraphStore):
             self.upsert_event_relation(
                 from_event_id=src_id,
                 to_event_id=target_event_id,
-                relation_type=row[1] or "related",
+                relation_type=row[1] or "关联",
                 description=row[2] or "",
                 confidence=float(row[3] or 0.0),
                 evidence_span=row[4] or "",

@@ -148,6 +148,7 @@ class DynamicEvolutionEngine:
             generation_model=self.config.llm_model,
             llm_client=self.llm_client,
         )
+        self._extract_relation_system_prompt = load_prompt("extract_relation_system.txt")
         self._rewrite_merged_event_system_prompt = load_prompt("rewrite_merged_event_system.txt")
         self._rewrite_merged_event_user_prompt = load_prompt("rewrite_merged_event_user.txt")
 
@@ -482,25 +483,24 @@ class DynamicEvolutionEngine:
     ) -> dict[str, Any]:
         return {
             "task": (
-                "Given two extracted events from the same source text, decide whether to create an event-event "
-                "relation edge and provide a detailed relation description."
+                "给定同一段原文中的两个已抽取事件，判断是否需要创建事件-事件关系边，并给出中文关系说明。"
             ),
             "rules": [
-                "Only create an edge if the relation is explicitly supported by the source text.",
-                "Prefer concrete relation types such as causality, adjacency, prerequisite, enables, follows.",
-                "If no relation can be grounded in text, return should_link=false.",
-                "Return strict JSON only.",
+                "只有当原文明确支持两个事件之间的关系时，才创建关系边。",
+                "relation_type 只能使用：因果、时序相邻、前置条件、促成、后续。",
+                "如果无法基于原文落地关系，返回 should_link=false。",
+                "只返回严格 JSON；key 保持英文，value 使用中文（布尔值和数字除外）。",
             ],
             "source_text": source_text,
             "left": self._event_prompt_payload(left),
             "right": self._event_prompt_payload(right),
             "output_schema": {
                 "should_link": True,
-                "relation_type": "causality",
+                "relation_type": "因果",
                 "from_id": left.id,
                 "to_id": right.id,
-                "reason": "detailed relation description between the two events",
-                "evidence_span": "optional quote span from source text",
+                "reason": "两个事件之间的详细关系说明",
+                "evidence_span": "原文中的可选证据片段",
                 "confidence": 0.0,
             },
         }
@@ -517,11 +517,7 @@ class DynamicEvolutionEngine:
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "You are an event relation extractor for memory graph construction. "
-                            "Return compact JSON only with keys: should_link, relation_type, from_id, to_id, "
-                            "reason, evidence_span, confidence."
-                        ),
+                        "content": self._extract_relation_system_prompt,
                     },
                     {
                         "role": "user",
@@ -541,7 +537,7 @@ class DynamicEvolutionEngine:
         right: Event,
         decision: dict[str, Any],
     ) -> Optional[dict[str, Any]]:
-        relation_type = str(decision.get("relation_type", "") or "").strip().lower()
+        relation_type = str(decision.get("relation_type", "") or "").strip()
         if not relation_type:
             return None
         allowed_ids = {left.id, right.id}
