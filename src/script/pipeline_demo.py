@@ -59,8 +59,6 @@ def create_pipeline_demo_app(
                 ENABLE_EVENT_RELATIONS,
                 EVENT_CONSOLIDATION_THRESHOLD,
                 GENERATION_MODEL,
-                SEARCH_TOP_K,
-                SIMILARITY_THRESHOLD,
             )
 
             return {
@@ -71,9 +69,7 @@ def create_pipeline_demo_app(
                 "enable_dynamic_evolution": ENABLE_DYNAMIC_EVOLUTION,
                 "enable_event_relations": ENABLE_EVENT_RELATIONS,
                 "enable_auto_consolidation": ENABLE_AUTO_CONSOLIDATION,
-                "search_top_k": SEARCH_TOP_K,
                 "decay_rate": DECAY_RATE,
-                "similarity_threshold": SIMILARITY_THRESHOLD,
                 "event_consolidation_threshold": EVENT_CONSOLIDATION_THRESHOLD,
                 "context_reuse_threshold": CONTEXT_REUSE_THRESHOLD,
                 "context_extraction_batch_size": CONTEXT_EXTRACTION_BATCH_SIZE,

@@ -18,22 +18,11 @@
 | `extract_entities_only_user.txt` | 仅提取实体的用户模板 | `builder/extractor.py` |
 | `extract_relation_system.txt` | 事件关系提取系统提示 | `evolution/dynamic_engine.py` |
 
-## 检索相关
-
-| 文件 | 用途 | 主要调用位置 |
-|------|------|--------------|
-| `entity_extraction_system.txt` | 从查询中抽取实体 | `retriever/memory_searcher.py` |
-| `entity_extraction_user.txt` | 查询实体抽取模板 | `retriever/memory_searcher.py` |
-| `generate_answer_system.txt` | 基于检索结果生成回答 | `retriever/memory_searcher.py` |
-| `generate_answer_user.txt` | 回答生成模板 | `retriever/memory_searcher.py` |
-
 ## 模板变量
 
 - `extract_event_user.txt`: `{episode_text}`
 - `extract_event_segments_user.txt`: `{episode_text}`
 - `extract_event_struct_user.txt`: `{episode_text}`, `{segment_text}`, `{segment_index}`, `{segment_total}`
-- `entity_extraction_user.txt`: `{query}`
-- `generate_answer_user.txt`: `{events_context}`, `{query}`
 
 ## 加载方式
 

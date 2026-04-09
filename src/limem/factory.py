@@ -11,9 +11,6 @@ from .ltmemory_impl import LTMemoryImpl
 from .storage.kuzu_store import KuzuStore
 from .builder.memory_builder import MemoryBuilder, BuilderConfig
 from .builder.extractor import TwoStageExtractor
-from .retriever.memory_searcher import MemorySearcher, SearcherConfig
-from .retriever.entity_matcher import EntityMatcher
-from .retriever.ranker import MemoryRanker, RankerConfig
 from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
 from .config import (
     APPEND_FIRST_MODE,
@@ -34,16 +31,9 @@ from .config import (
     PRUNE_EVIDENCE_TOP_K,
     DEFAULT_USER_ID,
     EPISODE_TTL,
-    SEARCH_TOP_K,
-    SEARCH_MAX_TOKENS,
-    SEARCH_TEMPERATURE,
-    SEARCH_ENABLE_VECTOR_MATCH,
-    SEARCH_VECTOR_THRESHOLD,
-    SEARCH_VECTOR_TOP_K,
     normalize_dashscope_base_url,
 )
 from .llm import DashScopeClient
-from .utils import load_prompt
 
 
 def create_ltm_system(
@@ -69,7 +59,7 @@ def create_ltm_system(
         >>> from limem import create_ltm_system
         >>> ltm = create_ltm_system(db_path="./my_memory.kz")
         >>> result = ltm.ingest_text("用户喜欢听周杰伦的歌")
-        >>> search_result = ltm.search("用户喜欢什么音乐？")
+        >>> stats = ltm.get_stats()
     """
     config = config or {}
     api_key = api_key or DASHSCOPE_API_KEY
@@ -155,43 +145,10 @@ def create_ltm_system(
         llm_client=llm_client,
     )
 
-    # 6. 创建检索器组件
-    entity_matcher = EntityMatcher(
-        store=store,
-        embedding_client=llm_client,
-        enable_vector=config.get("enable_vector_match", SEARCH_ENABLE_VECTOR_MATCH),
-        vector_threshold=config.get("vector_threshold", SEARCH_VECTOR_THRESHOLD),
-        vector_top_k=config.get("vector_top_k", SEARCH_VECTOR_TOP_K),
-    )
-
-    ranker_config = RankerConfig(
-        decay_rate=config.get("decay_rate", DECAY_RATE),
-    )
-
-    ranker = MemoryRanker(config=ranker_config)
-
-    searcher_config = SearcherConfig(
-        default_top_k=config.get("search_top_k", SEARCH_TOP_K),
-        max_tokens=config.get("search_max_tokens", SEARCH_MAX_TOKENS),
-        temperature=config.get("search_temperature", SEARCH_TEMPERATURE),
-        generate_answer=config.get("generate_answer", True),
-    )
-
-    searcher = MemorySearcher(
-        store=store,
-        entity_matcher=entity_matcher,
-        ranker=ranker,
-        config=searcher_config,
-        generation_model=generation_model,
-        dynamic_engine=dynamic_engine,
-        llm_client=llm_client,
-    )
-
-    # 7. 组装系统
+    # 6. 组装系统
     return LTMemoryImpl(
         store=store,
         builder=builder,
-        searcher=searcher,
         episode_ttl=config.get("episode_ttl", EPISODE_TTL),
         decay_rate=config.get("decay_rate", DECAY_RATE),
         dynamic_engine=dynamic_engine,

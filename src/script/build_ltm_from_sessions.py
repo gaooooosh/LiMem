@@ -183,8 +183,6 @@ def main() -> None:
             "append_first_mode": not args.legacy_merge,
             "bulk_ingest_mode": True,
             "llm_concurrency": 4,
-            "generate_answer": False,
-            "search_top_k": 5,
         },
     )
 

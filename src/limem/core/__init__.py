@@ -5,10 +5,10 @@
 """
 
 from .episode import Episode
-from .event import Event, EventRelation, RankedEvent
+from .event import Event, EventRelation
 from .context import Context, ContextDraft, ContextNode, ContextSpan, CanonicalContextKey
 from .entity import Entity
-from .memory import LTMemory, SearchResult, IngestResult
+from .memory import LTMemory, IngestResult
 
 __all__ = [
     # Episode
@@ -16,7 +16,6 @@ __all__ = [
     # Event
     "Event",
     "EventRelation",
-    "RankedEvent",
     "Context",
     "ContextNode",
     "ContextDraft",
@@ -26,6 +25,5 @@ __all__ = [
     "Entity",
     # Memory
     "LTMemory",
-    "SearchResult",
     "IngestResult",
 ]

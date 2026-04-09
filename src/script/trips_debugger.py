@@ -136,8 +136,6 @@ class TripsDebuggerSession:
                     "append_first_mode": self.config.append_first_mode,
                     "enable_auto_consolidation": self.config.enable_auto_consolidation,
                     "merge_decision_strategy": self.config.default_merge_strategy,
-                    "generate_answer": False,
-                    "search_top_k": 5,
                 },
             )
             self._append_log(

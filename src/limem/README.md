@@ -8,7 +8,7 @@
 
 - 抽象统一的长期记忆接口，而不是耦合某个数据集格式
 - 在线写入时保持增量更新，避免全图重建
-- 将“原始输入”“结构化事件”“稳定上下文”“图检索”拆成独立层
+- 将“原始输入”“结构化事件”“稳定上下文”“图组织”拆成独立层
 - 为不同场景保留扩展点：提取器、存储层、上下文规则、实体归一化规则
 - 默认提供可直接运行的主路径：`create_ltm()`
 
@@ -19,7 +19,6 @@
 - 核心数据模型
 - Episode -> Event 的构建
 - Entity / Context / Event-Event 关系维护
-- 记忆检索与排序
 - 动态演化、压缩、归并、归档
 - 图存储抽象与 Kuzu 实现
 
@@ -64,7 +63,6 @@
 常用方法：
 
 - `ingest(episode)`
-- `search(query, top_k=5, generate_answer=True)`
 - `retrieve_memories(query, top_k=5)`
 - `run_consolidation(dry_run=False, strategy="auto")`
 - `write(...) / remove(...) / merge_event(...) / merge_context(...)`
@@ -76,7 +74,6 @@
 src/limem/
 ├── core/            # 核心数据模型与抽象接口
 ├── builder/         # 写入构建链路：提取、归一化、构建、上下文抽取
-├── retriever/       # 查询链路：实体匹配、召回、排序、回答生成
 ├── evolution/       # 增量演化、局部更新、融合、归档
 ├── storage/         # 图存储抽象与 Kuzu 实现
 ├── factory.py       # 系统装配入口
@@ -103,17 +100,6 @@ src/limem/
 - 在线路径简单稳定
 - 避免边写入边做高成本全局合并
 - 把“压缩”和“整理”放到后续 bounded consolidation
-
-## 检索链路
-
-`MemorySearcher` 的主路径分为四步：
-
-1. 从查询中抽取实体
-2. 通过 `EntityMatcher` 做精确/模糊匹配
-3. 结合实体索引路和上下文语义路召回候选事件
-4. 由 `MemoryRanker` 综合相似度、时间、支持度等信号排序
-
-如果启用动态演化，还可以通过 `retrieve_memories()` 获取更适合小模型消费的压缩检索结果。
 
 ## 动态演化
 
@@ -149,7 +135,6 @@ ltm = create_ltm(
         "offline_mode": True,
         "enable_dynamic_evolution": True,
         "append_first_mode": True,
-        "generate_answer": False,
     },
 )
 ```
@@ -168,16 +153,7 @@ result = ltm.ingest(episode)
 print(result.to_dict())
 ```
 
-### 查询记忆
-
-```python
-search_result = ltm.search("用户和导航相关的行为是什么？", top_k=5, generate_answer=False)
-
-for item in search_result.top_k_events:
-    print(item.event_id, item.weight, item.summary)
-```
-
-### 获取演化感知检索结果
+### 获取演化感知记忆结果
 
 ```python
 rows = ltm.retrieve_memories("用户在会议场景下会怎么设置车机？", top_k=5)
@@ -206,7 +182,6 @@ print(report)
 - `KuzuStore`
 - `TwoStageExtractor`
 - `MemoryBuilder`
-- `MemorySearcher`
 - `DynamicEvolutionEngine`
 
 ### `ltmemory_impl.py`
@@ -273,10 +248,9 @@ print(report)
 2. `src/limem/factory.py`
 3. `src/limem/ltmemory_impl.py`
 4. `src/limem/builder/memory_builder.py`
-5. `src/limem/retriever/memory_searcher.py`
-6. `src/limem/evolution/dynamic_engine.py`
-7. `src/limem/storage/graph_store.py`
-8. `src/limem/storage/kuzu_store.py`
+5. `src/limem/evolution/dynamic_engine.py`
+6. `src/limem/storage/graph_store.py`
+7. `src/limem/storage/kuzu_store.py`
 
 ## 相关文档
 

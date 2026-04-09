@@ -155,20 +155,3 @@ class EventRelation:
     t_valid: int = 0
     t_invalid: Optional[int] = None
     c_valid: int = 1
-
-
-@dataclass
-class RankedEvent:
-    event_id: str
-    summary: str
-    weight: float
-    c_valid: int
-    t_valid: int
-    t_expired: Optional[int]
-    t_invalid: Optional[int]
-    action: str = ""
-    causality: str = ""
-    participants: str = ""
-    time_range: str = ""
-    match_type: str = ""
-    entity_match_weights: Optional[dict[str, float]] = None

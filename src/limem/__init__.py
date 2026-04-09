@@ -7,7 +7,7 @@
 from limem import create_ltm, Episode, Event, LTMemory
 ltm = create_ltm(db_path="./memory.kz")
 result = ltm.ingest_text("用户喜欢听周杰伦的歌")
-search_result = ltm.search("用户喜欢什么音乐？")
+stats = ltm.get_stats()
 ```
 """
 
@@ -16,7 +16,6 @@ from .core import (
     Episode,
     Event,
     EventRelation,
-    RankedEvent,
     Context,
     ContextNode,
     ContextDraft,
@@ -24,7 +23,6 @@ from .core import (
     CanonicalContextKey,
     Entity,
     LTMemory,
-    SearchResult,
     IngestResult,
 )
 
@@ -43,17 +41,6 @@ from .builder import (
     ContextExtractionPipeline,
     MemoryBuilder,
     BuilderConfig,
-)
-
-# ==================== 检索层 ====================
-from .retriever import (
-    EntityMatcher,
-    MatchResult,
-    MemoryRanker,
-    RankerConfig,
-    WeightDebugInfo,
-    MemorySearcher,
-    SearcherConfig,
 )
 
 # ==================== 系统实现 ====================
@@ -80,15 +67,6 @@ from .config import (
     PRUNE_C_VALID_THRESHOLD,
     PRUNE_EVIDENCE_TOP_K,
     DEFAULT_USER_ID,
-    # 搜索参数
-    SEARCH_TOP_K,
-    SEARCH_LAMBDA,
-    SEARCH_MAX_ENTITIES,
-    SEARCH_MAX_TOKENS,
-    SEARCH_TEMPERATURE,
-    SEARCH_ENABLE_VECTOR_MATCH,
-    SEARCH_VECTOR_THRESHOLD,
-    SEARCH_VECTOR_TOP_K,
     # 模型设置
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
@@ -128,7 +106,6 @@ __all__ = [
     "Episode",
     "Event",
     "EventRelation",
-    "RankedEvent",
     "Context",
     "ContextNode",
     "ContextDraft",
@@ -136,7 +113,6 @@ __all__ = [
     "CanonicalContextKey",
     "Entity",
     "LTMemory",
-    "SearchResult",
     "IngestResult",
     # ===== 工厂方法 =====
     "create_ltm",
@@ -152,14 +128,6 @@ __all__ = [
     "ContextExtractionPipeline",
     "MemoryBuilder",
     "BuilderConfig",
-    # ===== 检索层 =====
-    "EntityMatcher",
-    "MatchResult",
-    "MemoryRanker",
-    "RankerConfig",
-    "WeightDebugInfo",
-    "MemorySearcher",
-    "SearcherConfig",
     # ===== 系统实现 =====
     "LTMemoryImpl",
     "MemoryGraphOps",
@@ -179,14 +147,6 @@ __all__ = [
     "PRUNE_C_VALID_THRESHOLD",
     "PRUNE_EVIDENCE_TOP_K",
     "DEFAULT_USER_ID",
-    "SEARCH_TOP_K",
-    "SEARCH_LAMBDA",
-    "SEARCH_MAX_ENTITIES",
-    "SEARCH_MAX_TOKENS",
-    "SEARCH_TEMPERATURE",
-    "SEARCH_ENABLE_VECTOR_MATCH",
-    "SEARCH_VECTOR_THRESHOLD",
-    "SEARCH_VECTOR_TOP_K",
     "DASHSCOPE_API_KEY",
     "DASHSCOPE_BASE_URL",
     "GENERATION_MODEL",

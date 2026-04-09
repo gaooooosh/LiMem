@@ -9,36 +9,7 @@ from typing import Any, Optional
 from dataclasses import dataclass, field
 
 from .episode import Episode
-from .event import Event, RankedEvent
-
-
-@dataclass
-class SearchResult:
-    """搜索结果
-
-    Attributes:
-        query: 原始查询
-        entities: 提取的实体列表
-        ranked_events: 所有排序后的事件
-        top_k_events: Top-K事件
-        answer: LLM生成的回答（可选）
-    """
-
-    query: str
-    entities: list[str] = field(default_factory=list)
-    ranked_events: list[RankedEvent] = field(default_factory=list)
-    top_k_events: list[RankedEvent] = field(default_factory=list)
-    answer: Optional[str] = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "query": self.query,
-            "entities": self.entities,
-            "ranked_events": [e.to_dict() for e in self.ranked_events],
-            "top_k_events": [e.to_dict() for e in self.top_k_events],
-            "answer": self.answer,
-        }
+from .event import Event
 
 
 @dataclass
@@ -80,7 +51,6 @@ class LTMemory(ABC):
 
     核心操作：
     - ingest: 摄入Episode，提取并存储Event
-    - search: 搜索记忆，返回相关事件
     - get_event: 获取单个事件
     - cleanup: 清理过期数据
     """
@@ -91,40 +61,14 @@ class LTMemory(ABC):
 
         这是记忆构建的核心入口，执行以下流程：
         1. LLM提取事件和实体
-        2. 相似度搜索
-        3. 合并或创建事件
-        4. 更新实体关系
+        2. 规范化并持久化事件
+        3. 更新实体关系和相关图结构
 
         Args:
             episode: 原始对话片段
 
         Returns:
             IngestResult 包含事件和构建信息
-        """
-        pass
-
-    @abstractmethod
-    def search(
-        self,
-        query: str,
-        top_k: int = 5,
-        generate_answer: bool = True,
-    ) -> SearchResult:
-        """搜索记忆
-
-        执行四阶段检索管道：
-        1. 实体提取
-        2. 图路径搜索
-        3. 加权重排序
-        4. LLM总结（可选）
-
-        Args:
-            query: 用户查询
-            top_k: 返回的事件数量
-            generate_answer: 是否生成LLM回答
-
-        Returns:
-            SearchResult 包含排序事件和可选回答
         """
         pass
 
@@ -149,20 +93,6 @@ class LTMemory(ABC):
 
         Returns:
             实体ID列表
-        """
-        pass
-
-    @abstractmethod
-    def decay_weights(self, current_time: int) -> dict[str, float]:
-        """计算所有事件的衰减权重
-
-        用于观察和调试记忆衰减状态。
-
-        Args:
-            current_time: 当前时间戳
-
-        Returns:
-            事件ID到权重的映射
         """
         pass
 

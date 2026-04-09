@@ -650,8 +650,6 @@ def main() -> None:
             "enable_dynamic_evolution": True,
             "append_first_mode": not args.legacy_merge,
             "deferred_evolution": args.deferred_evolution,
-            "generate_answer": False,
-            "search_top_k": 5,
         },
     )
 

@@ -732,7 +732,6 @@ body::before {
     </div>
     <div class="tabs" id="tabs">
       <button class="tab active" data-view="ingest">Ingest Pipeline</button>
-      <button class="tab" data-view="search">Search Pipeline</button>
       <button class="tab" data-view="evolution">Evolution & Consolidation</button>
       <button class="tab" data-view="schema">Graph Schema</button>
     </div>
@@ -759,20 +758,6 @@ body::before {
       <div class="legend-item"><div class="legend-dot" style="background:var(--stage-evolution)"></div>演化引擎</div>
     </div>
     <div class="pipeline" id="pipeline-ingest"></div>
-  </div>
-
-  <div id="view-search" class="pipeline-view hidden">
-    <div class="hero">
-      <h2>Search Pipeline</h2>
-      <p>查询经过实体提取、双路径候选收集（上下文路由 + 实体路由）、多维度加权排序，最终由 LLM 基于 Top-K 事件生成自然语言回答。</p>
-    </div>
-    <div class="legend">
-      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-input)"></div>查询输入</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-process)"></div>候选收集</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-llm)"></div>LLM 调用</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-output)"></div>结果输出</div>
-    </div>
-    <div class="pipeline" id="pipeline-search"></div>
   </div>
 
   <div id="view-evolution" class="pipeline-view hidden">
@@ -1208,185 +1193,6 @@ should_link 才能为 true。`,
     <span class="key">"total_ms"</span>: <span class="num">4916</span>,
     <span class="key">"event_count"</span>: <span class="num">2</span>
   }
-}`,
-    },
-  },
-];
-
-const SEARCH_STAGES = [
-  {
-    id: 'query-input',
-    name: '查询输入',
-    desc: '接收用户自然语言查询，配置检索参数',
-    color: 'var(--stage-input)',
-    tags: ['入口'],
-    detail: {
-      steps: [
-        { text: '接收查询字符串 <code>query</code>', sub: '用户的自然语言问题' },
-        { text: '配置检索参数', sub: 'top_k (默认5), generate_answer (默认true)' },
-      ],
-      input: `<span class="comment">// 用户查询</span>
-{
-  <span class="key">"query"</span>: <span class="str">"用户通常在哪里开会？"</span>,
-  <span class="key">"top_k"</span>: <span class="num">5</span>,
-  <span class="key">"generate_answer"</span>: <span class="bool">true</span>
-}`,
-      params: [
-        ['SEARCH_TOP_K', '5', '默认返回事件数'],
-        ['SEARCH_MAX_TOKENS', '512', 'LLM 生成最大 token'],
-        ['SEARCH_TEMPERATURE', '0.7', 'LLM 温度'],
-      ],
-    },
-  },
-  {
-    id: 'entity-extract',
-    name: '实体提取',
-    desc: '从查询中提取关键实体（当前版本已禁用，返回空列表）',
-    color: 'var(--stage-process)',
-    tags: ['已禁用'],
-    detail: {
-      steps: [
-        { text: '<code>_extract_entities(query)</code> 被调用', sub: '当前实现直接返回 []' },
-        { text: '设计意图：从查询中提取人名、地名、事物等实体', sub: '用于实体路由的匹配检索' },
-        { text: '当前版本依赖 Context 路由作为主要检索路径', sub: '实体提取可在未来版本重新启用' },
-      ],
-      output: `<span class="comment">// 当前版本</span>
-entities = []  <span class="comment">// 实体提取已禁用</span>`,
-    },
-  },
-  {
-    id: 'candidate-collect',
-    name: '双路径候选收集',
-    desc: '通过上下文路由和实体路由两条路径收集候选事件，然后合并去重',
-    color: 'var(--stage-process)',
-    tags: ['核心', '双路径'],
-    detail: {
-      steps: [
-        { text: '<strong>实体路由 (Entity Route)</strong>', sub: 'entity_matcher.match(entities) → 通过实体匹配找到关联事件' },
-        { text: '<strong>上下文路由 (Context Route)</strong> — 主要路径', sub: 'dynamic_engine.retrieve_candidate_events_for_query(query)' },
-        { text: '上下文路由内部: 查找匹配的 Context 节点', sub: 'store.retrieve_candidate_contexts_for_query(query, limit=16)' },
-        { text: '上下文路由内部: 通过 Context 关联获取事件', sub: 'store.retrieve_events_by_contexts(context_ids, limit=40)' },
-        { text: '合并去重: 按 <code>event_id</code> 合并两路结果', sub: '合并 entity_match_weights, 取最大 c_valid/t_valid' },
-        { text: '演化增强 <code>enrich_raw_events_for_retrieval()</code>', sub: '为每个候选事件计算 evolution_score, context_match, validity 等因子' },
-      ],
-      input: `<span class="comment">// 查询 + 实体</span>
-query = <span class="str">"用户通常在哪里开会？"</span>
-entities = []`,
-      output: `<span class="comment">// 合并后的候选事件列表</span>
-[
-  {
-    <span class="key">"event_id"</span>: <span class="str">"evt_8a3f2c"</span>,
-    <span class="key">"summary"</span>: <span class="str">"与同事在星巴克讨论技术方案"</span>,
-    <span class="key">"match_type"</span>: <span class="str">"context"</span>,
-    <span class="key">"c_valid"</span>: <span class="num">4</span>,
-    <span class="key">"evolution_score"</span>: <span class="num">0.72</span>,
-    <span class="key">"context_match"</span>: <span class="num">0.85</span>,
-    ...
-  },
-  <span class="comment">// ... 更多候选</span>
-]
-
-<span class="comment">// 调试信息</span>
-{
-  <span class="key">"entity_route_hit_count"</span>: <span class="num">0</span>,
-  <span class="key">"context_route_hit_count"</span>: <span class="num">12</span>,
-  <span class="key">"merged_candidate_count"</span>: <span class="num">12</span>
-}`,
-      params: [
-        ['CONTEXT_QUERY_CANDIDATE_LIMIT', '16', '上下文候选数上限'],
-        ['RETRIEVAL_DEFAULT_CANDIDATE_LIMIT', '40', '事件候选数上限'],
-      ],
-    },
-  },
-  {
-    id: 'ranking',
-    name: '多维度加权排序',
-    desc: '基于时间衰减、实体匹配、演化感知的综合权重公式对候选事件排序',
-    color: 'var(--stage-process)',
-    tags: ['核心', '排序'],
-    detail: {
-      steps: [
-        { text: '硬过滤: 排除已过期和已失效事件', sub: 't_expired != null → weight=0; t_invalid != null && now >= t_invalid → weight=0' },
-        { text: '计算基础权重 <code>base_weight = log(1 + c_valid)</code>', sub: '基于确认次数的对数增长' },
-        { text: '计算时间衰减因子 <code>temporal = exp(-decay_rate * time_diff)</code>', sub: '越久远的事件权重越低' },
-        { text: '计算实体匹配因子 <code>entity_factor</code>', sub: '取所有匹配实体权重的最大值' },
-        { text: '计算演化感知因子 <code>evolution_factor = max(0.1, 1.0 + 0.3 * evolution_score)</code>', sub: '综合 context_match, validity, support_norm, drift_penalty, decay_penalty' },
-        { text: '最终权重 <code>weight = base × temporal × entity × evolution</code>', sub: '按权重降序排列，取 Top-K' },
-      ],
-      formula: 'w = log(1 + c_valid) * exp(-decay * t_diff) * entity_factor * evolution_factor',
-      output: `<span class="comment">// RankedEvent 列表 (按 weight 降序)</span>
-[
-  {
-    <span class="key">"event_id"</span>: <span class="str">"evt_8a3f2c"</span>,
-    <span class="key">"summary"</span>: <span class="str">"与同事在星巴克讨论技术方案"</span>,
-    <span class="key">"weight"</span>: <span class="num">1.8234</span>,
-    <span class="key">"c_valid"</span>: <span class="num">4</span>,
-    <span class="key">"match_type"</span>: <span class="str">"context"</span>,
-    <span class="comment">// debug:</span>
-    <span class="key">"base_weight"</span>: <span class="num">1.6094</span>,  <span class="comment">// log(1+4)</span>
-    <span class="key">"temporal_factor"</span>: <span class="num">0.9512</span>,
-    <span class="key">"entity_factor"</span>: <span class="num">1.0</span>,
-    <span class="key">"evolution_factor"</span>: <span class="num">1.19</span>
-  },
-  ...
-]`,
-      params: [
-        ['DECAY_RATE', '5e-8', '时间衰减率'],
-        ['RETRIEVAL_WEIGHT_EVENT_SIM', '0.45', '文本相似度权重'],
-        ['RETRIEVAL_WEIGHT_CONTEXT', '0.15', '上下文强度权重'],
-        ['RETRIEVAL_WEIGHT_RECENCY', '0.20', '时效性权重'],
-        ['RETRIEVAL_WEIGHT_VALIDITY', '0.10', '有效性权重'],
-        ['RETRIEVAL_WEIGHT_SUPPORT', '0.10', '确认度权重'],
-      ],
-    },
-  },
-  {
-    id: 'answer-gen',
-    name: 'LLM 答案生成',
-    desc: '基于 Top-K 事件调用 LLM 生成自然语言回答',
-    color: 'var(--stage-llm)',
-    tags: ['LLM', '可选'],
-    detail: {
-      steps: [
-        { text: '格式化事件上下文', sub: '将 Top-K 的 RankedEvent 转为文本: "事件 0 (权重: 1.82, 确认次数: 4): ..."' },
-        { text: '调用 LLM 生成回答', sub: 'generate_answer_system.txt + generate_answer_user.txt' },
-        { text: '返回自然语言回答', sub: '如果无事件或生成失败，返回默认提示' },
-      ],
-      prompt: `<div class="prompt-label">System Prompt</div>
-你是一个车载智能agent，会根据从长期记忆库中检索到的信息回答用户的问题。
-
-<div class="prompt-label">User Prompt (格式化后)</div>
-以下是从记忆库中检索到的相关事件：
-
-事件 0 (权重: 1.8234, 确认次数: 4):
-- 摘要: 与同事在星巴克讨论技术方案
-- 动作: 讨论技术方案并做出架构决策
-...
-
-用户问题: 用户通常在哪里开会？`,
-      output: `<span class="comment">// LLM 生成的回答</span>
-<span class="str">"根据记忆记录，用户通常在星巴克等咖啡厅与同事讨论工作事宜。
-最近一次是在下午讨论新项目的技术方案。"</span>`,
-    },
-  },
-  {
-    id: 'search-result',
-    name: 'SearchResult 输出',
-    desc: '返回完整检索结果: 查询、实体、排序事件列表和 LLM 回答',
-    color: 'var(--stage-output)',
-    tags: ['输出'],
-    detail: {
-      output: `<span class="comment">// SearchResult</span>
-{
-  <span class="key">"query"</span>: <span class="str">"用户通常在哪里开会？"</span>,
-  <span class="key">"entities"</span>: [],
-  <span class="key">"ranked_events"</span>: [         <span class="comment">// 全部排序事件</span>
-    RankedEvent { weight: <span class="num">1.82</span>, summary: <span class="str">"..."</span> },
-    RankedEvent { weight: <span class="num">1.45</span>, summary: <span class="str">"..."</span> },
-    ...
-  ],
-  <span class="key">"top_k_events"</span>: [...],     <span class="comment">// Top-5 事件</span>
-  <span class="key">"answer"</span>: <span class="str">"根据记忆记录，用户通常在..."</span>
 }`,
     },
   },
@@ -1980,7 +1786,6 @@ function stopFlowAnimation() {
 
 document.addEventListener('DOMContentLoaded', () => {
   renderPipeline('pipeline-ingest', INGEST_STAGES);
-  renderPipeline('pipeline-search', SEARCH_STAGES);
   renderPipeline('pipeline-evolution', EVOLUTION_STAGES);
   renderSchema();
 

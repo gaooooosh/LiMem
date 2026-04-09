@@ -80,8 +80,6 @@ def main():
             "offline_mode": True,
             "enable_dynamic_evolution": True,
             "append_first_mode": True,
-            "generate_answer": False,
-            "search_top_k": 5,
         },
     )
 
@@ -102,12 +100,7 @@ def main():
         "播放媒体和勿扰模式有什么共同情景？",
     ]
     for q in queries:
-        result = ltm.search(q, top_k=5, generate_answer=False)
-        compact = [f"{e.event_id[:14]}.. | w={e.weight:.4f} | {e.summary[:42]}" for e in result.top_k_events]
         print(f"\nQuery: {q}")
-        print("Top events:")
-        for row in compact:
-            print(" ", row)
         evo = ltm.retrieve_memories(q, top_k=5)
         print("Evolution-aware compressed:")
         for row in evo[:3]:
