@@ -1,0 +1,1998 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiMem Pipeline Visualizer</title>
+<style>
+:root {
+  --bg: #1a1a2e;
+  --bg-card: #16213e;
+  --bg-card-hover: #1a2744;
+  --bg-expand: #0f1a2e;
+  --border: #2a3a5c;
+  --border-active: #4a9eff;
+  --text: #e0e6ed;
+  --text-dim: #8892a4;
+  --text-bright: #ffffff;
+  --accent-blue: #4a9eff;
+  --accent-cyan: #00d4aa;
+  --accent-purple: #a855f7;
+  --accent-orange: #f59e0b;
+  --accent-red: #ef4444;
+  --accent-green: #22c55e;
+  --accent-pink: #ec4899;
+  --stage-input: #f59e0b;
+  --stage-llm: #a855f7;
+  --stage-process: #4a9eff;
+  --stage-storage: #22c55e;
+  --stage-output: #00d4aa;
+  --stage-evolution: #ec4899;
+  --connector: #2a3a5c;
+  --connector-active: #4a9eff;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.3);
+  --shadow-glow: 0 0 20px rgba(74,158,255,0.15);
+  --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Background pattern */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(74,158,255,0.04) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(168,85,247,0.04) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, rgba(0,212,170,0.03) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Header */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(26,26,46,0.92);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border);
+  padding: 16px 32px;
+}
+
+.header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.logo-text {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-bright);
+  letter-spacing: -0.02em;
+}
+
+.logo-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  background: rgba(42,58,92,0.4);
+  border-radius: 10px;
+  padding: 4px;
+}
+
+.tab {
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+  font-family: var(--font-sans);
+}
+
+.tab:hover { color: var(--text); background: rgba(74,158,255,0.1); }
+.tab.active {
+  color: var(--text-bright);
+  background: var(--accent-blue);
+  box-shadow: 0 2px 8px rgba(74,158,255,0.3);
+}
+
+/* Controls */
+.controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: var(--font-sans);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn:hover { border-color: var(--accent-blue); color: var(--text-bright); }
+.btn-primary {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+.btn-primary:hover { background: #3d8eff; box-shadow: 0 2px 12px rgba(74,158,255,0.3); }
+
+/* Main content */
+.main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Pipeline hero */
+.hero {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.hero h2 {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+
+.hero p {
+  font-size: 15px;
+  color: var(--text-dim);
+  max-width: 640px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* Legend */
+.legend {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-bottom: 32px;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+/* Pipeline container */
+.pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+}
+
+/* Stage card */
+.stage {
+  position: relative;
+  margin-bottom: 8px;
+}
+
+.stage-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: var(--transition);
+  cursor: pointer;
+}
+
+.stage-card:hover {
+  border-color: var(--border-active);
+  background: var(--bg-card-hover);
+  box-shadow: var(--shadow-glow);
+}
+
+.stage-card.expanded {
+  border-color: var(--border-active);
+  box-shadow: var(--shadow-glow);
+}
+
+/* Stage header */
+.stage-header {
+  display: flex;
+  align-items: center;
+  padding: 16px 20px;
+  gap: 16px;
+}
+
+.stage-number {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.stage-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.stage-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 2px;
+}
+
+.stage-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.stage-tags {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.stage-tag {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(74,158,255,0.1);
+  color: var(--accent-blue);
+  white-space: nowrap;
+}
+
+.stage-tag.llm { background: rgba(168,85,247,0.15); color: var(--accent-purple); }
+.stage-tag.db { background: rgba(34,197,94,0.15); color: var(--accent-green); }
+.stage-tag.embed { background: rgba(0,212,170,0.15); color: var(--accent-cyan); }
+
+.stage-expand {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(74,158,255,0.1);
+  color: var(--accent-blue);
+  flex-shrink: 0;
+  transition: var(--transition);
+  font-size: 14px;
+}
+
+.stage-card.expanded .stage-expand { transform: rotate(180deg); }
+
+/* Connector between stages */
+.connector {
+  display: flex;
+  justify-content: center;
+  height: 24px;
+  position: relative;
+}
+
+.connector-line {
+  width: 2px;
+  height: 100%;
+  background: var(--connector);
+  position: relative;
+}
+
+.connector-line::after {
+  content: '';
+  position: absolute;
+  bottom: -4px;
+  left: -3px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid var(--connector);
+}
+
+.connector.active .connector-line { background: var(--connector-active); }
+.connector.active .connector-line::after { border-top-color: var(--connector-active); }
+
+/* Data flow animation */
+@keyframes flowDown {
+  0% { transform: translateY(-8px); opacity: 0; }
+  30% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { transform: translateY(24px); opacity: 0; }
+}
+
+.connector.animating .connector-line::before {
+  content: '';
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  box-shadow: 0 0 8px var(--accent-blue);
+  left: -2px;
+  animation: flowDown 0.8s ease-in-out infinite;
+}
+
+/* Stage detail panel */
+.stage-detail {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.stage-card.expanded .stage-detail {
+  max-height: 3000px;
+}
+
+.detail-inner {
+  padding: 0 20px 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* Detail sections */
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.detail-section {
+  background: var(--bg-expand);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  border: 1px solid rgba(42,58,92,0.5);
+}
+
+.detail-section.full-width {
+  grid-column: 1 / -1;
+}
+
+.detail-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-label .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+/* Code block */
+.code-block {
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text);
+  border: 1px solid rgba(42,58,92,0.3);
+}
+
+.code-block .key { color: var(--accent-cyan); }
+.code-block .str { color: var(--accent-orange); }
+.code-block .num { color: var(--accent-purple); }
+.code-block .bool { color: var(--accent-pink); }
+.code-block .comment { color: var(--text-dim); font-style: italic; }
+.code-block .highlight { color: var(--accent-blue); font-weight: 600; }
+
+/* Step list */
+.step-list {
+  list-style: none;
+  counter-reset: step;
+}
+
+.step-list li {
+  counter-increment: step;
+  position: relative;
+  padding: 8px 0 8px 32px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  border-bottom: 1px solid rgba(42,58,92,0.3);
+}
+
+.step-list li:last-child { border-bottom: none; }
+
+.step-list li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(74,158,255,0.15);
+  color: var(--accent-blue);
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.step-list li .sub { color: var(--text-dim); font-size: 12px; display: block; margin-top: 2px; }
+.step-list li code {
+  background: rgba(74,158,255,0.1);
+  color: var(--accent-blue);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Parameter table */
+.param-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.param-table th {
+  text-align: left;
+  padding: 6px 8px;
+  color: var(--text-dim);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+
+.param-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(42,58,92,0.3);
+}
+
+.param-table td:first-child {
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  white-space: nowrap;
+}
+
+.param-table td:last-child {
+  font-family: var(--font-mono);
+  color: var(--accent-orange);
+}
+
+/* Formula */
+.formula {
+  background: rgba(168,85,247,0.08);
+  border: 1px solid rgba(168,85,247,0.2);
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent-purple);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+/* Graph schema mini */
+.schema-mini {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.schema-node {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid;
+}
+
+.schema-edge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+.schema-edge .arrow { color: var(--accent-blue); }
+
+/* Prompt preview */
+.prompt-preview {
+  background: rgba(168,85,247,0.06);
+  border: 1px solid rgba(168,85,247,0.15);
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.prompt-preview .prompt-label {
+  color: var(--accent-purple);
+  font-weight: 600;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+/* Branch visualization */
+.branch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.branch-arm {
+  background: var(--bg-expand);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  border: 1px solid rgba(42,58,92,0.5);
+  position: relative;
+}
+
+.branch-arm::before {
+  content: attr(data-label);
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-blue);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.branch-arm.context::before { color: var(--accent-purple); }
+.branch-arm.entity::before { color: var(--accent-cyan); }
+
+/* Data flow animation overlay */
+.flow-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* Graph visualization area */
+.graph-schema-container {
+  margin-top: 32px;
+  padding: 24px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.graph-schema-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.graph-svg-container {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.graph-svg-container svg {
+  display: block;
+  margin: 0 auto;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .header-inner { flex-wrap: wrap; }
+  .main { padding: 16px; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .branch { grid-template-columns: 1fr; }
+  .hero h2 { font-size: 22px; }
+}
+
+/* Hidden class */
+.hidden { display: none !important; }
+
+/* Animate stages appearing */
+@keyframes stageIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.stage { animation: stageIn 0.3s ease-out backwards; }
+.stage:nth-child(2) { animation-delay: 0.05s; }
+.stage:nth-child(3) { animation-delay: 0.1s; }
+.stage:nth-child(4) { animation-delay: 0.15s; }
+.stage:nth-child(5) { animation-delay: 0.2s; }
+.stage:nth-child(6) { animation-delay: 0.25s; }
+.stage:nth-child(7) { animation-delay: 0.3s; }
+.stage:nth-child(8) { animation-delay: 0.35s; }
+.stage:nth-child(9) { animation-delay: 0.4s; }
+.stage:nth-child(10) { animation-delay: 0.45s; }
+.stage:nth-child(11) { animation-delay: 0.5s; }
+.stage:nth-child(12) { animation-delay: 0.55s; }
+.stage:nth-child(13) { animation-delay: 0.6s; }
+
+/* Status badge */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.status-badge.active { background: rgba(34,197,94,0.15); color: var(--accent-green); }
+.status-badge.disabled { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+.status-badge.optional { background: rgba(245,158,11,0.15); color: var(--accent-orange); }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-inner">
+    <div class="logo">
+      <div class="logo-icon">Li</div>
+      <div>
+        <div class="logo-text">LiMem Pipeline</div>
+        <div class="logo-sub">Algorithm Data Flow Visualizer</div>
+      </div>
+    </div>
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-view="ingest">Ingest Pipeline</button>
+      <button class="tab" data-view="search">Search Pipeline</button>
+      <button class="tab" data-view="evolution">Evolution & Consolidation</button>
+      <button class="tab" data-view="schema">Graph Schema</button>
+    </div>
+    <div class="controls">
+      <button class="btn" id="btnCollapseAll" title="收起全部">Collapse All</button>
+      <button class="btn btn-primary" id="btnAnimate" title="播放数据流动画">Play Flow</button>
+    </div>
+  </div>
+</div>
+
+<!-- Main content -->
+<div class="main">
+  <!-- Each pipeline view -->
+  <div id="view-ingest" class="pipeline-view">
+    <div class="hero">
+      <h2>Ingest Pipeline</h2>
+      <p>Episode (原始对话) 经过多阶段处理，抽取为结构化 Event，嵌入向量空间，持久化到图数据库，并触发动态演化引擎生成 Context 和 Event 关系。</p>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-input)"></div>数据输入</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-llm)"></div>LLM 调用</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-process)"></div>逻辑处理</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-storage)"></div>数据库操作</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-evolution)"></div>演化引擎</div>
+    </div>
+    <div class="pipeline" id="pipeline-ingest"></div>
+  </div>
+
+  <div id="view-search" class="pipeline-view hidden">
+    <div class="hero">
+      <h2>Search Pipeline</h2>
+      <p>查询经过实体提取、双路径候选收集（上下文路由 + 实体路由）、多维度加权排序，最终由 LLM 基于 Top-K 事件生成自然语言回答。</p>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-input)"></div>查询输入</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-process)"></div>候选收集</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-llm)"></div>LLM 调用</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-output)"></div>结果输出</div>
+    </div>
+    <div class="pipeline" id="pipeline-search"></div>
+  </div>
+
+  <div id="view-evolution" class="pipeline-view hidden">
+    <div class="hero">
+      <h2>Evolution & Consolidation</h2>
+      <p>动态演化引擎周期性扫描记忆图谱，执行事件合并、上下文合并、节点衰减、弱边裁剪和事件归档，保持图谱健康和精简。</p>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-evolution)"></div>合并检测</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-process)"></div>图重写</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--stage-storage)"></div>状态更新</div>
+    </div>
+    <div class="pipeline" id="pipeline-evolution"></div>
+  </div>
+
+  <div id="view-schema" class="pipeline-view hidden">
+    <div class="hero">
+      <h2>Graph Database Schema</h2>
+      <p>LiMem 使用 Kuzu 图数据库存储记忆图谱。以下是完整的节点表和关系表结构。</p>
+    </div>
+    <div id="schema-content"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// Pipeline stage definitions
+// ============================================================
+
+const INGEST_STAGES = [
+  {
+    id: 'episode-input',
+    name: 'Episode 输入',
+    desc: '接收原始对话文本，创建 Episode 对象并持久化',
+    color: 'var(--stage-input)',
+    tags: ['入口'],
+    detail: {
+      steps: [
+        { text: '接收原始文本 <code>content</code>、时间戳 <code>timestamp</code> 和元数据 <code>metadata</code>', sub: '文本可以是一段对话、一条记录、一个埋点事件' },
+        { text: '创建 <code>Episode</code> 对象，自动生成 UUID', sub: 'Episode.id = uuid4().hex' },
+        { text: '持久化到 Kuzu 图数据库的 <code>Episode</code> 节点表', sub: 'store.save_episode(episode)' },
+        { text: 'Episode 有 TTL (<code>3600s</code>)，超时后会被自动清理', sub: 'Episode 是临时输入载体，不参与长期记忆图谱' },
+      ],
+      input: `{
+  <span class="key">"content"</span>: <span class="str">"今天下午两点和同事在星巴克讨论了新项目的技术方案，\\n决定使用 GraphRAG 架构来构建知识图谱。"</span>,
+  <span class="key">"timestamp"</span>: <span class="num">1712649600</span>,
+  <span class="key">"metadata"</span>: { <span class="key">"source"</span>: <span class="str">"chat"</span>, <span class="key">"session_id"</span>: <span class="str">"s_abc123"</span> }
+}`,
+      output: `<span class="comment">// Episode 对象</span>
+{
+  <span class="key">"id"</span>: <span class="str">"a3f7c2e1..."</span>,
+  <span class="key">"content"</span>: <span class="str">"今天下午两点和同事在星巴克讨论了新项目的..."</span>,
+  <span class="key">"timestamp"</span>: <span class="num">1712649600</span>,
+  <span class="key">"metadata"</span>: { <span class="key">"source"</span>: <span class="str">"chat"</span> }
+}`,
+      params: [
+        ['EPISODE_TTL', '3600', '秒，Episode 过期时间'],
+        ['MAX_EPISODES', '6', '最大 Episode 缓存数'],
+      ],
+    },
+  },
+  {
+    id: 'two-stage-extract',
+    name: 'Two-Stage 事件抽取',
+    desc: 'LLM 驱动的两阶段抽取：长文本先分段，再结构化提取事件',
+    color: 'var(--stage-llm)',
+    tags: ['LLM', '核心'],
+    detail: {
+      steps: [
+        { text: '判断文本长度是否超过 <code>4000</code> 字符', sub: '短文本走单次抽取路径，长文本走分段路径' },
+        { text: '<strong>[长文本路径] Stage 1: 文本分段</strong>', sub: 'LLM 调用 extract_event_segments prompts，将长文本切分为独立语义段' },
+        { text: '<strong>[长文本路径] Stage 2: 批量结构化</strong>', sub: 'LLM 调用 extract_event_struct_batch prompts，对所有段落批量提取事件' },
+        { text: '<strong>[短文本路径] 单次抽取</strong>', sub: 'LLM 调用 extract_event_only prompts，直接从原文提取事件' },
+        { text: '标准化抽取结果 <code>normalize_event_payload()</code>', sub: '验证 summary/action/causality，清理 evidence，填充 time_range' },
+      ],
+      prompt: `<div class="prompt-label">System Prompt (extract_event_only_system.txt)</div>
+你是长期记忆的事件抽取器。
+
+Event 是长期记忆中的最小动态变化单元，表示某个主体
+在某个时间点或时间区间内发生的一次可识别变化。
+
+只有满足以下条件的内容才应抽取为 Event：
+1. 有时间锚点或相对时序位置
+2. 有主体或作用源
+3. 发生了变化
+4. 能独立作为图中的一个节点
+
+输出 JSON：
+{ "events": [{ "summary", "participants", "action", "time", "causality" }] }`,
+      input: `<span class="comment">// Episode.content (原始文本)</span>
+<span class="str">"今天下午两点和同事在星巴克讨论了新项目的技术方案，
+决定使用 GraphRAG 架构来构建知识图谱。"</span>`,
+      output: `<span class="comment">// ExtractionResult</span>
+{
+  <span class="key">"events_data"</span>: [
+    {
+      <span class="key">"summary"</span>: <span class="str">"下午两点与同事在星巴克讨论新项目技术方案，决定采用 GraphRAG 架构"</span>,
+      <span class="key">"action"</span>: <span class="str">"讨论技术方案并做出架构决策"</span>,
+      <span class="key">"causality"</span>: <span class="str">"需要为新项目选择合适的技术架构"</span>,
+      <span class="key">"participants"</span>: [
+        { <span class="key">"role"</span>: <span class="str">"用户"</span>, <span class="key">"seat"</span>: <span class="str">""</span> },
+        { <span class="key">"role"</span>: <span class="str">"同事"</span>, <span class="key">"seat"</span>: <span class="str">""</span> }
+      ],
+      <span class="key">"time"</span>: { <span class="key">"start"</span>: <span class="num">0</span>, <span class="key">"end"</span>: <span class="num">0</span>, <span class="key">"text"</span>: <span class="str">"今天下午两点"</span> }
+    }
+  ],
+  <span class="key">"confidence"</span>: <span class="num">1.0</span>
+}`,
+      params: [
+        ['TEXT_THRESHOLD', '4000', '字符，触发分段抽取的阈值'],
+        ['GENERATION_MODEL', 'qwen-plus', 'LLM 生成模型'],
+        ['LLM_CONCURRENCY', '4', '并发 LLM 调用数'],
+      ],
+      branches: {
+        left: { label: '短文本 (≤ 4000 chars)', content: 'extract_event_only\n单次 LLM 调用\n直接输出事件列表' },
+        right: { label: '长文本 (> 4000 chars)', content: 'Stage 1: extract_event_segments\nStage 2: extract_event_struct_batch\n分段 → 批量结构化' },
+      },
+    },
+  },
+  {
+    id: 'event-frame',
+    name: 'Event 帧构建',
+    desc: '将抽取结果转换为标准 Event 对象，生成确定性 ID',
+    color: 'var(--stage-process)',
+    tags: ['转换'],
+    detail: {
+      steps: [
+        { text: '遍历每个抽取出的事件字典', sub: '一个 Episode 可能产生多个 Event' },
+        { text: '生成事件 ID: <code>id = hash(summary)</code>', sub: 'Append-First 模式下使用 append_first_event_id() 加入时间戳避免碰撞' },
+        { text: '构建时间范围 <code>time_range</code>', sub: '{ start, end, display_time_bucket } — 时间桶用于检索分组' },
+        { text: '组装完整 Event 对象', sub: '填入 summary, action, causality, participants, evidence, payload 等全部字段' },
+        { text: '有效性过滤 <code>_is_effective_event()</code>', sub: '过滤掉 summary 为空或无效的事件' },
+      ],
+      input: `<span class="comment">// 抽取结果字典</span>
+{
+  <span class="key">"summary"</span>: <span class="str">"与同事在星巴克讨论新项目技术方案..."</span>,
+  <span class="key">"action"</span>: <span class="str">"讨论技术方案并做出架构决策"</span>,
+  <span class="key">"causality"</span>: <span class="str">"需要为新项目选择合适的技术架构"</span>,
+  ...
+}`,
+      output: `<span class="comment">// Event 对象</span>
+{
+  <span class="key">"id"</span>: <span class="str">"evt_8a3f2c..."</span>,     <span class="comment">// hash(summary) + timestamp</span>
+  <span class="key">"summary"</span>: <span class="str">"与同事在星巴克讨论新项目技术方案..."</span>,
+  <span class="key">"action"</span>: <span class="str">"讨论技术方案并做出架构决策"</span>,
+  <span class="key">"causality"</span>: <span class="str">"需要选择合适的技术架构"</span>,
+  <span class="key">"time_range"</span>: {
+    <span class="key">"start"</span>: <span class="num">1712649600</span>,
+    <span class="key">"end"</span>: <span class="num">1712649600</span>,
+    <span class="key">"display_time_bucket"</span>: <span class="str">"2024-04-09 下午"</span>
+  },
+  <span class="key">"timestamp"</span>: <span class="num">1712649600</span>,
+  <span class="key">"last_active"</span>: <span class="num">1712649600</span>,
+  <span class="key">"created_at"</span>: <span class="num">1712649600</span>,
+  <span class="key">"status"</span>: <span class="str">"active"</span>,
+  <span class="key">"support_count"</span>: <span class="num">1</span>,
+  <span class="key">"payload"</span>: {
+    <span class="key">"episode_id"</span>: <span class="str">"a3f7c2e1..."</span>,
+    <span class="key">"episode_text"</span>: <span class="str">"今天下午两点..."</span>,
+    <span class="key">"event_index"</span>: <span class="num">0</span>
+  }
+}`,
+    },
+  },
+  {
+    id: 'embedding',
+    name: '向量嵌入生成',
+    desc: '使用 DashScope Embedding 模型为每个事件的 summary 生成 1024 维向量',
+    color: 'var(--stage-llm)',
+    tags: ['Embedding'],
+    detail: {
+      steps: [
+        { text: '收集所有有效事件的 <code>summary</code> 文本', sub: '多个事件的 summary 合并为批次' },
+        { text: '调用 DashScope Embedding API', sub: '模型: text-embedding-v3, 维度: 1024' },
+        { text: '批次处理，每批 <code>EMBEDDING_BATCH_SIZE=25</code> 条', sub: '避免单次 API 调用过大' },
+        { text: '将向量赋值到每个 Event 的 <code>embedding</code> 字段', sub: 'Event.embedding = vector (list[float], dim=1024)' },
+      ],
+      input: `<span class="comment">// 批量文本</span>
+[
+  <span class="str">"与同事在星巴克讨论新项目技术方案..."</span>,
+  <span class="str">"决定采用 GraphRAG 架构构建知识图谱"</span>
+]`,
+      output: `<span class="comment">// 嵌入向量 (1024 维)</span>
+[
+  [<span class="num">0.0234</span>, <span class="num">-0.0891</span>, <span class="num">0.0456</span>, <span class="num">0.1203</span>, ... <span class="comment">// × 1024</span>],
+  [<span class="num">-0.0112</span>, <span class="num">0.0678</span>, <span class="num">-0.0345</span>, <span class="num">0.0891</span>, ... <span class="comment">// × 1024</span>]
+]`,
+      params: [
+        ['EMBEDDING_MODEL', 'text-embedding-v3', '嵌入模型'],
+        ['EMBEDDING_DIM', '1024', '向量维度'],
+        ['EMBEDDING_BATCH_SIZE', '25', '批次大小'],
+      ],
+    },
+  },
+  {
+    id: 'persist',
+    name: '持久化存储',
+    desc: '将 Event 写入 Kuzu 图数据库，建立 EXTRACTED_FROM 关系',
+    color: 'var(--stage-storage)',
+    tags: ['DB'],
+    detail: {
+      steps: [
+        { text: '批量保存事件 <code>store.save_events_batch(events)</code>', sub: '写入 Event 节点表（id, summary, action, causality, embedding, ...）' },
+        { text: '建立 Episode → Event 链接', sub: 'store.link_events_to_episode_batch(event_ids, episode_id)' },
+        { text: '创建 <code>EXTRACTED_FROM</code> 关系边', sub: 'Event -[EXTRACTED_FROM]-> Episode' },
+      ],
+      input: `<span class="comment">// Event 对象 (带 embedding)</span>
+Event {
+  <span class="key">id</span>: <span class="str">"evt_8a3f2c..."</span>,
+  <span class="key">summary</span>: <span class="str">"与同事在星巴克讨论..."</span>,
+  <span class="key">embedding</span>: [<span class="num">0.0234</span>, ...],
+  ...
+}`,
+      output: `<span class="comment">// 图数据库写入结果</span>
+<span class="highlight">Event 节点</span>: evt_8a3f2c... → Event 表
+<span class="highlight">关系边</span>: (evt_8a3f2c...) -[EXTRACTED_FROM]-> (a3f7c2e1...)
+
+<span class="comment">// _PersistenceOutcome</span>
+{
+  <span class="key">"built_events"</span>: [Event(...)],
+  <span class="key">"is_new_flags"</span>: [<span class="bool">true</span>],
+  <span class="key">"entities_created_total"</span>: <span class="num">0</span>
+}`,
+      graphWrite: 'Event -[EXTRACTED_FROM]-> Episode',
+    },
+  },
+  {
+    id: 'context-extract',
+    name: '上下文抽取',
+    desc: '从事件中检测上下文候选，通过 LLM 提取可复用的 Context 节点',
+    color: 'var(--stage-evolution)',
+    tags: ['LLM', '演化'],
+    detail: {
+      steps: [
+        { text: '上下文候选检测 <code>detect_context_candidates(record, event)</code>', sub: '从 event.payload 中提取 context_note, state, constraint, goal 等信号' },
+        { text: 'LLM 上下文抽取', sub: '调用 extract_context prompts，判断每个候选是否为真正的上下文条件' },
+        { text: '验证和清洗 <code>validate_context_drafts()</code>', sub: '检查 subtype 合法性、summary 长度 ≤64、evidence_span 匹配度 ≥50%' },
+        { text: '规范化 <code>canonicalize_context()</code>', sub: '生成 CanonicalContextKey 用于后续匹配' },
+      ],
+      prompt: `<div class="prompt-label">System Prompt (extract_context_system.txt)</div>
+Core definitions:
+- Event = what happened (action / decision / result)
+- Context = the condition under which the Event happened
+
+Primary objective:
+Produce high-reuse Context, not literal copies.
+
+Rewrite policy:
+- summary must be reusable abstraction
+- Remove one-off details from summary
+- Keep details in evidence_span
+
+Allowed subtypes:
+situation | state | constraint | goal | environment | phase`,
+      input: `<span class="comment">// LLM 输入</span>
+{
+  <span class="key">"record_text"</span>: <span class="str">"今天下午两点..."</span>,
+  <span class="key">"event"</span>: { <span class="key">"summary"</span>: <span class="str">"与同事讨论技术方案..."</span> },
+  <span class="key">"candidate_spans"</span>: [
+    { <span class="key">"text"</span>: <span class="str">"在星巴克"</span>, <span class="key">"signal"</span>: <span class="str">"location"</span>, <span class="key">"subtype_hint"</span>: <span class="str">"environment"</span> }
+  ],
+  <span class="key">"existing_contexts"</span>: [...]  <span class="comment">// 已有上下文，用于复用</span>
+}`,
+      output: `<span class="comment">// ContextDraft 列表</span>
+[
+  {
+    <span class="key">"subtype"</span>: <span class="str">"environment"</span>,
+    <span class="key">"summary"</span>: <span class="str">"咖啡厅会议场景"</span>,
+    <span class="key">"structured_slots"</span>: { <span class="key">"场所类型"</span>: <span class="str">"咖啡厅"</span> },
+    <span class="key">"confidence"</span>: <span class="num">0.85</span>,
+    <span class="key">"evidence_span"</span>: <span class="str">"在星巴克讨论"</span>
+  },
+  {
+    <span class="key">"subtype"</span>: <span class="str">"goal"</span>,
+    <span class="key">"summary"</span>: <span class="str">"技术选型决策"</span>,
+    <span class="key">"structured_slots"</span>: { <span class="key">"决策类型"</span>: <span class="str">"架构选择"</span> },
+    <span class="key">"confidence"</span>: <span class="num">0.78</span>,
+    <span class="key">"evidence_span"</span>: <span class="str">"讨论了新项目的技术方案"</span>
+  }
+]`,
+      params: [
+        ['CONTEXT_EXTRACTION_BATCH_SIZE', '8', '批量上下文抽取'],
+        ['CONTEXT_AWARE_EXTRACTION_LIMIT', '36', '感知已有上下文数量上限'],
+        ['allowed subtypes', 'situation | state | constraint | goal | environment | phase', '允许的上下文子类型'],
+      ],
+    },
+  },
+  {
+    id: 'context-resolve',
+    name: '上下文解析 (Match / Create)',
+    desc: '将 ContextDraft 与已有 Context 匹配：复用已有或创建新节点，检测冲突',
+    color: 'var(--stage-evolution)',
+    tags: ['演化', 'DB'],
+    detail: {
+      steps: [
+        { text: '加载候选上下文 <code>store.find_context_candidates()</code>', sub: '从图数据库获取同类型的活跃 Context 节点，上限 24 个' },
+        { text: '计算相似度 <code>_context_similarity(candidate, draft)</code>', sub: '综合 summary 词法匹配 + structured_slots Jaccard + subtype 匹配' },
+        { text: '判断是否复用', sub: 'similarity >= CONTEXT_REUSE_THRESHOLD (0.50) → 复用已有 Context' },
+        { text: '冲突检测', sub: 'similarity >= CONTEXT_CONFLICT_THRESHOLD (0.72) 且 slots 矛盾 → 处理冲突' },
+        { text: '复用: 更新已有 Context 的 support_count 和 confidence', sub: '创建: 生成新 Context 节点并保存到图数据库' },
+        { text: '关联事件 <code>store.link_event_to_context()</code>', sub: '创建 IN_REL 边，带 confidence 和 weight' },
+      ],
+      input: `<span class="comment">// ContextDraft + 已有 Context 候选</span>
+Draft: { <span class="key">"summary"</span>: <span class="str">"咖啡厅会议场景"</span>, <span class="key">"subtype"</span>: <span class="str">"environment"</span> }
+
+<span class="comment">// 已有候选</span>
+[
+  { <span class="key">"id"</span>: <span class="str">"ctx_01"</span>, <span class="key">"summary"</span>: <span class="str">"会议场景"</span>, <span class="key">"support_count"</span>: <span class="num">3</span> },
+  { <span class="key">"id"</span>: <span class="str">"ctx_02"</span>, <span class="key">"summary"</span>: <span class="str">"户外运动场景"</span>, <span class="key">"support_count"</span>: <span class="num">1</span> },
+]`,
+      output: `<span class="comment">// 匹配结果: 复用 ctx_01 (similarity = 0.72)</span>
+<span class="highlight">Context 更新:</span>
+{
+  <span class="key">"id"</span>: <span class="str">"ctx_01"</span>,
+  <span class="key">"summary"</span>: <span class="str">"会议场景"</span>,
+  <span class="key">"support_count"</span>: <span class="num">4</span>,  <span class="comment">// +1</span>
+  <span class="key">"confidence"</span>: <span class="num">0.88</span>,  <span class="comment">// reinforced</span>
+  <span class="key">"last_seen_at"</span>: <span class="num">1712649600</span>
+}
+
+<span class="highlight">关系边:</span>
+(evt_8a3f2c) -[IN_REL {confidence: 0.85, weight: 1.39}]-> (ctx_01)`,
+      formula: 'weight = max(0.1, min(5.0, 1.0 + log(support_count + 1)))',
+      params: [
+        ['CONTEXT_REUSE_THRESHOLD', '0.50', '复用相似度阈值'],
+        ['CONTEXT_CONFLICT_THRESHOLD', '0.72', '冲突检测阈值'],
+        ['CONTEXT_CANDIDATE_LIMIT', '24', '候选上限'],
+        ['REINFORCEMENT_STEP', '0.06', 'confidence 增强步长'],
+      ],
+    },
+  },
+  {
+    id: 'event-relations',
+    name: '事件关系抽取',
+    desc: 'LLM 判断同一 Episode 中的事件对之间是否存在因果、时序等关系',
+    color: 'var(--stage-evolution)',
+    tags: ['LLM', '演化'],
+    detail: {
+      steps: [
+        { text: '收集同一 scope（session/episode）内的事件对', sub: '只对属于同一输入源的事件做关系判断' },
+        { text: 'LLM 判断每对事件之间是否需要建立关系', sub: '调用 extract_relation_system prompt' },
+        { text: '验证 LLM 输出: <code>should_link</code> 必须为 true', sub: '关系类型: 因果 | 时序相邻 | 前置条件 | 促成 | 后续' },
+        { text: '写入 <code>EVENT_RELATION</code> 关系边', sub: 'store.upsert_event_relation(from_id, to_id, type, confidence, ...)' },
+      ],
+      prompt: `<div class="prompt-label">System Prompt (extract_relation_system.txt)</div>
+你是长期记忆图谱中的"事件关系抽取器"。
+
+任务：基于同一段原文中的两个已抽取事件，
+判断是否需要创建 EVENT_RELATION 边。
+
+relation_type 只能是：
+因果、时序相邻、前置条件、促成、后续
+
+只有当原文对两个事件之间的关系有明确支持时，
+should_link 才能为 true。`,
+      input: `<span class="comment">// 事件对 + 原文</span>
+{
+  <span class="key">"source_text"</span>: <span class="str">"今天下午两点..."</span>,
+  <span class="key">"left"</span>: { <span class="key">"id"</span>: <span class="str">"evt_001"</span>, <span class="key">"summary"</span>: <span class="str">"讨论技术方案"</span> },
+  <span class="key">"right"</span>: { <span class="key">"id"</span>: <span class="str">"evt_002"</span>, <span class="key">"summary"</span>: <span class="str">"决定使用 GraphRAG"</span> }
+}`,
+      output: `<span class="comment">// LLM 输出</span>
+{
+  <span class="key">"should_link"</span>: <span class="bool">true</span>,
+  <span class="key">"relation_type"</span>: <span class="str">"因果"</span>,
+  <span class="key">"from_id"</span>: <span class="str">"evt_001"</span>,
+  <span class="key">"to_id"</span>: <span class="str">"evt_002"</span>,
+  <span class="key">"reason"</span>: <span class="str">"讨论技术方案导致了做出架构决策"</span>,
+  <span class="key">"confidence"</span>: <span class="num">0.88</span>
+}
+
+<span class="highlight">关系边:</span>
+(evt_001) -[EVENT_RELATION {type: "因果", conf: 0.88}]-> (evt_002)`,
+      params: [
+        ['ENABLE_EVENT_RELATIONS', 'true', '是否启用事件关系抽取'],
+        ['relation_types', '因果 | 时序相邻 | 前置条件 | 促成 | 后续', '允许的关系类型'],
+      ],
+    },
+  },
+  {
+    id: 'auto-consolidation',
+    name: '自动整合检查',
+    desc: '检查是否到达整合时间间隔，触发事件合并、上下文合并和节点衰减',
+    color: 'var(--stage-evolution)',
+    tags: ['演化', '可选'],
+    detail: {
+      steps: [
+        { text: '检查距上次整合是否超过 <code>CONSOLIDATION_MIN_INTERVAL</code>', sub: '默认 1800s (30分钟)' },
+        { text: '如果到达间隔，触发 <code>run_consolidation()</code>', sub: '否则跳过，等待下次触发' },
+        { text: '整合包含 5 个子阶段 (详见 Evolution 视图)', sub: '事件合并 → 上下文合并 → 节点衰减 → 弱边裁剪 → 事件归档' },
+      ],
+      output: `<span class="comment">// 整合报告</span>
+{
+  <span class="key">"scanned_events"</span>: <span class="num">24</span>,
+  <span class="key">"candidate_pairs"</span>: <span class="num">3</span>,
+  <span class="key">"merged_events"</span>: <span class="num">1</span>,
+  <span class="key">"merged_contexts"</span>: <span class="num">0</span>,
+  <span class="key">"decayed_nodes"</span>: <span class="num">2</span>,
+  <span class="key">"pruned_edges"</span>: <span class="num">1</span>,
+  <span class="key">"archived_events"</span>: <span class="num">0</span>
+}`,
+      params: [
+        ['ENABLE_AUTO_CONSOLIDATION', 'true', '是否启用自动整合'],
+        ['CONSOLIDATION_MIN_INTERVAL', '1800', '秒，最小整合间隔'],
+      ],
+    },
+  },
+  {
+    id: 'ingest-result',
+    name: 'IngestResult 输出',
+    desc: '返回完整的摄入结果，包括事件、计时指标和演化报告',
+    color: 'var(--stage-output)',
+    tags: ['输出'],
+    detail: {
+      steps: [
+        { text: '汇总所有构建的事件', sub: 'events: list[Event]' },
+        { text: '收集时间指标', sub: 'save_episode_ms, extract_ms, embedding_ms, persist_ms, evolution_ms, total_ms' },
+        { text: '返回 <code>IngestResult</code> 对象', sub: '包含所有事件和处理指标' },
+      ],
+      output: `<span class="comment">// IngestResult</span>
+{
+  <span class="key">"event"</span>: Event(...),        <span class="comment">// 主事件</span>
+  <span class="key">"is_new"</span>: <span class="bool">true</span>,
+  <span class="key">"merged_with"</span>: <span class="bool">null</span>,
+  <span class="key">"entities_created"</span>: <span class="num">2</span>,
+  <span class="key">"events"</span>: [Event(...)],     <span class="comment">// 所有事件</span>
+  <span class="key">"metrics"</span>: {
+    <span class="key">"save_episode_ms"</span>: <span class="num">12</span>,
+    <span class="key">"extract_episode_ms"</span>: <span class="num">1523</span>,
+    <span class="key">"embedding_ms"</span>: <span class="num">234</span>,
+    <span class="key">"persist_events_ms"</span>: <span class="num">45</span>,
+    <span class="key">"dynamic_evolution_ms"</span>: <span class="num">3102</span>,
+    <span class="key">"total_ms"</span>: <span class="num">4916</span>,
+    <span class="key">"event_count"</span>: <span class="num">2</span>
+  }
+}`,
+    },
+  },
+];
+
+const SEARCH_STAGES = [
+  {
+    id: 'query-input',
+    name: '查询输入',
+    desc: '接收用户自然语言查询，配置检索参数',
+    color: 'var(--stage-input)',
+    tags: ['入口'],
+    detail: {
+      steps: [
+        { text: '接收查询字符串 <code>query</code>', sub: '用户的自然语言问题' },
+        { text: '配置检索参数', sub: 'top_k (默认5), generate_answer (默认true)' },
+      ],
+      input: `<span class="comment">// 用户查询</span>
+{
+  <span class="key">"query"</span>: <span class="str">"用户通常在哪里开会？"</span>,
+  <span class="key">"top_k"</span>: <span class="num">5</span>,
+  <span class="key">"generate_answer"</span>: <span class="bool">true</span>
+}`,
+      params: [
+        ['SEARCH_TOP_K', '5', '默认返回事件数'],
+        ['SEARCH_MAX_TOKENS', '512', 'LLM 生成最大 token'],
+        ['SEARCH_TEMPERATURE', '0.7', 'LLM 温度'],
+      ],
+    },
+  },
+  {
+    id: 'entity-extract',
+    name: '实体提取',
+    desc: '从查询中提取关键实体（当前版本已禁用，返回空列表）',
+    color: 'var(--stage-process)',
+    tags: ['已禁用'],
+    detail: {
+      steps: [
+        { text: '<code>_extract_entities(query)</code> 被调用', sub: '当前实现直接返回 []' },
+        { text: '设计意图：从查询中提取人名、地名、事物等实体', sub: '用于实体路由的匹配检索' },
+        { text: '当前版本依赖 Context 路由作为主要检索路径', sub: '实体提取可在未来版本重新启用' },
+      ],
+      output: `<span class="comment">// 当前版本</span>
+entities = []  <span class="comment">// 实体提取已禁用</span>`,
+    },
+  },
+  {
+    id: 'candidate-collect',
+    name: '双路径候选收集',
+    desc: '通过上下文路由和实体路由两条路径收集候选事件，然后合并去重',
+    color: 'var(--stage-process)',
+    tags: ['核心', '双路径'],
+    detail: {
+      steps: [
+        { text: '<strong>实体路由 (Entity Route)</strong>', sub: 'entity_matcher.match(entities) → 通过实体匹配找到关联事件' },
+        { text: '<strong>上下文路由 (Context Route)</strong> — 主要路径', sub: 'dynamic_engine.retrieve_candidate_events_for_query(query)' },
+        { text: '上下文路由内部: 查找匹配的 Context 节点', sub: 'store.retrieve_candidate_contexts_for_query(query, limit=16)' },
+        { text: '上下文路由内部: 通过 Context 关联获取事件', sub: 'store.retrieve_events_by_contexts(context_ids, limit=40)' },
+        { text: '合并去重: 按 <code>event_id</code> 合并两路结果', sub: '合并 entity_match_weights, 取最大 c_valid/t_valid' },
+        { text: '演化增强 <code>enrich_raw_events_for_retrieval()</code>', sub: '为每个候选事件计算 evolution_score, context_match, validity 等因子' },
+      ],
+      input: `<span class="comment">// 查询 + 实体</span>
+query = <span class="str">"用户通常在哪里开会？"</span>
+entities = []`,
+      output: `<span class="comment">// 合并后的候选事件列表</span>
+[
+  {
+    <span class="key">"event_id"</span>: <span class="str">"evt_8a3f2c"</span>,
+    <span class="key">"summary"</span>: <span class="str">"与同事在星巴克讨论技术方案"</span>,
+    <span class="key">"match_type"</span>: <span class="str">"context"</span>,
+    <span class="key">"c_valid"</span>: <span class="num">4</span>,
+    <span class="key">"evolution_score"</span>: <span class="num">0.72</span>,
+    <span class="key">"context_match"</span>: <span class="num">0.85</span>,
+    ...
+  },
+  <span class="comment">// ... 更多候选</span>
+]
+
+<span class="comment">// 调试信息</span>
+{
+  <span class="key">"entity_route_hit_count"</span>: <span class="num">0</span>,
+  <span class="key">"context_route_hit_count"</span>: <span class="num">12</span>,
+  <span class="key">"merged_candidate_count"</span>: <span class="num">12</span>
+}`,
+      params: [
+        ['CONTEXT_QUERY_CANDIDATE_LIMIT', '16', '上下文候选数上限'],
+        ['RETRIEVAL_DEFAULT_CANDIDATE_LIMIT', '40', '事件候选数上限'],
+      ],
+    },
+  },
+  {
+    id: 'ranking',
+    name: '多维度加权排序',
+    desc: '基于时间衰减、实体匹配、演化感知的综合权重公式对候选事件排序',
+    color: 'var(--stage-process)',
+    tags: ['核心', '排序'],
+    detail: {
+      steps: [
+        { text: '硬过滤: 排除已过期和已失效事件', sub: 't_expired != null → weight=0; t_invalid != null && now >= t_invalid → weight=0' },
+        { text: '计算基础权重 <code>base_weight = log(1 + c_valid)</code>', sub: '基于确认次数的对数增长' },
+        { text: '计算时间衰减因子 <code>temporal = exp(-decay_rate * time_diff)</code>', sub: '越久远的事件权重越低' },
+        { text: '计算实体匹配因子 <code>entity_factor</code>', sub: '取所有匹配实体权重的最大值' },
+        { text: '计算演化感知因子 <code>evolution_factor = max(0.1, 1.0 + 0.3 * evolution_score)</code>', sub: '综合 context_match, validity, support_norm, drift_penalty, decay_penalty' },
+        { text: '最终权重 <code>weight = base × temporal × entity × evolution</code>', sub: '按权重降序排列，取 Top-K' },
+      ],
+      formula: 'w = log(1 + c_valid) * exp(-decay * t_diff) * entity_factor * evolution_factor',
+      output: `<span class="comment">// RankedEvent 列表 (按 weight 降序)</span>
+[
+  {
+    <span class="key">"event_id"</span>: <span class="str">"evt_8a3f2c"</span>,
+    <span class="key">"summary"</span>: <span class="str">"与同事在星巴克讨论技术方案"</span>,
+    <span class="key">"weight"</span>: <span class="num">1.8234</span>,
+    <span class="key">"c_valid"</span>: <span class="num">4</span>,
+    <span class="key">"match_type"</span>: <span class="str">"context"</span>,
+    <span class="comment">// debug:</span>
+    <span class="key">"base_weight"</span>: <span class="num">1.6094</span>,  <span class="comment">// log(1+4)</span>
+    <span class="key">"temporal_factor"</span>: <span class="num">0.9512</span>,
+    <span class="key">"entity_factor"</span>: <span class="num">1.0</span>,
+    <span class="key">"evolution_factor"</span>: <span class="num">1.19</span>
+  },
+  ...
+]`,
+      params: [
+        ['DECAY_RATE', '5e-8', '时间衰减率'],
+        ['RETRIEVAL_WEIGHT_EVENT_SIM', '0.45', '文本相似度权重'],
+        ['RETRIEVAL_WEIGHT_CONTEXT', '0.15', '上下文强度权重'],
+        ['RETRIEVAL_WEIGHT_RECENCY', '0.20', '时效性权重'],
+        ['RETRIEVAL_WEIGHT_VALIDITY', '0.10', '有效性权重'],
+        ['RETRIEVAL_WEIGHT_SUPPORT', '0.10', '确认度权重'],
+      ],
+    },
+  },
+  {
+    id: 'answer-gen',
+    name: 'LLM 答案生成',
+    desc: '基于 Top-K 事件调用 LLM 生成自然语言回答',
+    color: 'var(--stage-llm)',
+    tags: ['LLM', '可选'],
+    detail: {
+      steps: [
+        { text: '格式化事件上下文', sub: '将 Top-K 的 RankedEvent 转为文本: "事件 0 (权重: 1.82, 确认次数: 4): ..."' },
+        { text: '调用 LLM 生成回答', sub: 'generate_answer_system.txt + generate_answer_user.txt' },
+        { text: '返回自然语言回答', sub: '如果无事件或生成失败，返回默认提示' },
+      ],
+      prompt: `<div class="prompt-label">System Prompt</div>
+你是一个车载智能agent，会根据从长期记忆库中检索到的信息回答用户的问题。
+
+<div class="prompt-label">User Prompt (格式化后)</div>
+以下是从记忆库中检索到的相关事件：
+
+事件 0 (权重: 1.8234, 确认次数: 4):
+- 摘要: 与同事在星巴克讨论技术方案
+- 动作: 讨论技术方案并做出架构决策
+...
+
+用户问题: 用户通常在哪里开会？`,
+      output: `<span class="comment">// LLM 生成的回答</span>
+<span class="str">"根据记忆记录，用户通常在星巴克等咖啡厅与同事讨论工作事宜。
+最近一次是在下午讨论新项目的技术方案。"</span>`,
+    },
+  },
+  {
+    id: 'search-result',
+    name: 'SearchResult 输出',
+    desc: '返回完整检索结果: 查询、实体、排序事件列表和 LLM 回答',
+    color: 'var(--stage-output)',
+    tags: ['输出'],
+    detail: {
+      output: `<span class="comment">// SearchResult</span>
+{
+  <span class="key">"query"</span>: <span class="str">"用户通常在哪里开会？"</span>,
+  <span class="key">"entities"</span>: [],
+  <span class="key">"ranked_events"</span>: [         <span class="comment">// 全部排序事件</span>
+    RankedEvent { weight: <span class="num">1.82</span>, summary: <span class="str">"..."</span> },
+    RankedEvent { weight: <span class="num">1.45</span>, summary: <span class="str">"..."</span> },
+    ...
+  ],
+  <span class="key">"top_k_events"</span>: [...],     <span class="comment">// Top-5 事件</span>
+  <span class="key">"answer"</span>: <span class="str">"根据记忆记录，用户通常在..."</span>
+}`,
+    },
+  },
+];
+
+const EVOLUTION_STAGES = [
+  {
+    id: 'consolidation-trigger',
+    name: '整合触发',
+    desc: '检查是否满足整合条件：时间间隔、策略配置',
+    color: 'var(--stage-evolution)',
+    tags: ['入口'],
+    detail: {
+      steps: [
+        { text: '检查 <code>ENABLE_AUTO_CONSOLIDATION</code> 配置', sub: '整合功能可以全局启用/禁用' },
+        { text: '检查距上次整合的时间间隔', sub: '至少 CONSOLIDATION_MIN_INTERVAL_SECONDS (1800s) 后才触发' },
+        { text: '可手动触发 <code>run_consolidation(strategy="auto")</code>', sub: '支持 dry_run 模式预览整合计划' },
+      ],
+      params: [
+        ['ENABLE_AUTO_CONSOLIDATION', 'true', '全局开关'],
+        ['CONSOLIDATION_MIN_INTERVAL', '1800', '秒，最小间隔'],
+      ],
+    },
+  },
+  {
+    id: 'event-consolidation',
+    name: '事件合并 (Event Consolidation)',
+    desc: '扫描时间窗口内的相似事件，合并高相似度事件对',
+    color: 'var(--stage-evolution)',
+    tags: ['核心'],
+    detail: {
+      steps: [
+        { text: '获取最近事件 <code>get_recent_events(window=172800s)</code>', sub: '扫描最近 2 天内创建的活跃事件' },
+        { text: '生成候选事件对', sub: '每个事件与其他事件比较相似度' },
+        { text: '计算事件相似度', sub: '综合 summary 文本相似度、action/causality 匹配等' },
+        { text: '过滤: <code>similarity >= EVENT_CONSOLIDATION_THRESHOLD (0.78)</code>', sub: '只保留高相似度的事件对' },
+        { text: '执行合并: 将 source 事件合并到 target', sub: '合并 evidence, participants; 更新 support_count; 重写 summary (可选 LLM)' },
+        { text: '图重写 <code>store.relink_event_references()</code>', sub: '将 source 的所有关系边迁移到 target 节点' },
+        { text: '记录合并轨迹 <code>EVENT_MERGE_TRACE</code>', sub: '保存合并原因、相似度分数、合并时间' },
+      ],
+      formula: 'similarity >= 0.78 → merge(source → target)',
+      params: [
+        ['EVENT_CONSOLIDATION_THRESHOLD', '0.78', '合并相似度阈值'],
+        ['EVENT_CONSOLIDATION_WINDOW', '172800', '秒 (2天)，扫描窗口'],
+        ['EVENT_CONSOLIDATION_CANDIDATE_LIMIT', '12', '候选事件上限'],
+      ],
+      output: `<span class="comment">// 合并示例</span>
+<span class="highlight">Source:</span> evt_001 <span class="str">"在星巴克和同事讨论技术方案"</span>
+<span class="highlight">Target:</span> evt_002 <span class="str">"与同事在咖啡厅讨论项目架构方案"</span>
+<span class="highlight">Similarity:</span> <span class="num">0.82</span>
+
+<span class="comment">// 合并后</span>
+evt_002: {
+  <span class="key">"summary"</span>: <span class="str">"与同事在咖啡厅讨论项目技术/架构方案"</span>,
+  <span class="key">"support_count"</span>: <span class="num">2</span>,  <span class="comment">// 1 + 1</span>
+}
+
+<span class="comment">// 图重写</span>
+evt_001 的所有 INVOLVES, IN_REL, EVENT_RELATION 边
+  → 全部迁移到 evt_002
+evt_001.status = <span class="str">"merged"</span>
+
+<span class="comment">// 合并轨迹</span>
+(evt_001) -[EVENT_MERGE_TRACE {score: 0.82}]-> (evt_002)`,
+    },
+  },
+  {
+    id: 'context-consolidation',
+    name: '上下文合并 (Context Consolidation)',
+    desc: '查找和合并高相似度的 Context 节点',
+    color: 'var(--stage-evolution)',
+    tags: ['合并'],
+    detail: {
+      steps: [
+        { text: '获取所有活跃 Context 节点', sub: 'store.find_context_candidates(only_active=True)' },
+        { text: '按 subtype 分组，组内计算两两相似度', sub: '同 subtype 的上下文更可能需要合并' },
+        { text: '合并高相似度对', sub: '合并 structured_slots, source_refs, merged_from' },
+        { text: '图重写 <code>store.relink_context_edges()</code>', sub: '将被合并 Context 的所有 IN_REL 边迁移到目标 Context' },
+      ],
+      output: `<span class="comment">// 上下文合并示例</span>
+<span class="highlight">Source:</span> ctx_03 <span class="str">"咖啡厅场景"</span> (support: 1)
+<span class="highlight">Target:</span> ctx_01 <span class="str">"会议场景"</span> (support: 4)
+
+<span class="comment">// 合并后</span>
+ctx_01: {
+  <span class="key">"summary"</span>: <span class="str">"会议场景"</span>,
+  <span class="key">"support_count"</span>: <span class="num">5</span>,
+  <span class="key">"merged_from"</span>: [<span class="str">"ctx_03"</span>]
+}
+ctx_03.status = <span class="str">"merged"</span>`,
+    },
+  },
+  {
+    id: 'decay',
+    name: '节点衰减 (Decay)',
+    desc: '对长时间未被引用的 Context 节点降低 confidence',
+    color: 'var(--stage-process)',
+    tags: ['衰减'],
+    detail: {
+      steps: [
+        { text: '扫描所有活跃 Context 节点', sub: '检查 last_seen_at 距今的时间差' },
+        { text: '衰减条件: <code>now - last_seen_at > STALE_SECONDS (30天)</code>', sub: '超过 30 天未被引用的节点进入衰减' },
+        { text: '降低 confidence: <code>confidence -= DECAY_STEP (0.04)</code>', sub: '每次整合周期减少 0.04' },
+        { text: '归档判断: <code>confidence < 0.25 → status = "deprecated"</code>', sub: '置信度低于阈值的节点标记为弃用' },
+      ],
+      formula: 'confidence -= 0.04 (每周期); confidence < 0.25 → deprecated',
+      params: [
+        ['STALE_SECONDS', '2592000', '秒 (30天)，衰减触发时间'],
+        ['DECAY_STEP', '0.04', '每次衰减步长'],
+        ['REINFORCEMENT_STEP', '0.06', '被引用时的增强步长'],
+      ],
+    },
+  },
+  {
+    id: 'prune',
+    name: '弱边裁剪 (Prune)',
+    desc: '移除权重过低的关系边，保持图谱精简',
+    color: 'var(--stage-process)',
+    tags: ['裁剪'],
+    detail: {
+      steps: [
+        { text: '扫描所有 IN_REL (Event→Context) 关系边', sub: '检查每条边的 weight 值' },
+        { text: '裁剪条件: <code>weight < WEAK_EDGE_PRUNE_THRESHOLD (0.18)</code>', sub: '权重低于阈值的边被移除' },
+        { text: '移除弱边', sub: '不会删除节点本身，只移除关系连接' },
+      ],
+      params: [
+        ['WEAK_EDGE_PRUNE_THRESHOLD', '0.18', '弱边裁剪阈值'],
+      ],
+    },
+  },
+  {
+    id: 'archive',
+    name: '事件归档 (Archive)',
+    desc: '将超过保留期限的老旧事件标记为 archived',
+    color: 'var(--stage-storage)',
+    tags: ['归档'],
+    detail: {
+      steps: [
+        { text: '扫描所有活跃事件节点', sub: '检查 created_at 距今的时间差' },
+        { text: '归档条件: <code>now - created_at > ARCHIVE_EVENT_SECONDS (90天)</code>', sub: '超过 90 天的事件进入归档' },
+        { text: '标记状态: <code>event.status = "archived"</code>', sub: '归档事件不参与检索排序，但保留在图数据库中' },
+      ],
+      params: [
+        ['ARCHIVE_EVENT_SECONDS', '7776000', '秒 (90天)，归档触发时间'],
+      ],
+    },
+  },
+  {
+    id: 'consolidation-report',
+    name: '整合报告',
+    desc: '汇总所有整合操作的结果统计',
+    color: 'var(--stage-output)',
+    tags: ['输出'],
+    detail: {
+      output: `<span class="comment">// ConsolidationReport</span>
+{
+  <span class="key">"dry_run"</span>: <span class="bool">false</span>,
+  <span class="key">"scanned_events"</span>: <span class="num">24</span>,
+  <span class="key">"candidate_pairs"</span>: <span class="num">3</span>,
+  <span class="key">"merged_events"</span>: <span class="num">1</span>,
+  <span class="key">"skipped_events"</span>: <span class="num">2</span>,
+  <span class="key">"merged_contexts"</span>: <span class="num">1</span>,
+  <span class="key">"decayed_nodes"</span>: <span class="num">2</span>,
+  <span class="key">"pruned_edges"</span>: <span class="num">3</span>,
+  <span class="key">"archived_events"</span>: <span class="num">0</span>
+}`,
+    },
+  },
+];
+
+
+// ============================================================
+// Rendering engine
+// ============================================================
+
+function renderStage(stage, index, total) {
+  const card = document.createElement('div');
+  card.className = 'stage';
+  card.innerHTML = `
+    <div class="stage-card" data-stage-id="${stage.id}">
+      <div class="stage-header" onclick="toggleStage('${stage.id}')">
+        <div class="stage-number" style="background:${stage.color}">${index + 1}</div>
+        <div class="stage-info">
+          <div class="stage-name">${stage.name}</div>
+          <div class="stage-desc">${stage.desc}</div>
+        </div>
+        <div class="stage-tags">
+          ${stage.tags.map(t => {
+            let cls = '';
+            if (t === 'LLM' || t === 'Embedding') cls = 'llm';
+            else if (t === 'DB') cls = 'db';
+            else if (t === '已禁用') cls = 'db';
+            return `<span class="stage-tag ${cls}">${t}</span>`;
+          }).join('')}
+        </div>
+        <div class="stage-expand">&#9662;</div>
+      </div>
+      <div class="stage-detail">
+        <div class="detail-inner">
+          ${renderDetail(stage.detail || {})}
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Connector
+  if (index < total - 1) {
+    const conn = document.createElement('div');
+    conn.className = 'connector';
+    conn.dataset.from = stage.id;
+    conn.innerHTML = '<div class="connector-line"></div>';
+    card.appendChild(conn);
+  }
+
+  return card;
+}
+
+function renderDetail(d) {
+  let html = '<div class="detail-grid">';
+
+  // Steps
+  if (d.steps && d.steps.length) {
+    html += `
+      <div class="detail-section${(!d.input && !d.output && !d.prompt) ? ' full-width' : ''}">
+        <div class="detail-label"><div class="dot" style="background:var(--accent-blue)"></div>处理步骤</div>
+        <ol class="step-list">
+          ${d.steps.map(s => `<li>${s.text}${s.sub ? `<span class="sub">${s.sub}</span>` : ''}</li>`).join('')}
+        </ol>
+      </div>`;
+  }
+
+  // Prompt
+  if (d.prompt) {
+    html += `
+      <div class="detail-section">
+        <div class="detail-label"><div class="dot" style="background:var(--accent-purple)"></div>LLM Prompt</div>
+        <div class="prompt-preview">${d.prompt}</div>
+      </div>`;
+  }
+
+  // Input
+  if (d.input) {
+    html += `
+      <div class="detail-section">
+        <div class="detail-label"><div class="dot" style="background:var(--accent-orange)"></div>输入数据</div>
+        <div class="code-block">${d.input}</div>
+      </div>`;
+  }
+
+  // Output
+  if (d.output) {
+    html += `
+      <div class="detail-section">
+        <div class="detail-label"><div class="dot" style="background:var(--accent-green)"></div>输出数据</div>
+        <div class="code-block">${d.output}</div>
+      </div>`;
+  }
+
+  // Formula
+  if (d.formula) {
+    html += `
+      <div class="detail-section full-width">
+        <div class="detail-label"><div class="dot" style="background:var(--accent-purple)"></div>核心公式</div>
+        <div class="formula">${d.formula}</div>
+      </div>`;
+  }
+
+  // Parameters
+  if (d.params && d.params.length) {
+    html += `
+      <div class="detail-section${!d.branches ? ' full-width' : ''}">
+        <div class="detail-label"><div class="dot" style="background:var(--accent-cyan)"></div>关键参数</div>
+        <table class="param-table">
+          <tr><th>参数</th><th>默认值</th><th>说明</th></tr>
+          ${d.params.map(p => `<tr><td>${p[0]}</td><td>${p[1]}</td><td style="color:var(--text-dim)">${p[2]}</td></tr>`).join('')}
+        </table>
+      </div>`;
+  }
+
+  // Branches
+  if (d.branches) {
+    html += `
+      <div class="detail-section">
+        <div class="detail-label"><div class="dot" style="background:var(--accent-pink)"></div>分支路径</div>
+        <div class="branch">
+          <div class="branch-arm" data-label="${d.branches.left.label}">
+            <div style="font-size:12px;color:var(--text);white-space:pre-line">${d.branches.left.content}</div>
+          </div>
+          <div class="branch-arm context" data-label="${d.branches.right.label}">
+            <div style="font-size:12px;color:var(--text);white-space:pre-line">${d.branches.right.content}</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function renderPipeline(containerId, stages) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = '';
+  stages.forEach((stage, i) => {
+    container.appendChild(renderStage(stage, i, stages.length));
+  });
+}
+
+function renderSchema() {
+  const container = document.getElementById('schema-content');
+  container.innerHTML = `
+    <div class="graph-schema-container">
+      <div class="graph-schema-title">Node Tables (节点表)</div>
+      <div class="detail-grid" style="margin-top:0">
+        ${renderNodeTable('Episode', [
+          ['id', 'STRING (PK)', '唯一标识'],
+          ['content', 'STRING', '原始文本内容'],
+          ['timestamp', 'INT64', '时间戳'],
+        ], 'var(--stage-input)')}
+        ${renderNodeTable('Event', [
+          ['id', 'STRING (PK)', 'hash(summary)'],
+          ['summary', 'STRING', '事件摘要'],
+          ['action', 'STRING', '动作描述'],
+          ['causality', 'STRING', '因果信息'],
+          ['time_range', 'STRING (JSON)', '时间范围'],
+          ['participants', 'STRING (JSON)', '参与者'],
+          ['evidence', 'STRING (JSON)', '证据'],
+          ['timestamp', 'INT64', '事件时间'],
+          ['last_active', 'INT64', '最后活跃'],
+          ['status', 'STRING', 'active | archived | merged'],
+          ['support_count', 'INT64', '确认次数'],
+          ['embedding', 'FLOAT[1024]', '向量嵌入'],
+        ], 'var(--accent-blue)')}
+        ${renderNodeTable('Entity', [
+          ['id', 'STRING (PK)', '实体名称'],
+          ['type', 'STRING', '实体类型'],
+          ['embedding', 'FLOAT[1024]', '向量嵌入'],
+        ], 'var(--accent-cyan)')}
+        ${renderNodeTable('Context', [
+          ['id', 'STRING (PK)', '唯一标识'],
+          ['context_type', 'STRING', '类型'],
+          ['subtype', 'STRING', 'situation | state | ...'],
+          ['summary', 'STRING', '上下文摘要'],
+          ['structured_slots', 'STRING (JSON)', '结构化键值'],
+          ['confidence', 'DOUBLE', '置信度'],
+          ['support_count', 'INT64', '引用次数'],
+          ['status', 'STRING', 'active | deprecated | merged'],
+          ['embedding', 'FLOAT[1024]', '向量嵌入'],
+        ], 'var(--accent-purple)')}
+        ${renderNodeTable('User', [
+          ['id', 'STRING (PK)', '用户标识'],
+        ], 'var(--accent-orange)')}
+      </div>
+    </div>
+
+    <div class="graph-schema-container" style="margin-top:16px">
+      <div class="graph-schema-title">Relation Tables (关系表)</div>
+      <div class="detail-grid" style="margin-top:0">
+        ${renderRelTable('EXTRACTED_FROM', 'Event → Episode', '事件来源关系', [], 'var(--stage-input)')}
+        ${renderRelTable('INVOLVES', 'Event → Entity', '事件-实体关联', [
+          ['t_created', 'INT64', '创建时间'],
+          ['t_expired', 'INT64', '过期时间'],
+          ['t_valid', 'INT64', '有效时间'],
+          ['c_valid', 'INT64', '确认次数'],
+        ], 'var(--accent-cyan)')}
+        ${renderRelTable('IN_REL', 'Event → Context', '事件-上下文关联', [
+          ['confidence', 'DOUBLE', '置信度'],
+          ['weight', 'DOUBLE', '边权重'],
+          ['original_signal', 'STRING', '原始信号'],
+          ['evidence_span', 'STRING', '证据片段'],
+        ], 'var(--accent-purple)')}
+        ${renderRelTable('EVENT_RELATION', 'Event → Event', '事件间关系', [
+          ['relation_type', 'STRING', '因果 | 时序 | ...'],
+          ['description', 'STRING', '关系描述'],
+          ['confidence', 'DOUBLE', '置信度'],
+          ['evidence_span', 'STRING', '证据片段'],
+        ], 'var(--accent-pink)')}
+        ${renderRelTable('EVENT_MERGE_TRACE', 'Event → Event', '合并轨迹', [
+          ['merge_reason', 'STRING', '合并原因'],
+          ['similarity_score', 'DOUBLE', '相似度'],
+          ['merged_at', 'INT64', '合并时间'],
+        ], 'var(--accent-orange)')}
+        ${renderRelTable('PERMANENT_TRAIT', 'User → Event', '用户特征', [
+          ['t_created', 'INT64', '创建时间'],
+        ], 'var(--accent-orange)')}
+      </div>
+    </div>
+
+    <div class="graph-schema-container" style="margin-top:16px">
+      <div class="graph-schema-title">Graph Topology (图拓扑概览)</div>
+      <div class="graph-svg-container">
+        <svg width="900" height="420" viewBox="0 0 900 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Nodes -->
+          <rect x="50" y="60" width="120" height="50" rx="12" fill="#1e3a5f" stroke="#f59e0b" stroke-width="2"/>
+          <text x="110" y="90" text-anchor="middle" fill="#f59e0b" font-size="14" font-weight="600">Episode</text>
+
+          <rect x="250" y="60" width="120" height="50" rx="12" fill="#1e3a5f" stroke="#4a9eff" stroke-width="2"/>
+          <text x="310" y="90" text-anchor="middle" fill="#4a9eff" font-size="14" font-weight="600">Event</text>
+
+          <rect x="450" y="60" width="120" height="50" rx="12" fill="#1e3a5f" stroke="#00d4aa" stroke-width="2"/>
+          <text x="510" y="90" text-anchor="middle" fill="#00d4aa" font-size="14" font-weight="600">Entity</text>
+
+          <rect x="450" y="200" width="120" height="50" rx="12" fill="#1e3a5f" stroke="#a855f7" stroke-width="2"/>
+          <text x="510" y="230" text-anchor="middle" fill="#a855f7" font-size="14" font-weight="600">Context</text>
+
+          <rect x="50" y="200" width="120" height="50" rx="12" fill="#1e3a5f" stroke="#f59e0b" stroke-width="2"/>
+          <text x="110" y="230" text-anchor="middle" fill="#f59e0b" font-size="14" font-weight="600">User</text>
+
+          <rect x="250" y="320" width="120" height="50" rx="12" fill="#1e3a5f" stroke="#4a9eff" stroke-width="2" stroke-dasharray="4"/>
+          <text x="310" y="350" text-anchor="middle" fill="#4a9eff" font-size="14" font-weight="600">Event</text>
+          <text x="310" y="365" text-anchor="middle" fill="#8892a4" font-size="10">(merged target)</text>
+
+          <!-- Edges -->
+          <!-- EXTRACTED_FROM: Event -> Episode -->
+          <line x1="250" y1="85" x2="170" y2="85" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+          <text x="210" y="78" text-anchor="middle" fill="#f59e0b" font-size="10">EXTRACTED_FROM</text>
+
+          <!-- INVOLVES: Event -> Entity -->
+          <line x1="370" y1="85" x2="450" y2="85" stroke="#00d4aa" stroke-width="1.5" marker-end="url(#arrowCyan)"/>
+          <text x="410" y="78" text-anchor="middle" fill="#00d4aa" font-size="10">INVOLVES</text>
+
+          <!-- IN_REL: Event -> Context -->
+          <line x1="310" y1="110" x2="450" y2="210" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
+          <text x="400" y="155" text-anchor="middle" fill="#a855f7" font-size="10">IN_REL</text>
+
+          <!-- PERMANENT_TRAIT: User -> Event -->
+          <line x1="170" y1="220" x2="250" y2="100" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arrowOrange)"/>
+          <text x="190" y="155" text-anchor="middle" fill="#f59e0b" font-size="10" transform="rotate(-35, 190, 155)">PERMANENT_TRAIT</text>
+
+          <!-- EVENT_RELATION: Event -> Event (self-loop approximation) -->
+          <path d="M 350 60 C 400 10, 500 10, 510 60" fill="none" stroke="#ec4899" stroke-width="1.5" marker-end="url(#arrowPink)"/>
+          <text x="430" y="25" text-anchor="middle" fill="#ec4899" font-size="10">EVENT_RELATION</text>
+
+          <!-- EVENT_MERGE_TRACE -->
+          <line x1="310" y1="110" x2="310" y2="320" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arrowOrange)"/>
+          <text x="330" y="220" fill="#f59e0b" font-size="10">MERGE_TRACE</text>
+
+          <!-- Arrow markers -->
+          <defs>
+            <marker id="arrowOrange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#f59e0b"/></marker>
+            <marker id="arrowCyan" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#00d4aa"/></marker>
+            <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#a855f7"/></marker>
+            <marker id="arrowPink" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#ec4899"/></marker>
+            <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#4a9eff"/></marker>
+          </defs>
+
+          <!-- Legend box -->
+          <rect x="640" y="40" width="240" height="300" rx="12" fill="rgba(22,33,62,0.8)" stroke="#2a3a5c" stroke-width="1"/>
+          <text x="660" y="65" fill="#e0e6ed" font-size="13" font-weight="600">Relation Legend</text>
+          <line x1="660" y1="80" x2="710" y2="80" stroke="#f59e0b" stroke-width="2"/>
+          <text x="720" y="84" fill="#f59e0b" font-size="11">EXTRACTED_FROM</text>
+          <line x1="660" y1="105" x2="710" y2="105" stroke="#00d4aa" stroke-width="2"/>
+          <text x="720" y="109" fill="#00d4aa" font-size="11">INVOLVES</text>
+          <line x1="660" y1="130" x2="710" y2="130" stroke="#a855f7" stroke-width="2"/>
+          <text x="720" y="134" fill="#a855f7" font-size="11">IN_REL</text>
+          <line x1="660" y1="155" x2="710" y2="155" stroke="#ec4899" stroke-width="2"/>
+          <text x="720" y="159" fill="#ec4899" font-size="11">EVENT_RELATION</text>
+          <line x1="660" y1="180" x2="710" y2="180" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4"/>
+          <text x="720" y="184" fill="#f59e0b" font-size="11">EVENT_MERGE_TRACE</text>
+          <line x1="660" y1="205" x2="710" y2="205" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4"/>
+          <text x="720" y="209" fill="#f59e0b" font-size="11">PERMANENT_TRAIT</text>
+
+          <text x="660" y="245" fill="#8892a4" font-size="11">Node Colors:</text>
+          <circle cx="670" cy="265" r="5" fill="#f59e0b"/>
+          <text x="685" y="269" fill="#f59e0b" font-size="11">Episode / User</text>
+          <circle cx="670" cy="285" r="5" fill="#4a9eff"/>
+          <text x="685" y="289" fill="#4a9eff" font-size="11">Event</text>
+          <circle cx="670" cy="305" r="5" fill="#00d4aa"/>
+          <text x="685" y="309" fill="#00d4aa" font-size="11">Entity</text>
+          <circle cx="670" cy="325" r="5" fill="#a855f7"/>
+          <text x="685" y="329" fill="#a855f7" font-size="11">Context</text>
+        </svg>
+      </div>
+    </div>
+  `;
+}
+
+function renderNodeTable(name, fields, color) {
+  return `
+    <div class="detail-section">
+      <div class="detail-label"><div class="dot" style="background:${color}"></div>${name}</div>
+      <table class="param-table">
+        <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+        ${fields.map(f => `<tr><td>${f[0]}</td><td style="color:var(--text-dim)">${f[1]}</td><td style="color:var(--text-dim)">${f[2]}</td></tr>`).join('')}
+      </table>
+    </div>`;
+}
+
+function renderRelTable(name, direction, desc, fields, color) {
+  const fieldsHtml = fields.length ? `
+    <table class="param-table" style="margin-top:8px">
+      <tr><th>属性</th><th>类型</th><th>说明</th></tr>
+      ${fields.map(f => `<tr><td>${f[0]}</td><td style="color:var(--text-dim)">${f[1]}</td><td style="color:var(--text-dim)">${f[2]}</td></tr>`).join('')}
+    </table>` : '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">无额外属性</div>';
+
+  return `
+    <div class="detail-section">
+      <div class="detail-label"><div class="dot" style="background:${color}"></div>${name}</div>
+      <div style="font-size:12px;color:var(--text);margin-bottom:4px">
+        <span style="font-family:var(--font-mono);color:${color}">${direction}</span>
+        <span style="color:var(--text-dim);margin-left:8px">${desc}</span>
+      </div>
+      ${fieldsHtml}
+    </div>`;
+}
+
+
+// ============================================================
+// Interactions
+// ============================================================
+
+function toggleStage(stageId) {
+  const card = document.querySelector(`[data-stage-id="${stageId}"]`);
+  if (!card) return;
+  card.classList.toggle('expanded');
+}
+
+function collapseAll() {
+  document.querySelectorAll('.stage-card.expanded').forEach(c => c.classList.remove('expanded'));
+}
+
+function switchView(viewName) {
+  document.querySelectorAll('.pipeline-view').forEach(v => v.classList.add('hidden'));
+  document.getElementById(`view-${viewName}`).classList.remove('hidden');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector(`[data-view="${viewName}"]`).classList.add('active');
+}
+
+// Flow animation
+let animating = false;
+function playFlowAnimation() {
+  if (animating) {
+    stopFlowAnimation();
+    return;
+  }
+  animating = true;
+  document.getElementById('btnAnimate').textContent = 'Stop';
+  document.getElementById('btnAnimate').classList.add('btn-primary');
+
+  const activeView = document.querySelector('.pipeline-view:not(.hidden)');
+  if (!activeView) return;
+  const connectors = activeView.querySelectorAll('.connector');
+  const stages = activeView.querySelectorAll('.stage-card');
+
+  let i = 0;
+  function animateNext() {
+    if (!animating || i >= connectors.length + stages.length) {
+      stopFlowAnimation();
+      return;
+    }
+
+    if (i < stages.length) {
+      stages[i].style.borderColor = 'var(--accent-blue)';
+      stages[i].style.boxShadow = '0 0 20px rgba(74,158,255,0.2)';
+    }
+
+    if (i > 0 && i - 1 < connectors.length) {
+      connectors[i - 1].classList.add('active', 'animating');
+    }
+
+    if (i >= 2 && i - 2 < stages.length) {
+      stages[i - 2].style.borderColor = '';
+      stages[i - 2].style.boxShadow = '';
+    }
+    if (i >= 2 && i - 2 < connectors.length) {
+      connectors[i - 2].classList.remove('animating');
+    }
+
+    i++;
+    setTimeout(animateNext, 600);
+  }
+  animateNext();
+}
+
+function stopFlowAnimation() {
+  animating = false;
+  document.getElementById('btnAnimate').textContent = 'Play Flow';
+
+  document.querySelectorAll('.connector').forEach(c => {
+    c.classList.remove('active', 'animating');
+  });
+  document.querySelectorAll('.stage-card').forEach(s => {
+    s.style.borderColor = '';
+    s.style.boxShadow = '';
+  });
+}
+
+
+// ============================================================
+// Initialize
+// ============================================================
+
+document.addEventListener('DOMContentLoaded', () => {
+  renderPipeline('pipeline-ingest', INGEST_STAGES);
+  renderPipeline('pipeline-search', SEARCH_STAGES);
+  renderPipeline('pipeline-evolution', EVOLUTION_STAGES);
+  renderSchema();
+
+  // Tab switching
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => switchView(tab.dataset.view));
+  });
+
+  // Controls
+  document.getElementById('btnCollapseAll').addEventListener('click', collapseAll);
+  document.getElementById('btnAnimate').addEventListener('click', playFlowAnimation);
+});
+</script>
+</body>
+</html>
