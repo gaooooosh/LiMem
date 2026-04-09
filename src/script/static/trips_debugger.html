@@ -320,10 +320,16 @@
         }
 
         .episode-list,
-        .detail-body,
         .log-list,
         .merge-report-list {
             max-height: 360px;
+            overflow: auto;
+            display: grid;
+            gap: 10px;
+        }
+
+        .detail-body {
+            max-height: 560px;
             overflow: auto;
             display: grid;
             gap: 10px;
@@ -585,6 +591,190 @@
             background: #fbf5eb;
             border: 1px solid rgba(210, 190, 160, 0.74);
             padding: 10px;
+        }
+
+        /* Enhanced detail panel */
+        .detail-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        .detail-type-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border-radius: 999px;
+            padding: 6px 14px;
+            font-size: 13px;
+            font-weight: 800;
+            color: #fff;
+        }
+
+        .detail-type-badge.event { background: var(--event); }
+        .detail-type-badge.context { background: var(--context); }
+        .detail-type-badge.edge-ec { background: var(--teal); }
+        .detail-type-badge.edge-ee { background: var(--gold); }
+
+        .detail-status-badge {
+            display: inline-flex;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .detail-status-badge.active {
+            background: rgba(93, 127, 64, 0.15);
+            color: var(--olive);
+        }
+
+        .detail-status-badge.merged, .detail-status-badge.archived {
+            background: rgba(158, 143, 124, 0.18);
+            color: var(--merged);
+        }
+
+        .detail-summary {
+            font-size: 16px;
+            font-weight: 800;
+            line-height: 1.5;
+            margin-bottom: 14px;
+            color: var(--text);
+        }
+
+        .detail-section {
+            margin-bottom: 14px;
+        }
+
+        .detail-section-title {
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--muted);
+            margin-bottom: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid rgba(210, 190, 160, 0.5);
+        }
+
+        .detail-id {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+            color: var(--muted);
+            background: rgba(0,0,0,0.04);
+            border-radius: 8px;
+            padding: 4px 8px;
+            word-break: break-all;
+            margin-bottom: 14px;
+        }
+
+        .detail-conn-card {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(255,255,255,0.8);
+            border: 1px solid rgba(210, 190, 160, 0.6);
+            cursor: pointer;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+
+        .detail-conn-card:hover {
+            background: rgba(255,255,255,1);
+            border-color: var(--accent);
+        }
+
+        .detail-conn-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .detail-conn-dot.event { background: var(--event); }
+        .detail-conn-dot.context { background: var(--context); }
+
+        .detail-conn-text {
+            font-size: 13px;
+            line-height: 1.4;
+            min-width: 0;
+        }
+
+        .detail-conn-text .conn-summary {
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .detail-conn-text .conn-meta {
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .detail-conn-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .detail-edge-endpoint {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px;
+            border-radius: 16px;
+            background: rgba(255,255,255,0.82);
+            border: 1px solid rgba(210, 190, 160, 0.6);
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .detail-edge-endpoint:hover {
+            background: rgba(255,255,255,1);
+        }
+
+        .detail-edge-arrow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 0;
+            color: var(--muted);
+            font-size: 18px;
+        }
+
+        .detail-confidence-bar {
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(210, 190, 160, 0.3);
+            overflow: hidden;
+            margin-top: 4px;
+        }
+
+        .detail-confidence-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+
+        .detail-clear-btn {
+            display: block;
+            width: 100%;
+            margin-top: 12px;
+            border: none;
+            border-radius: 12px;
+            padding: 8px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--muted);
+            background: rgba(210, 190, 160, 0.18);
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .detail-clear-btn:hover {
+            background: rgba(210, 190, 160, 0.35);
         }
 
         .status-line {
@@ -1529,6 +1719,7 @@
             state.selectedEdge = null;
             renderGraph();
             renderNodeInspector();
+            scrollDetailIntoView();
         }
 
         function selectEdge(edgeType, index) {
@@ -1546,6 +1737,12 @@
             };
             renderGraph();
             renderNodeInspector();
+            scrollDetailIntoView();
+        }
+
+        function scrollDetailIntoView() {
+            const el = document.getElementById("detailBody");
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
 
         function findNode(nodeId) {
@@ -1605,24 +1802,7 @@
             const container = document.getElementById("detailBody");
             const selectedEdge = state.selectedEdge;
             if (selectedEdge?.data) {
-                const edge = selectedEdge.data;
-                const edgeType = selectedEdge.edgeType;
-                const rows = Object.entries({
-                    edge_type: edgeType,
-                    ...edge,
-                }).map(([key, value]) => `
-                    <div class="kv">
-                        <div class="kv-key">${escapeHtml(key)}</div>
-                        <div>${renderValue(value)}</div>
-                    </div>
-                `).join("");
-                container.innerHTML = `
-                    <div class="episode-meta" style="margin-bottom:10px;">
-                        <span>当前选择：关系边</span>
-                        <span>${escapeHtml(edgeType)}</span>
-                    </div>
-                    ${rows}
-                `;
+                container.innerHTML = renderEdgeDetail(selectedEdge);
                 return;
             }
             const node = state.selectedNode;
@@ -1630,14 +1810,307 @@
                 container.innerHTML = `<div class="detail-empty">点击图中的节点或关系边后，这里会显示字段、状态和关联信息。</div>`;
                 return;
             }
+            const nodeType = detectNodeType(node);
+            container.innerHTML = nodeType === "event"
+                ? renderEventDetail(node)
+                : renderContextDetail(node);
+        }
 
-            const rows = Object.entries(node).map(([key, value]) => `
-                <div class="kv">
-                    <div class="kv-key">${escapeHtml(key)}</div>
-                    <div>${renderValue(value)}</div>
+        function detectNodeType(node) {
+            if (node.action !== undefined || node.timestamp !== undefined || node.support_count !== undefined) return "event";
+            if (node.context_type !== undefined || node.structured_slots !== undefined) return "context";
+            return node.id?.startsWith("ctx_") ? "context" : "event";
+        }
+
+        function formatTimestamp(ts) {
+            if (!ts) return "-";
+            try {
+                const d = new Date(typeof ts === "number" ? ts * 1000 : ts);
+                if (isNaN(d.getTime())) return String(ts);
+                return d.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+            } catch (_) { return String(ts); }
+        }
+
+        function getNodeConnections(nodeId) {
+            const snapshot = state.appState?.snapshot || {};
+            const ecEdges = snapshot.edges?.event_context || [];
+            const eeEdges = snapshot.edges?.event_event || [];
+            const connections = { contexts: [], events: [] };
+
+            ecEdges.forEach(e => {
+                if (e.event_id === nodeId) {
+                    const ctx = findNode(e.context_id);
+                    if (ctx) connections.contexts.push({ node: ctx, edge: e, role: "context" });
+                } else if (e.context_id === nodeId) {
+                    const evt = findNode(e.event_id);
+                    if (evt) connections.events.push({ node: evt, edge: e, role: "event" });
+                }
+            });
+            eeEdges.forEach(e => {
+                if (e.from_event_id === nodeId) {
+                    const target = findNode(e.to_event_id);
+                    if (target) connections.events.push({ node: target, edge: e, role: "target", relType: e.relation_type });
+                } else if (e.to_event_id === nodeId) {
+                    const source = findNode(e.from_event_id);
+                    if (source) connections.events.push({ node: source, edge: e, role: "source", relType: e.relation_type });
+                }
+            });
+            return connections;
+        }
+
+        function renderConnCard(item, dotType) {
+            const nodeId = item.node.id;
+            const summary = truncate(item.node.summary || nodeId, 36);
+            const meta = [];
+            if (item.relType) meta.push(item.relType);
+            if (item.edge.confidence != null) meta.push(`conf=${Number(item.edge.confidence).toFixed(2)}`);
+            if (item.edge.weight != null) meta.push(`w=${Number(item.edge.weight).toFixed(2)}`);
+            if (item.role === "source") meta.push("← 来源");
+            if (item.role === "target") meta.push("→ 目标");
+            return `
+                <div class="detail-conn-card" onclick="selectNode('${escapeJs(nodeId)}')">
+                    <div class="detail-conn-dot ${dotType}"></div>
+                    <div class="detail-conn-text">
+                        <div class="conn-summary">${escapeHtml(summary)}</div>
+                        <div class="conn-meta">${meta.length ? escapeHtml(meta.join(" · ")) : escapeHtml(truncate(nodeId, 28))}</div>
+                    </div>
                 </div>
-            `).join("");
-            container.innerHTML = rows;
+            `;
+        }
+
+        function renderEventDetail(node) {
+            const status = node.status || "active";
+            const conns = getNodeConnections(node.id);
+
+            const coreFields = [];
+            if (node.action) coreFields.push(["动作", node.action]);
+            if (node.support_count != null) coreFields.push(["支撑次数", node.support_count]);
+            if (node.participants) coreFields.push(["参与者", Array.isArray(node.participants) ? node.participants.map(p => p.role || p.name || JSON.stringify(p)).join(", ") : JSON.stringify(node.participants)]);
+
+            const timeFields = [];
+            if (node.timestamp) timeFields.push(["创建时间", formatTimestamp(node.timestamp)]);
+            if (node.last_active) timeFields.push(["最近活跃", formatTimestamp(node.last_active)]);
+
+            const extraKeys = new Set(["id", "summary", "status", "action", "support_count", "participants", "timestamp", "last_active", "payload", "embedding"]);
+            const extraFields = Object.entries(node).filter(([k]) => !extraKeys.has(k) && node[k] != null);
+
+            let html = `
+                <div class="detail-header">
+                    <div class="detail-type-badge event">Event</div>
+                    <div class="detail-status-badge ${status}">${escapeHtml(status)}</div>
+                </div>
+                <div class="detail-summary">${escapeHtml(node.summary || "(无摘要)")}</div>
+                <div class="detail-id">${escapeHtml(node.id)}</div>
+            `;
+
+            if (coreFields.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">核心属性</div>`;
+                html += coreFields.map(([k, v]) => `
+                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${escapeHtml(String(v))}</div></div>
+                `).join("");
+                html += `</div>`;
+            }
+
+            if (timeFields.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">时间线</div>`;
+                html += timeFields.map(([k, v]) => `
+                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${escapeHtml(v)}</div></div>
+                `).join("");
+                html += `</div>`;
+            }
+
+            if (node.payload) {
+                html += `<div class="detail-section"><div class="detail-section-title">Payload</div>
+                    <div class="json-block">${escapeHtml(JSON.stringify(node.payload, null, 2))}</div></div>`;
+            }
+
+            if (extraFields.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">其他字段</div>`;
+                html += extraFields.map(([k, v]) => `
+                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${renderValue(v)}</div></div>
+                `).join("");
+                html += `</div>`;
+            }
+
+            if (conns.contexts.length || conns.events.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">关联 (${conns.contexts.length + conns.events.length})</div><div class="detail-conn-list">`;
+                html += conns.contexts.map(c => renderConnCard(c, "context")).join("");
+                html += conns.events.map(c => renderConnCard(c, "event")).join("");
+                html += `</div></div>`;
+            }
+
+            html += `<button class="detail-clear-btn" onclick="clearSelection()">取消选择</button>`;
+            return html;
+        }
+
+        function renderContextDetail(node) {
+            const status = node.status || "active";
+            const conns = getNodeConnections(node.id);
+
+            const coreFields = [];
+            if (node.context_type) coreFields.push(["类型", node.context_type]);
+            if (node.subtype) coreFields.push(["子类型", node.subtype]);
+            if (node.frequency != null) coreFields.push(["频率", node.frequency]);
+            if (node.stability != null) coreFields.push(["稳定性", Number(node.stability).toFixed(3)]);
+
+            const timeFields = [];
+            if (node.first_seen_at) timeFields.push(["首次出现", formatTimestamp(node.first_seen_at)]);
+            if (node.last_seen_at) timeFields.push(["最近出现", formatTimestamp(node.last_seen_at)]);
+
+            const extraKeys = new Set(["id", "summary", "status", "context_type", "subtype", "frequency", "stability", "first_seen_at", "last_seen_at", "structured_slots", "embedding"]);
+            const extraFields = Object.entries(node).filter(([k]) => !extraKeys.has(k) && node[k] != null);
+
+            let html = `
+                <div class="detail-header">
+                    <div class="detail-type-badge context">Context</div>
+                    <div class="detail-status-badge ${status}">${escapeHtml(status)}</div>
+                </div>
+                <div class="detail-summary">${escapeHtml(node.summary || "(无摘要)")}</div>
+                <div class="detail-id">${escapeHtml(node.id)}</div>
+            `;
+
+            if (coreFields.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">核心属性</div>`;
+                html += coreFields.map(([k, v]) => `
+                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${escapeHtml(String(v))}</div></div>
+                `).join("");
+                html += `</div>`;
+            }
+
+            if (timeFields.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">时间线</div>`;
+                html += timeFields.map(([k, v]) => `
+                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${escapeHtml(v)}</div></div>
+                `).join("");
+                html += `</div>`;
+            }
+
+            if (node.structured_slots && Object.keys(node.structured_slots).length) {
+                html += `<div class="detail-section"><div class="detail-section-title">结构化槽位</div>`;
+                html += Object.entries(node.structured_slots).map(([k, v]) => `
+                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${escapeHtml(String(v))}</div></div>
+                `).join("");
+                html += `</div>`;
+            }
+
+            if (extraFields.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">其他字段</div>`;
+                html += extraFields.map(([k, v]) => `
+                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${renderValue(v)}</div></div>
+                `).join("");
+                html += `</div>`;
+            }
+
+            if (conns.events.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">关联事件 (${conns.events.length})</div><div class="detail-conn-list">`;
+                html += conns.events.map(c => renderConnCard(c, "event")).join("");
+                html += `</div></div>`;
+            }
+
+            html += `<button class="detail-clear-btn" onclick="clearSelection()">取消选择</button>`;
+            return html;
+        }
+
+        function renderEdgeDetail(selectedEdge) {
+            const edge = selectedEdge.data;
+            const edgeType = selectedEdge.edgeType;
+            const isEE = edgeType === "event_event";
+
+            const badgeClass = isEE ? "edge-ee" : "edge-ec";
+            const label = isEE ? "Event → Event" : "Event → Context";
+
+            const sourceId = isEE ? edge.from_event_id : edge.event_id;
+            const targetId = isEE ? edge.to_event_id : edge.context_id;
+            const sourceNode = findNode(sourceId);
+            const targetNode = findNode(targetId);
+
+            let html = `
+                <div class="detail-header">
+                    <div class="detail-type-badge ${badgeClass}">${escapeHtml(label)}</div>
+                </div>
+            `;
+
+            if (isEE && edge.relation_type) {
+                html += `<div class="detail-summary">${escapeHtml(edge.relation_type)}</div>`;
+            }
+            if (isEE && edge.description) {
+                html += `<div style="font-size:14px;line-height:1.6;color:var(--text);margin-bottom:14px;">${escapeHtml(edge.description)}</div>`;
+            }
+
+            // Source → Target endpoint cards
+            html += `<div class="detail-section"><div class="detail-section-title">连接节点</div>`;
+            html += renderEndpointCard(sourceNode, sourceId, "来源");
+            html += `<div class="detail-edge-arrow">↓</div>`;
+            html += renderEndpointCard(targetNode, targetId, "目标");
+            html += `</div>`;
+
+            // Edge properties
+            const propFields = [];
+            if (edge.confidence != null) propFields.push(["置信度", edge.confidence, true]);
+            if (edge.weight != null) propFields.push(["权重", edge.weight, true]);
+            if (isEE && edge.relation_type) propFields.push(["关系类型", edge.relation_type, false]);
+            if (edge.created_at) propFields.push(["创建时间", formatTimestamp(edge.created_at), false]);
+            if (edge.last_seen_at) propFields.push(["最近出现", formatTimestamp(edge.last_seen_at), false]);
+
+            const knownKeys = new Set(["event_id", "context_id", "from_event_id", "to_event_id", "relation_type", "description", "confidence", "weight", "created_at", "last_seen_at"]);
+            const extraEdgeFields = Object.entries(edge).filter(([k]) => !knownKeys.has(k) && edge[k] != null);
+
+            if (propFields.length || extraEdgeFields.length) {
+                html += `<div class="detail-section"><div class="detail-section-title">边属性</div>`;
+                html += propFields.map(([k, v, isNum]) => {
+                    let valHtml = escapeHtml(String(v));
+                    if (isNum && typeof v === "number") {
+                        const pct = Math.min(100, Math.max(0, v * 100));
+                        const color = v >= 0.7 ? "var(--olive)" : v >= 0.4 ? "var(--gold)" : "var(--danger)";
+                        valHtml = `
+                            <div>${escapeHtml(Number(v).toFixed(3))}</div>
+                            <div class="detail-confidence-bar">
+                                <div class="detail-confidence-fill" style="width:${pct}%;background:${color}"></div>
+                            </div>
+                        `;
+                    }
+                    return `<div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${valHtml}</div></div>`;
+                }).join("");
+                html += extraEdgeFields.map(([k, v]) => `
+                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${renderValue(v)}</div></div>
+                `).join("");
+                html += `</div>`;
+            }
+
+            html += `<button class="detail-clear-btn" onclick="clearSelection()">取消选择</button>`;
+            return html;
+        }
+
+        function renderEndpointCard(node, nodeId, roleLabel) {
+            if (!node) {
+                return `
+                    <div class="detail-edge-endpoint">
+                        <div class="detail-conn-dot event"></div>
+                        <div class="detail-conn-text">
+                            <div class="conn-meta">${escapeHtml(roleLabel)}</div>
+                            <div class="conn-summary" style="color:var(--muted);">${escapeHtml(nodeId || "unknown")}</div>
+                        </div>
+                    </div>
+                `;
+            }
+            const nType = detectNodeType(node);
+            return `
+                <div class="detail-edge-endpoint" onclick="selectNode('${escapeJs(node.id)}')">
+                    <div class="detail-conn-dot ${nType}"></div>
+                    <div class="detail-conn-text">
+                        <div class="conn-meta">${escapeHtml(roleLabel)} · ${escapeHtml(nType)}</div>
+                        <div class="conn-summary">${escapeHtml(truncate(node.summary || node.id, 36))}</div>
+                        <div class="conn-meta">${escapeHtml(truncate(node.id, 32))}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function clearSelection() {
+            state.selectedNode = null;
+            state.selectedEdge = null;
+            renderGraph();
+            renderNodeInspector();
         }
 
         function renderValue(value) {
@@ -1759,6 +2232,7 @@
         window.writeSingleEpisode = writeSingleEpisode;
         window.selectNode = selectNode;
         window.selectEdge = selectEdge;
+        window.clearSelection = clearSelection;
     </script>
 </body>
 </html>
