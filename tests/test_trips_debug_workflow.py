@@ -99,7 +99,7 @@ class TestTripsDebugWorkflow(unittest.TestCase):
                 {
                     "summary": "context:会议场景",
                     "subtype": "会议场景",
-                    "structured_slots": {"scene": "会议场景"},
+                    "description": "用户处于会议场景，需要低干扰环境",
                 },
                 kind="context",
             )["item"]
@@ -107,7 +107,7 @@ class TestTripsDebugWorkflow(unittest.TestCase):
                 {
                     "summary": "context:会议场景 / 空调",
                     "subtype": "会议场景",
-                    "structured_slots": {"scene": "会议场景", "digital_context": "空调"},
+                    "description": "用户处于会议场景，并且当前操作对象与空调相关",
                 },
                 kind="context",
             )["item"]

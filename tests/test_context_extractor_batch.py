@@ -48,7 +48,7 @@ class TestContextExtractorBatch(unittest.TestCase):
                             {
                                 "subtype": "state",
                                 "summary": "电量低",
-                                "structured_slots": {"battery_level": 12},
+                                "description": "设备当前电量仅剩12%，用户正在寻找附近充电桩",
                                 "confidence": 0.91,
                                 "evidence_span": "电量只剩12%",
                             }
@@ -60,7 +60,7 @@ class TestContextExtractorBatch(unittest.TestCase):
                             {
                                 "subtype": "constraint",
                                 "summary": "时间紧张",
-                                "structured_slots": {"deadline": "马上出发"},
+                                "description": "用户面临即将迟到的时间压力，需要马上出发",
                                 "confidence": 0.88,
                                 "evidence_span": "快迟到了",
                             }
@@ -147,7 +147,7 @@ class TestContextExtractorBatch(unittest.TestCase):
                     {
                         "subtype": "goal",
                         "summary": "单条补救",
-                        "structured_slots": {"goal": "ok"},
+                        "description": "单条回退路径返回的测试描述",
                         "confidence": 0.9,
                         "evidence_span": "record-0",
                     }
@@ -199,7 +199,7 @@ class TestContextExtractorBatch(unittest.TestCase):
         draft = ContextDraft(
             subtype="state",
             summary="当前状态",
-            structured_slots={"state": "当前状态"},
+            description="事件当前所处的状态描述",
             evidence_span="当前状态",
         )
         captured_batches: list[tuple[list[str], list[str]]] = []
@@ -281,7 +281,7 @@ class TestContextExtractorBatch(unittest.TestCase):
         draft = ContextDraft(
             subtype="environment",
             summary="音乐播放场景",
-            structured_slots={"environment": "音乐播放场景"},
+            description="用户在车内进行音乐播放，当前为娱乐交互环境",
             evidence_span="放歌",
         )
         captured_existing_contexts = []

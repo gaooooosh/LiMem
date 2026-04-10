@@ -240,7 +240,9 @@ class MemoryGraphOps:
         if isinstance(item, Context):
             return "context"
         if isinstance(item, dict):
-            if "context_type" in item or "structured_slots" in item:
+            if "context_type" in item or "description" in item:
+                return "context"
+            if "subtype" in item and "summary" in item and "participants" not in item and "action" not in item:
                 return "context"
             return "event"
         raise ValueError("Unable to infer memory kind")
@@ -294,7 +296,7 @@ class MemoryGraphOps:
                 context_type=str(item.get("context_type", "context") or "context"),
                 subtype=str(item.get("subtype", "situation") or "situation"),
                 summary=str(item.get("summary", "") or ""),
-                structured_slots=dict(item.get("structured_slots", {}) or {}),
+                description=str(item.get("description", "") or ""),
                 confidence=float(item.get("confidence", 0.6) or 0.6),
                 support_count=int(item.get("support_count", 1) or 1),
                 created_at=int(item.get("created_at", 0) or 0),
@@ -398,7 +400,7 @@ class MemoryGraphOps:
             "context_type": context.context_type,
             "subtype": context.subtype,
             "summary": context.summary,
-            "structured_slots": context.structured_slots,
+            "description": context.description,
             "confidence": context.confidence,
             "support_count": context.support_count,
             "created_at": context.created_at,

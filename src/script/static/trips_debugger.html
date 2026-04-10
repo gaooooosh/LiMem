@@ -1090,11 +1090,7 @@
                 summary: "context:会议场景 / 会议模式",
                 context_type: "situation",
                 subtype: "会议场景",
-                structured_slots: {
-                    scene: "会议场景",
-                    digital_context: "会议模式",
-                    goal_hint: "保持安静"
-                }
+                description: "用户处于会议场景，当前数字环境为会议模式，希望保持安静"
             }
         };
 
@@ -1818,7 +1814,7 @@
 
         function detectNodeType(node) {
             if (node.action !== undefined || node.timestamp !== undefined || node.support_count !== undefined) return "event";
-            if (node.context_type !== undefined || node.structured_slots !== undefined) return "context";
+            if (node.context_type !== undefined || node.description !== undefined) return "context";
             return node.id?.startsWith("ctx_") ? "context" : "event";
         }
 
@@ -1957,7 +1953,7 @@
             if (node.first_seen_at) timeFields.push(["首次出现", formatTimestamp(node.first_seen_at)]);
             if (node.last_seen_at) timeFields.push(["最近出现", formatTimestamp(node.last_seen_at)]);
 
-            const extraKeys = new Set(["id", "summary", "status", "context_type", "subtype", "frequency", "stability", "first_seen_at", "last_seen_at", "structured_slots", "embedding"]);
+            const extraKeys = new Set(["id", "summary", "status", "context_type", "subtype", "frequency", "stability", "first_seen_at", "last_seen_at", "description", "embedding"]);
             const extraFields = Object.entries(node).filter(([k]) => !extraKeys.has(k) && node[k] != null);
 
             let html = `
@@ -1985,11 +1981,9 @@
                 html += `</div>`;
             }
 
-            if (node.structured_slots && Object.keys(node.structured_slots).length) {
-                html += `<div class="detail-section"><div class="detail-section-title">结构化槽位</div>`;
-                html += Object.entries(node.structured_slots).map(([k, v]) => `
-                    <div class="kv"><div class="kv-key">${escapeHtml(k)}</div><div>${escapeHtml(String(v))}</div></div>
-                `).join("");
+            if (node.description) {
+                html += `<div class="detail-section"><div class="detail-section-title">描述</div>`;
+                html += `<div class="json-block">${escapeHtml(String(node.description))}</div>`;
                 html += `</div>`;
             }
 

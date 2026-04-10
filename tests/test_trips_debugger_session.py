@@ -73,7 +73,7 @@ class TestTripsDebuggerSession(unittest.TestCase):
                 payload={
                     "summary": "context:会议场景",
                     "subtype": "会议场景",
-                    "structured_slots": {"scene": "会议场景"},
+                    "description": "用户处于会议相关场景，需要保持安静和专注",
                 },
             )
             context_id = context_write["result"]["item"]["id"]
@@ -84,7 +84,7 @@ class TestTripsDebuggerSession(unittest.TestCase):
                 payload={
                     "summary": "context:会议场景 / 安静",
                     "subtype": "会议场景",
-                    "structured_slots": {"scene": "会议场景", "goal_hint": "保持安静"},
+                    "description": "用户处于会议场景，并且希望环境保持安静",
                 },
             )["result"]["item"]["id"]
 

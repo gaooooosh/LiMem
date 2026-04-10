@@ -126,11 +126,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_a",
                     "summary": "context:会议场景 / 车内 / 会议模式",
                     "subtype": "会议场景",
-                    "structured_slots": {
-                        "scene": "会议场景",
-                        "geo_context": "车内",
-                        "digital_context": "会议模式",
-                    },
+                    "description": "用户处于车内会议场景，数字环境为会议模式，需要安静与低干扰",
                 },
                 kind="context",
             )["item"]
@@ -139,12 +135,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_b",
                     "summary": "context:会议场景 / 车内 / 会议模式 / 早高峰",
                     "subtype": "会议场景",
-                    "structured_slots": {
-                        "scene": "会议场景",
-                        "geo_context": "车内",
-                        "digital_context": "会议模式",
-                        "time_bucket": "morning",
-                    },
+                    "description": "用户处于车内会议场景，数字环境为会议模式，时间特征为早高峰时段",
                 },
                 kind="context",
             )["item"]
@@ -349,7 +340,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_merge_b",
                     "summary": "context:会议模式",
                     "subtype": "会议场景",
-                    "structured_slots": {"scene": "会议场景"},
+                    "description": "用户处于会议相关场景，需要低干扰环境",
                 },
                 kind="context",
             )["item"]
@@ -491,7 +482,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_nav_main",
                     "summary": "context:出行导航场景",
                     "subtype": "出行导航",
-                    "structured_slots": {"scene": "出行导航场景"},
+                    "description": "用户处于出行导航场景，系统正在辅助前往目的地",
                 },
                 kind="context",
             )["item"]
@@ -615,7 +606,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_hist_nav",
                     "summary": "context:出行导航场景",
                     "subtype": "出行导航",
-                    "structured_slots": {"scene": "出行导航场景"},
+                    "description": "用户处于出行导航场景，系统正在辅助前往目标地点",
                 },
                 kind="context",
             )["item"]
@@ -702,7 +693,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_nav_cluster",
                     "summary": "context:出行导航场景",
                     "subtype": "出行导航",
-                    "structured_slots": {"scene": "出行导航场景"},
+                    "description": "用户处于出行导航场景，系统正在辅助前往目标地点",
                 },
                 kind="context",
             )["item"]
@@ -800,7 +791,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_main_nav",
                     "summary": "context:出行导航场景",
                     "subtype": "出行导航",
-                    "structured_slots": {"scene": "出行导航场景"},
+                    "description": "用户处于出行导航场景，系统正在辅助前往目标地点",
                 },
                 kind="context",
             )["item"]
@@ -903,7 +894,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_climate_semantics",
                     "summary": "context:车内温控场景",
                     "subtype": "温控场景",
-                    "structured_slots": {"scene": "车内温控场景"},
+                    "description": "用户处于车内温控场景，当前关注车内温度与舒适度",
                 },
                 kind="context",
             )["item"]
@@ -1000,7 +991,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_nav_bug",
                     "summary": "context:出行导航场景",
                     "subtype": "出行导航",
-                    "structured_slots": {"scene": "出行导航场景"},
+                    "description": "用户处于出行导航场景，系统正在辅助前往目标地点",
                 },
                 kind="context",
             )["item"]
@@ -1054,7 +1045,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_climate_bug",
                     "summary": "context:车内温控场景",
                     "subtype": "温控场景",
-                    "structured_slots": {"scene": "车内温控场景"},
+                    "description": "用户处于车内温控场景，当前关注车内温度与舒适度",
                 },
                 kind="context",
             )["item"]
@@ -1141,7 +1132,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_repeat_nav",
                     "summary": "context:出行导航场景",
                     "subtype": "出行导航",
-                    "structured_slots": {"scene": "出行导航场景"},
+                    "description": "用户处于出行导航场景，系统正在辅助前往目标地点",
                 },
                 kind="context",
             )["item"]
@@ -1227,7 +1218,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_scope_shared",
                     "summary": "context:出行导航场景",
                     "subtype": "出行导航",
-                    "structured_slots": {"scene": "出行导航场景"},
+                    "description": "用户处于出行导航场景，系统正在辅助前往目标地点",
                 },
                 kind="context",
             )["item"]
@@ -1316,11 +1307,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_nav_llm_gate",
                     "summary": "出行导航场景",
                     "subtype": "state",
-                    "structured_slots": {
-                        "navigation_started": True,
-                        "navigation_status": "进行中",
-                        "state": "出行导航场景",
-                    },
+                    "description": "用户处于出行导航场景，导航已经开始并处于进行中状态",
                 },
                 kind="context",
             )["item"]
@@ -1329,9 +1316,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "id": "ctx_cinema_llm_gate",
                     "summary": "坐在副驾的用户说:充电这会儿想看一集剧 -> 车机回答:已为你",
                     "subtype": "situation",
-                    "structured_slots": {
-                        "situation": "坐在副驾的用户说:充电这会儿想看一集剧 -> 车机回答:已为你",
-                    },
+                    "description": "副驾乘客在充电等待期间希望看视频放松，当前为车内娱乐请求场景",
                 },
                 kind="context",
             )["item"]
@@ -1362,16 +1347,16 @@ class TestDynamicEvolution(unittest.TestCase):
         )
         left = ContextDraft(
             summary="会议场景",
-            structured_slots={"scene": "会议场景"},
+            description="团队成员在办公室进行会议讨论",
         )
-        right = ContextDraft(summary="会议场景", structured_slots={"scene": "会议场景"})
+        right = ContextDraft(summary="会议场景", description="团队成员在办公室进行会议讨论")
 
         self.assertGreaterEqual(
             engine._context_merge_score(left, right),
             engine.config.context_reuse_threshold,
         )
 
-    def test_context_similarity_strips_echo_slots_and_redistributes_sparse_weights(self):
+    def test_context_similarity_uses_description_enriched_embedding(self):
         engine = DynamicEvolutionEngine(
             store=object(),
             config=DynamicEvolutionConfig(),
@@ -1379,16 +1364,14 @@ class TestDynamicEvolution(unittest.TestCase):
         left = ContextDraft(
             subtype="situation",
             summary="音乐播放场景",
-            structured_slots={"situation": "音乐播放场景"},
+            description="用户在车内通过语音播放轻松音乐，当前处于娱乐交互环境",
         )
         right = ContextDraft(
             subtype="state",
             summary="音乐播放场景",
-            structured_slots={"state": "音乐播放场景"},
+            description="用户在车内请求播放轻音乐，希望放松心情，当前为语音交互",
         )
 
-        self.assertEqual(engine._effective_context_slots(left), {})
-        self.assertEqual(engine._effective_context_slots(right), {})
         self.assertGreaterEqual(
             engine._context_similarity(left, right),
             engine.config.context_reuse_threshold,
@@ -1402,13 +1385,13 @@ class TestDynamicEvolution(unittest.TestCase):
         first = ContextDraft(
             subtype="situation",
             summary="音乐播放场景",
-            structured_slots={"situation": "音乐播放场景"},
+            description="用户在车内进行音乐播放",
             valid_from=100,
         )
         second = ContextDraft(
             subtype="situation",
             summary="音乐播放场景",
-            structured_slots={"situation": "音乐播放场景"},
+            description="用户在车内进行音乐播放，当前为娱乐交互",
             valid_from=200,
         )
 
@@ -1429,7 +1412,7 @@ class TestDynamicEvolution(unittest.TestCase):
             id="ctx_music_state",
             subtype="state",
             summary="音乐播放场景",
-            structured_slots={"state": "音乐播放场景"},
+            description="用户在车内进行音乐播放，当前为娱乐交互环境",
             support_count=3,
             last_seen_at=20,
         )
@@ -1437,7 +1420,7 @@ class TestDynamicEvolution(unittest.TestCase):
             id="ctx_other",
             subtype="situation",
             summary="会议场景",
-            structured_slots={"situation": "会议场景"},
+            description="团队成员在会议场景中讨论工作事项",
             support_count=1,
             last_seen_at=10,
         )
@@ -1450,7 +1433,7 @@ class TestDynamicEvolution(unittest.TestCase):
             ContextDraft(
                 subtype="situation",
                 summary="音乐播放场景",
-                structured_slots={"situation": "音乐播放场景"},
+                description="用户在车内播放音乐，希望放松心情",
             )
         )
 
@@ -1484,7 +1467,7 @@ class TestDynamicEvolution(unittest.TestCase):
             id="ctx_global_exact",
             subtype="state",
             summary="音乐播放场景",
-            structured_slots={"state": "音乐播放场景"},
+            description="用户在车内进行音乐播放，当前为娱乐交互环境",
             support_count=5,
             last_seen_at=50,
             status="active",
@@ -1493,7 +1476,7 @@ class TestDynamicEvolution(unittest.TestCase):
             id="ctx_recent_other",
             subtype="situation",
             summary="会议场景",
-            structured_slots={"situation": "会议场景"},
+            description="团队成员在会议场景中讨论工作事项",
             support_count=2,
             last_seen_at=100,
             status="active",
@@ -1507,14 +1490,14 @@ class TestDynamicEvolution(unittest.TestCase):
             ContextDraft(
                 subtype="situation",
                 summary="音乐播放场景",
-                structured_slots={"situation": "音乐播放场景"},
+                description="用户在车内播放音乐，希望放松心情",
             )
         )
 
         self.assertIsNotNone(match)
         self.assertEqual(match.id, exact_but_not_recent.id)
 
-    def test_context_conflict_ratio_returns_zero_when_only_one_side_has_slots(self):
+    def test_context_conflict_ratio_returns_zero_when_description_missing(self):
         engine = DynamicEvolutionEngine(
             store=object(),
             config=DynamicEvolutionConfig(),
@@ -1523,7 +1506,7 @@ class TestDynamicEvolution(unittest.TestCase):
         no_slots_right = ContextDraft(summary="会议场景")
         sparse_right = ContextDraft(
             summary="会议场景",
-            structured_slots={"scene": "会议场景"},
+            description="团队成员在办公室进行会议讨论",
         )
 
         self.assertAlmostEqual(engine._context_conflict_ratio(no_slots_left, no_slots_right), 0.0)

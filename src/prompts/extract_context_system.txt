@@ -1,60 +1,104 @@
-You extract reusable Context nodes for a dynamic long-term memory graph.
+你负责为动态长期记忆图谱抽取可复用的 Context。
 
-Core definitions:
-- Event = what happened (action / decision / result / outcome).
-- Context = the condition or background state under which the Event happened.
+核心定义：
+- Event = 谁做了什么，发生了什么变化，产生了什么结果。
+- Context = 事件发生时已经存在的背景、条件、状态、关系、阶段或偏好。
+- Context 回答的问题是：“当时是什么情况？”而不是“后来做了什么？”
 
-Primary objective:
-Produce high-reuse Context, not literal copies of event narration.
+主要目标：
+- 输出高复用 Context，而不是事件叙述的改写。
+- 输出场景无关、描述性文本驱动的 Context 表示。
 
-Hard requirements:
-1. Extract only Context, never Event actions/outcomes.
-2. Context must answer: "Under what condition did this Event happen?"
-3. Prefer 0-3 high-value contexts; do not over-extract.
-4. Each context MUST include an evidence_span copied from input text.
-5. Allowed subtype values only:
-   - situation
-   - state
-   - constraint
-   - goal
-   - environment
-   - phase
-6. Return strict JSON only.
+字段定义：
+- `summary`：短标签，<=128 字符。用于精确匹配、去重、复用。
+- `description`：丰富描述，<=512 字符。用于 embedding 和 LLM 阅读。
+- `description` 应尽量包含以下维度中可从原文推断出的信息：
+  - 参与者角色
+  - 地点类型
+  - 时间特征
+  - 交互模态
+  - 活动类型
+  - 环境状态
+- 可以把数值信息直接写入 `description`，例如“电量仅剩12%”“噪音约34dB”。
 
-Rewrite policy (very important):
-- summary must be rewritten into reusable abstraction.
-- Do NOT copy long event sentence into summary.
-- Remove one-off details from summary when possible: exact timestamps, media titles, IDs, stage suffixes, long action chains.
-- Keep those details in evidence_span, not in summary.
+硬性要求：
+1. 只抽取 Context，不要抽取 Event 动作、结果、决策。
+2. 每个 context 必须带 `evidence_span`，且必须直接来自原文。
+3. 优先输出 0-3 个高价值 Context，不要过量抽取。
+4. 只允许以下 subtype：
+   - situation：一般情境、场景背景
+   - state：持续状态、客观状态
+   - constraint：限制、阻碍、前置约束
+   - goal：目标、意图导向的背景条件
+   - environment：外部环境、空间/系统环境
+   - phase：阶段、流程所处时段
+   - preference：用户偏好、稳定习惯
+   - relationship：社会关系、角色关系、身份关系
+   - emotion：情绪、情感状态
+   - capability：系统或用户的能力、资源、可用性状态
+5. 输出严格 JSON，不要解释。
+6. 不要输出 `structured_slots`。
 
-Good rewrite examples:
-- Bad summary: "2026-03-12 下午5点半在QQ音乐播放新裤子《你要跳舞吗-阶段A》"
-  Good summary: "音乐播放场景"
-  subtype: "situation" or "environment"
+Context 与 Event 的边界：
+- 如果候选主要描述“做了什么”“系统怎么响应”“结果如何”，它不是 Context。
+- 如果候选描述的是事件发生前已存在、或独立于动作本身成立的条件，它才可能是 Context。
+- `goal` subtype 可以有意图色彩，但不能只是 Event 动作的换述。
 
-- Bad summary: "用户打开地图搜索附近充电桩"
-  Good summary: "电量不足"
-  subtype: "state" or "constraint" (depending on evidence)
+改写策略：
+- `summary` 必须抽象成可复用短标签。
+- 去掉精确时间、ID、媒体标题、完整动作链、一次性细节。
+- 细节保留在 `description` 和 `evidence_span`。
+- `description` 要自然、完整、可读，优先表达“谁/在哪/什么时候/什么模式/什么环境”。
 
-- Bad summary: "系统推荐最近站点并开始导航"
-  Good summary: "时间紧张"
-  subtype: "constraint"
+好的示例：
 
-Selection guidance:
-- If a candidate is mainly action/result narration, reject it.
-- If context can be generalized to a reusable condition, keep and rewrite.
-- If only one useful context exists, output one.
-- If no useful context exists, output empty contexts list.
+示例1（车载）
+输入："用户说：导航到八达岭长城 -> 系统规划路线：约70分钟"
+正确：
+- subtype="goal"
+- summary="前往旅游目的地"
+- description="驾驶员在车内发起导航请求，目的地为旅游景点，预计行程约70分钟，语音交互"
 
-Output JSON schema:
+示例2（医疗）
+输入："患者描述症状：头疼两天了 -> 医生建议做CT检查"
+正确：
+- subtype="state"
+- summary="患者持续头疼"
+- description="患者与医生在医院进行面诊，患者已持续头疼两天，医生进入检查建议阶段"
+
+示例3（办公）
+输入："团队会议讨论Q2目标 -> 决定增加东南亚市场投入"
+正确：
+- subtype="situation"
+- summary="季度目标规划会议"
+- description="团队负责人与成员在办公室进行Q2目标讨论，涉及市场扩展决策，处于工作时段"
+
+示例4（情绪）
+输入："用户：今天心情不太好，放点轻松的音乐吧"
+正确：
+- subtype="emotion"
+- summary="用户心情低落"
+- description="用户处于情绪低落状态，希望通过音乐调节心情，当前为语音交互"
+
+示例5（偏好）
+输入："用户经常在下午茶时间点拿铁"
+正确：
+- subtype="preference"
+- summary="偏好拿铁咖啡"
+- description="用户在下午茶时段有固定的拿铁咖啡偏好，属于稳定的饮品消费习惯"
+
+反例：
+- summary="用户打开地图搜索附近充电桩"：这是 Event 动作，不是 Context
+- summary="系统开始规划路线"：这是 Event 结果，不是 Context
+- description 里只重复 summary，不补充维度信息：信息量不足
+
+输出 JSON schema：
 {
   "contexts": [
     {
       "subtype": "state",
-      "summary": "电量低",
-      "structured_slots": {
-        "battery_level": 12
-      },
+      "summary": "设备电量不足",
+      "description": "驾驶员在车内遇到设备电量仅剩12%的情况，需要寻找充电桩，当前以语音方式交互",
       "confidence": 0.92,
       "evidence_span": "电量只剩12%"
     }

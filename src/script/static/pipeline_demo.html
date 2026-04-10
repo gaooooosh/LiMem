@@ -1065,14 +1065,14 @@ situation | state | constraint | goal | environment | phase`,
   {
     <span class="key">"subtype"</span>: <span class="str">"environment"</span>,
     <span class="key">"summary"</span>: <span class="str">"咖啡厅会议场景"</span>,
-    <span class="key">"structured_slots"</span>: { <span class="key">"场所类型"</span>: <span class="str">"咖啡厅"</span> },
+    <span class="key">"description"</span>: <span class="str">"团队成员在咖啡厅讨论工作事项，当前为线下会议场景"</span>,
     <span class="key">"confidence"</span>: <span class="num">0.85</span>,
     <span class="key">"evidence_span"</span>: <span class="str">"在星巴克讨论"</span>
   },
   {
     <span class="key">"subtype"</span>: <span class="str">"goal"</span>,
     <span class="key">"summary"</span>: <span class="str">"技术选型决策"</span>,
-    <span class="key">"structured_slots"</span>: { <span class="key">"决策类型"</span>: <span class="str">"架构选择"</span> },
+    <span class="key">"description"</span>: <span class="str">"团队围绕新项目技术方案进行讨论，目标是完成架构选择决策"</span>,
     <span class="key">"confidence"</span>: <span class="num">0.78</span>,
     <span class="key">"evidence_span"</span>: <span class="str">"讨论了新项目的技术方案"</span>
   }
@@ -1080,7 +1080,7 @@ situation | state | constraint | goal | environment | phase`,
       params: [
         ['CONTEXT_EXTRACTION_BATCH_SIZE', '8', '批量上下文抽取'],
         ['CONTEXT_AWARE_EXTRACTION_LIMIT', '36', '感知已有上下文数量上限'],
-        ['allowed subtypes', 'situation | state | constraint | goal | environment | phase', '允许的上下文子类型'],
+        ['allowed subtypes', 'situation | state | constraint | goal | environment | phase | preference | relationship | emotion | capability', '允许的上下文子类型'],
       ],
     },
   },
@@ -1093,7 +1093,7 @@ situation | state | constraint | goal | environment | phase`,
     detail: {
       steps: [
         { text: '加载候选上下文 <code>store.find_context_candidates()</code>', sub: '从图数据库获取同类型的活跃 Context 节点，上限 24 个' },
-        { text: '计算相似度 <code>_context_similarity(candidate, draft)</code>', sub: '综合 summary 词法匹配 + structured_slots Jaccard + subtype 匹配' },
+        { text: '计算相似度 <code>_context_similarity(candidate, draft)</code>', sub: '综合 summary 相似度 + summary/description embedding + subtype 匹配' },
         { text: '判断是否复用', sub: 'similarity >= CONTEXT_REUSE_THRESHOLD (0.50) → 复用已有 Context' },
         { text: '冲突检测', sub: 'similarity >= CONTEXT_CONFLICT_THRESHOLD (0.72) 且 slots 矛盾 → 处理冲突' },
         { text: '复用: 更新已有 Context 的 support_count 和 confidence', sub: '创建: 生成新 Context 节点并保存到图数据库' },
@@ -1316,7 +1316,7 @@ evt_001.status = <span class="str">"merged"</span>
       steps: [
         { text: '获取所有活跃 Context 节点', sub: 'store.find_context_candidates(only_active=True)' },
         { text: '按 subtype 分组，组内计算两两相似度', sub: '同 subtype 的上下文更可能需要合并' },
-        { text: '合并高相似度对', sub: '合并 structured_slots, source_refs, merged_from' },
+        { text: '合并高相似度对', sub: '合并 description, source_refs, merged_from' },
         { text: '图重写 <code>store.relink_context_edges()</code>', sub: '将被合并 Context 的所有 IN_REL 边迁移到目标 Context' },
       ],
       output: `<span class="comment">// 上下文合并示例</span>
@@ -1582,7 +1582,7 @@ function renderSchema() {
           ['context_type', 'STRING', '类型'],
           ['subtype', 'STRING', 'situation | state | ...'],
           ['summary', 'STRING', '上下文摘要'],
-          ['structured_slots', 'STRING (JSON)', '结构化键值'],
+          ['description', 'STRING', '自然语言丰富描述'],
           ['confidence', 'DOUBLE', '置信度'],
           ['support_count', 'INT64', '引用次数'],
           ['status', 'STRING', 'active | deprecated | merged'],

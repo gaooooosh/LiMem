@@ -54,14 +54,14 @@ class TestPreExtractedContexts(unittest.TestCase):
         llm_draft_a = ContextDraft(
             subtype="constraint",
             summary="时间紧张",
-            structured_slots={"constraint": "时间紧张"},
+            description="用户处于快要迟到的状态，需要尽快出发",
             confidence=0.88,
             evidence_span="快迟到了",
         )
         llm_draft_b = ContextDraft(
             subtype="state",
             summary="电量低",
-            structured_slots={"state": "电量低"},
+            description="设备当前电量仅剩12%，需要尽快充电",
             confidence=0.9,
             evidence_span="电量只剩12%",
         )
@@ -112,7 +112,7 @@ class TestPreExtractedContexts(unittest.TestCase):
         draft = ContextDraft(
             subtype="constraint",
             summary="时间紧张",
-            structured_slots={"constraint": "时间紧张"},
+            description="用户面临即将迟到的时间压力",
             evidence_span="快迟到了",
         )
 
@@ -151,6 +151,7 @@ class TestPreExtractedContexts(unittest.TestCase):
                     {
                         "subtype": "scene",
                         "summary": "  车内音乐播放场景  ",
+                        "description": "用户在车内播放音乐，当前处于娱乐交互环境",
                         "evidence_span": "在车内播放音乐",
                     },
                     {
@@ -167,7 +168,7 @@ class TestPreExtractedContexts(unittest.TestCase):
         self.assertEqual(len(drafts), 1)
         self.assertEqual(drafts[0].subtype, "situation")
         self.assertEqual(drafts[0].summary, "车内音乐播放场景")
-        self.assertEqual(drafts[0].structured_slots["situation"], "车内音乐播放场景")
+        self.assertIn("车内播放音乐", drafts[0].description)
 
 
 if __name__ == "__main__":

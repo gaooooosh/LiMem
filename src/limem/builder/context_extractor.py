@@ -405,16 +405,14 @@ class ContextExtractionPipeline:
                 continue
             subtype = normalize_context_subtype(item.get("subtype", "situation"))
             summary = str(item.get("summary", "") or "").strip()
+            description = str(item.get("description", "") or "").strip()
             evidence_span = str(item.get("evidence_span", "") or "").strip()
-            structured_slots = item.get("structured_slots", {})
-            if not isinstance(structured_slots, dict):
-                structured_slots = {}
             signal = self._match_signal(evidence_span, candidate_spans)
             drafts.append(
                 ContextDraft(
                     subtype=subtype,
                     summary=summary,
-                    structured_slots=structured_slots,
+                    description=description,
                     confidence=float(item.get("confidence", 0.6) or 0.6),
                     evidence_span=evidence_span,
                     source_refs=self._make_source_refs(
@@ -461,17 +459,8 @@ class ContextExtractionPipeline:
                 continue
             if draft.subtype not in ALLOWED_CONTEXT_SUBTYPES:
                 continue
-            if not isinstance(draft.structured_slots, dict):
-                continue
             if not self.is_valid_context_draft(draft):
                 continue
-
-            cleaned_slots = self._clean_structured_slots(draft.structured_slots)
-            if not cleaned_slots:
-                slot_key = self._default_slot_key(draft.subtype)
-                slot_value = self._normalize_free_text(draft.summary or draft.evidence_span)
-                if slot_value:
-                    cleaned_slots = {slot_key: slot_value}
 
             evidence_span = self._normalize_free_text(draft.evidence_span or draft.summary)
             if evidence_span and record_text and not self._evidence_matches_text(evidence_span, record_text):
@@ -481,7 +470,9 @@ class ContextExtractionPipeline:
                 ContextDraft(
                     subtype=normalize_context_subtype(draft.subtype),
                     summary=self._normalize_free_text(draft.summary),
-                    structured_slots=cleaned_slots,
+                    description=self._normalize_description(
+                        draft.description or draft.evidence_span or draft.summary
+                    ),
                     confidence=max(0.0, min(1.0, float(draft.confidence or 0.0))),
                     evidence_span=evidence_span or self._normalize_free_text(draft.summary),
                     source_refs=draft.source_refs or self._make_source_refs(
@@ -502,26 +493,29 @@ class ContextExtractionPipeline:
         summary = str(draft.summary or "").strip()
         if not summary:
             return False
-        if len(summary) > 64:
+        if len(summary) > 128:
             return False
         if any(ch in summary for ch in ('{', '}', '"')):
+            return False
+        if len(str(draft.description or "").strip()) > 512:
             return False
         return True
 
     def canonicalize_context(self, context_draft: ContextDraft) -> ContextDraft:
         subtype = normalize_context_subtype(context_draft.subtype)
-        slots = self._canonicalize_slots(context_draft.structured_slots)
         summary = self._canonicalize_summary(context_draft.summary, context_draft.evidence_span)
+        description = self._normalize_description(
+            context_draft.description or context_draft.evidence_span or summary
+        )
         canonical_key = CanonicalContextKey(
             context_type="context",
             subtype=subtype,
             summary=summary,
-            structured_slots=slots,
         )
         return ContextDraft(
             subtype=subtype,
             summary=summary,
-            structured_slots=slots,
+            description=description,
             confidence=context_draft.confidence,
             evidence_span=context_draft.evidence_span or context_draft.summary,
             source_refs=context_draft.source_refs,
@@ -529,57 +523,6 @@ class ContextExtractionPipeline:
             valid_to=context_draft.valid_to,
             canonical_key=canonical_key,
         )
-
-    def _clean_structured_slots(self, structured_slots: dict[str, Any]) -> dict[str, Any]:
-        cleaned: dict[str, Any] = {}
-        for raw_key, raw_value in structured_slots.items():
-            key = self._normalize_slot_key(raw_key)
-            value = self._normalize_slot_value(raw_value)
-            if not key or value in (None, "", [], {}):
-                continue
-            cleaned[key] = value
-        return cleaned
-
-    def _canonicalize_slots(self, structured_slots: dict[str, Any]) -> dict[str, Any]:
-        cleaned = self._clean_structured_slots(structured_slots)
-        return {key: cleaned[key] for key in sorted(cleaned.keys())}
-
-    def _normalize_slot_key(self, value: Any) -> str:
-        text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-        return re.sub(r"[^a-z0-9_\u4e00-\u9fff]", "", text)
-
-    def _normalize_slot_value(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            nested = {
-                self._normalize_slot_key(key): self._normalize_slot_value(sub_value)
-                for key, sub_value in value.items()
-            }
-            return {
-                key: nested[key]
-                for key in sorted(nested.keys())
-                if key and nested[key] not in (None, "", [], {})
-            }
-        if isinstance(value, list):
-            result = []
-            for item in value:
-                normalized = self._normalize_slot_value(item)
-                if normalized not in (None, "", [], {}) and normalized not in result:
-                    result.append(normalized)
-            return result
-        if isinstance(value, (int, float, bool)):
-            return value
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        if re.fullmatch(r"\d+", text):
-            return int(text)
-        if re.fullmatch(r"\d+\.\d+", text):
-            return float(text)
-        percent = re.fullmatch(r"(\d+(?:\.\d+)?)\s*%", text)
-        if percent:
-            number = float(percent.group(1))
-            return int(number) if number.is_integer() else number
-        return self._normalize_free_text(text)
 
     def _canonicalize_summary(self, summary: str, evidence_span: str) -> str:
         return self._normalize_free_text(summary or evidence_span)
@@ -591,7 +534,6 @@ class ContextExtractionPipeline:
             canonical = draft.canonical_key or CanonicalContextKey(
                 subtype=draft.subtype,
                 summary=draft.summary,
-                structured_slots=draft.structured_slots,
             )
             signature = json.dumps(canonical.to_dict(), ensure_ascii=False, sort_keys=True)
             if signature in seen:
@@ -682,19 +624,13 @@ class ContextExtractionPipeline:
                 return span.signal
         return "llm_context"
 
-    def _default_slot_key(self, subtype: str) -> str:
-        return {
-            "situation": "situation",
-            "state": "state",
-            "constraint": "constraint",
-            "goal": "goal",
-            "environment": "environment",
-            "phase": "phase",
-        }.get(normalize_context_subtype(subtype), "condition")
-
     def _normalize_free_text(self, text: Any) -> str:
         normalized = re.sub(r"\s+", " ", str(text or "")).strip(" ，,。；;：:")
-        return normalized[:64]
+        return normalized[:128]
+
+    def _normalize_description(self, text: Any) -> str:
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip(" ，,。；;：:")
+        return normalized[:512]
 
     def _normalize_text(self, text: str) -> str:
         return re.sub(r"[\s，,。；;：:、/\\-]+", "", str(text or "").lower())

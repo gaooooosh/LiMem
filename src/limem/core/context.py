@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 import json
+import re
 
 from ..utils import safe_json_loads
 
@@ -16,6 +17,10 @@ ALLOWED_CONTEXT_SUBTYPES = {
     "goal",
     "environment",
     "phase",
+    "preference",
+    "relationship",
+    "emotion",
+    "capability",
 }
 ALLOWED_CONTEXT_STATUSES = {"active", "weakened", "deprecated", "merged"}
 
@@ -34,6 +39,15 @@ _SUBTYPE_ALIASES = {
     "external_environment": "environment",
     "env": "environment",
     "stage": "phase",
+    "feeling": "emotion",
+    "mood": "emotion",
+    "affective": "emotion",
+    "like": "preference",
+    "dislike": "preference",
+    "social": "relationship",
+    "role": "relationship",
+    "ability": "capability",
+    "resource": "capability",
 }
 _STATUS_ALIASES = {
     "inactive": "deprecated",
@@ -106,12 +120,9 @@ def _normalize_merged_from(value: Any) -> list[str]:
     return result
 
 
-def _sorted_slots(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _sorted_slots(value[key]) for key in sorted(value.keys(), key=str)}
-    if isinstance(value, list):
-        return [_sorted_slots(item) for item in value]
-    return value
+def _normalize_context_description(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" ，,。；;：:")
+    return text[:512]
 
 
 @dataclass
@@ -139,27 +150,17 @@ class CanonicalContextKey:
     context_type: str = "context"
     subtype: str = "situation"
     summary: str = ""
-    structured_slots: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.context_type = normalize_context_type(self.context_type)
         self.subtype = normalize_context_subtype(self.subtype)
         self.summary = str(self.summary or "").strip()
-        self.structured_slots = _sorted_slots(
-            dict(self.structured_slots) if isinstance(self.structured_slots, dict) else {}
-        )
-
-    @property
-    def slot_signature(self) -> str:
-        return json.dumps(self.structured_slots, ensure_ascii=False, sort_keys=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "context_type": self.context_type,
             "subtype": self.subtype,
             "summary": self.summary,
-            "structured_slots": self.structured_slots,
-            "slot_signature": self.slot_signature,
         }
 
 
@@ -169,7 +170,7 @@ class ContextDraft:
 
     subtype: str = "situation"
     summary: str = ""
-    structured_slots: dict[str, Any] = field(default_factory=dict)
+    description: str = ""
     confidence: float = 0.6
     evidence_span: str = ""
     context_type: str = "context"
@@ -182,9 +183,7 @@ class ContextDraft:
         self.context_type = normalize_context_type(self.context_type)
         self.subtype = normalize_context_subtype(self.subtype)
         self.summary = str(self.summary or "").strip()
-        self.structured_slots = _sorted_slots(
-            dict(self.structured_slots) if isinstance(self.structured_slots, dict) else {}
-        )
+        self.description = _normalize_context_description(self.description)
         self.confidence = max(0.0, min(1.0, float(self.confidence or 0.0)))
         self.evidence_span = str(self.evidence_span or "").strip()
         self.source_refs = _normalize_source_refs(self.source_refs)
@@ -197,7 +196,7 @@ class ContextDraft:
             context_type=self.context_type,
             subtype=self.subtype,
             summary=self.summary,
-            structured_slots=self.structured_slots,
+            description=self.description,
             confidence=self.confidence,
             support_count=1,
             created_at=timestamp,
@@ -219,7 +218,7 @@ class Context:
     context_type: str = "context"
     subtype: str = "situation"
     summary: str = ""
-    structured_slots: dict[str, Any] = field(default_factory=dict)
+    description: str = ""
     confidence: float = 0.6
     support_count: int = 1
     created_at: int = 0
@@ -236,9 +235,7 @@ class Context:
         self.context_type = normalize_context_type(self.context_type)
         self.subtype = normalize_context_subtype(self.subtype)
         self.summary = str(self.summary or "").strip()
-        self.structured_slots = _sorted_slots(
-            dict(self.structured_slots) if isinstance(self.structured_slots, dict) else {}
-        )
+        self.description = _normalize_context_description(self.description)
         self.confidence = max(0.0, min(1.0, float(self.confidence or 0.0)))
         self.support_count = max(1, int(self.support_count or 1))
         self.created_at = int(self.created_at or 0)
@@ -259,7 +256,7 @@ class Context:
             context_type=data.get("context_type", "context"),
             subtype=data.get("subtype", "situation"),
             summary=data.get("summary", "") or "",
-            structured_slots=safe_json_loads(data.get("structured_slots"), {}),
+            description=data.get("description", "") or "",
             confidence=float(data.get("confidence", 0.6) or 0.6),
             support_count=int(data.get("support_count", 1) or 1),
             created_at=int(data.get("created_at", 0) or 0),
@@ -279,7 +276,7 @@ class Context:
             "context_type": self.context_type,
             "subtype": self.subtype,
             "summary": self.summary,
-            "structured_slots": json.dumps(self.structured_slots, ensure_ascii=False, sort_keys=True),
+            "description": self.description,
             "confidence": float(self.confidence),
             "support_count": int(self.support_count),
             "created_at": int(self.created_at),

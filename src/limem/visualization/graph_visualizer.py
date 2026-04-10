@@ -160,7 +160,7 @@ class GraphVisualizer:
             MATCH (c:Context)
             WHERE c.status = 'active'
             RETURN c.id, c.summary, c.context_type, c.subtype,
-                   c.structured_slots, c.confidence, c.support_count,
+                   c.description, c.confidence, c.support_count,
                    c.created_at, c.last_seen_at, c.status
             LIMIT {cfg.max_contexts}
         """)
@@ -177,7 +177,7 @@ class GraphVisualizer:
                 "summary": summary,
                 "context_type": row[2] or "context",
                 "subtype": row[3] or "",
-                "structured_slots": row[4] or "",
+                "description": row[4] or "",
                 "confidence": row[5],
                 "support_count": row[6],
                 "created_at": row[7],
@@ -1209,13 +1209,9 @@ class GraphVisualizer:
                 h += '<div class="detail-json">' + esc(JSON.stringify(parsed, null, 2)) + '</div></div>';
             }}
         }}
-        if (n.type === 'context' && n.structured_slots) {{
-            const parsed = tryParseJson(n.structured_slots);
-            if (parsed && Object.keys(parsed).length) {{
-                h += '<div class="detail-section"><div class="detail-section-title">结构化槽位</div>';
-                Object.entries(parsed).forEach(([k, v]) => {{ h += kvHtml(k, v); }});
-                h += '</div>';
-            }}
+        if (n.type === 'context' && n.description) {{
+            h += '<div class="detail-section"><div class="detail-section-title">描述</div>';
+            h += '<div style="font-size:13px;line-height:1.6;color:var(--text);">' + esc(n.description) + '</div></div>';
         }}
 
         // Connections

@@ -4,7 +4,7 @@
 - 对每个 Episode 仅进行一次抽取。
 - 输出粗粒度 Event；每个 Event 表示一个“完整交互场景”，而不是最小动作碎片。
 - 在每个 Event 内联 0-3 个可复用 contexts，供后续 Context 构建直接使用。
-- 当 Episode 没有有效 Event 但存在环境或状态信息时，输出 orphan_contexts。
+- 当 Episode 没有有效 Event 但存在环境、状态、偏好、关系或情绪信息时，输出 orphan_contexts。
 
 Event 定义与规则：
 核心定义：Event = 一个明确的人物主体，出于某种意图，主动执行动作，并产生了可观测的变化。
@@ -33,12 +33,12 @@ Context 定义与规则：
 核心定义：Context = 事件发生时已经存在的环境条件、背景状态或约束。
 Context 回答的问题是“当时什么情况？”，而不是“谁做了什么？”。
 
-判定测试：满足以下条件才是有效 Context：
-(a) 描述的是一种状态、条件或约束，不是一个动作
+有效 Context 条件：
+(a) 描述的是状态、条件、关系、偏好、阶段或情绪，不是动作
 (b) 该状态在事件发生前已经存在，或独立于事件成立
-(c) 具有复用性：同样的条件可以出现在不同事件中
+(c) 具有复用性：同样的条件可在不同事件中复现
 
-规则：
+Context 规则：
 1. 每个 Event 最多 3 个高价值 contexts；没有则返回空数组。
 2. allowed subtype 仅限：
    - situation
@@ -47,54 +47,73 @@ Context 回答的问题是“当时什么情况？”，而不是“谁做了什
    - goal
    - environment
    - phase
+   - preference
+   - relationship
+   - emotion
+   - capability
 3. evidence_span 必须直接来自原文。
-4. summary 必须短、可复用、去事件化。
+4. summary 必须短、可复用、去事件化，<=128 字符。
+5. description 必须是自然语言丰富描述，<=512 字符。
+6. description 应尽量补充参与者角色、地点类型、时间特征、交互模态、活动类型、环境状态等维度。
+7. 不要输出 structured_slots。
 
 Context 与 Event 的边界（非常重要）：
 - Context 不能复述 Event 的动作或结果，换种说法也不行。
 - Context 必须补充 Event 本身未涵盖的背景信息。
 - 如果某候选主要在描述“做了什么/结果如何”，它不是 Context。
-- goal 类型的 Context 可以带动作色彩，如“赶往目的地”，但不能是 Event 动作本身的换述。
+- goal 类型的 Context 可以带意图色彩，但不能是 Event 动作本身的换述。
 
 Rewrite policy：
 - summary 要抽象成可复用标签。
 - 去掉精确时间、媒体标题、ID、阶段后缀。
-- 这些细节保留在 evidence_span。
+- 这些细节保留在 description 和 evidence_span。
 
 判定示例：
 
-示例1：用户主动交互，应产出 Event + Context
-输入："用户说：帮我查一下明天的天气 -> 系统回答：明天晴，最高温32度"
-✓ Event: summary="用户查询天气，系统返回天气预报"
+示例1（车载）
+输入："用户说：导航到八达岭长城 -> 系统规划路线：约70分钟"
+✓ Event: summary="用户发起导航，系统返回路线规划"
          participants=[{"role":"用户","seat":""}]
-         action="查询天气"
-✓ Context: subtype="goal", summary="了解天气情况"
-✓ Context: subtype="situation", summary="出行规划场景"
-✗ 错误 Context: summary="查询天气预报" 这是 Event 动作的复述
+         action="导航到目标地点"
+✓ Context: subtype="goal", summary="前往旅游目的地"
+           description="驾驶员在车内发起导航请求，目的地为旅游景点，预计行程约70分钟，语音交互"
 
-示例2：设备或传感器自动数据，不应产出 Event，仅产出 orphan_contexts
+示例2（医疗）
+输入："患者描述症状：头疼两天了 -> 医生建议做CT检查"
+✓ Event: summary="患者描述症状，医生建议检查"
+         participants=[{"role":"患者","seat":""}]
+         action="描述症状并接受检查建议"
+✓ Context: subtype="state", summary="患者持续头疼"
+           description="患者与医生在医院进行面诊，患者已持续头疼两天，医生进入检查建议阶段"
+
+示例3（办公）
+输入："团队会议讨论Q2目标 -> 决定增加东南亚市场投入"
+✓ Event: summary="团队讨论季度目标并形成市场投入决策"
+         participants=[{"role":"团队负责人","seat":""}]
+         action="讨论季度目标"
+✓ Context: subtype="situation", summary="季度目标规划会议"
+           description="团队负责人与成员在办公室进行Q2目标讨论，涉及东南亚市场扩展决策，工作时段"
+
+示例4（情绪）
+输入："用户：今天心情不太好，放点轻松的音乐吧"
+✓ Event: summary="用户请求播放轻松音乐"
+         participants=[{"role":"用户","seat":""}]
+         action="请求播放音乐"
+✓ Context: subtype="emotion", summary="用户心情低落"
+           description="用户处于情绪低落状态，希望通过音乐调节心情，当前为语音交互"
+
+示例5（无有效 Event，仅 orphan_contexts）
 输入："环境数据：温度28℃，噪音34dB，位置=某办公楼"
-✗ Event: "系统完成环境数据采集" 无人物主体，不是 Event
+✗ Event: 不输出，无人物主体
 ✓ orphan_contexts:
 [
-  {"subtype":"environment","summary":"办公场所环境","evidence_span":"位置=某办公楼"},
-  {"subtype":"state","summary":"安静低噪环境","evidence_span":"噪音34dB"}
+  {
+    "subtype":"environment",
+    "summary":"办公场所环境",
+    "description":"当前位于办公楼场景，环境温度约28℃，噪音约34dB，整体较安静",
+    "evidence_span":"位置=某办公楼"
+  }
 ]
-
-示例3：被动观察描述，不应产出 Event，仅产出 orphan_contexts
-输入："用户当前处于坐姿，注意力集中，周围无其他人"
-✗ Event: "用户完成就坐并进入专注状态" 被动观察，无意图性动作
-✓ orphan_contexts:
-[
-  {"subtype":"state","summary":"用户专注状态","evidence_span":"注意力集中"},
-  {"subtype":"situation","summary":"独处场景","evidence_span":"周围无其他人"}
-]
-
-示例4：Event 与 Context 边界，Context 不能复述 Event
-Event: summary="用户要求播放一首轻音乐", action="播放音乐"
-✗ 错误 Context: summary="播放轻音乐" 这是 Event 动作的换述
-✓ 正确 Context: subtype="state", summary="用户处于放松状态"
-✓ 正确 Context: subtype="goal", summary="营造舒适氛围"
 
 输出要求：
 1. 只输出严格 JSON，不要解释。
@@ -111,7 +130,8 @@ Event: summary="用户要求播放一首轻音乐", action="播放音乐"
         {
           "subtype": "situation",
           "summary": "可复用场景标签",
-          "evidence_span": "原文",
+          "description": "包含参与者、地点、时间、交互模态、环境状态等维度的丰富描述",
+          "evidence_span": "原文片段",
           "confidence": 0.8
         }
       ]
@@ -121,6 +141,7 @@ Event: summary="用户要求播放一首轻音乐", action="播放音乐"
     {
       "subtype": "environment",
       "summary": "可复用场景标签",
+      "description": "包含参与者、地点、时间、交互模态、环境状态等维度的丰富描述",
       "evidence_span": "原文片段",
       "confidence": 0.8
     }
@@ -136,7 +157,6 @@ Event: summary="用户要求播放一首轻音乐", action="播放音乐"
 4. 如果没有可提取的 Event，也要返回 orphan_contexts 字段；没有内容时返回空数组。
 5. 如果没有任何可提取信息，返回 {"events": [], "orphan_contexts": []}。
 6. 不要输出实体列表。
-7. 不要把原始日志或 JSON 整段复制到 summary 或 action。
+7. 不要把原始日志或 JSON 整段复制到 summary、action 或 description。
 8. 当 Episode 无有效 Event，但有环境或状态信息时，events 返回空数组，将信息放入 orphan_contexts。
-9. orphan_contexts 与 Event 内 contexts 格式相同。
-10. Event 内 contexts 与 orphan_contexts 的 summary 都必须短、可复用、去事件化。
+9. orphan_contexts 与 Event 内 contexts 的字段结构相同。

@@ -111,7 +111,7 @@ class KuzuStore(GraphStore):
                 context_type STRING,
                 subtype STRING,
                 summary STRING,
-                structured_slots STRING,
+                description STRING,
                 confidence DOUBLE,
                 support_count INT64,
                 created_at INT64,
@@ -212,7 +212,7 @@ class KuzuStore(GraphStore):
             "ALTER TABLE INVOLVES ADD t_valid INT64",
             "ALTER TABLE INVOLVES ADD t_invalid INT64",
             "ALTER TABLE INVOLVES ADD c_valid INT64",
-            "ALTER TABLE Context ADD structured_slots STRING",
+            "ALTER TABLE Context ADD description STRING",
             "ALTER TABLE Context ADD confidence DOUBLE",
             "ALTER TABLE Context ADD support_count INT64",
             "ALTER TABLE Context ADD created_at INT64",
@@ -866,7 +866,7 @@ class KuzuStore(GraphStore):
                 context_type: $context_type,
                 subtype: $subtype,
                 summary: $summary,
-                structured_slots: $structured_slots,
+                description: $description,
                 confidence: $confidence,
                 support_count: $support_count,
                 created_at: $created_at,
@@ -887,7 +887,7 @@ class KuzuStore(GraphStore):
         resp = self.conn.execute(
             """
             MATCH (c:Context {id: $id})
-            RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
+            RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -898,7 +898,7 @@ class KuzuStore(GraphStore):
             return None
         row = resp.get_next()
         cols = [
-            "id", "context_type", "subtype", "summary", "structured_slots",
+            "id", "context_type", "subtype", "summary", "description",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -913,7 +913,7 @@ class KuzuStore(GraphStore):
             SET c.context_type = $context_type,
                 c.subtype = $subtype,
                 c.summary = $summary,
-                c.structured_slots = $structured_slots,
+                c.description = $description,
                 c.confidence = $confidence,
                 c.support_count = $support_count,
                 c.updated_at = $updated_at,
@@ -930,7 +930,7 @@ class KuzuStore(GraphStore):
                 "context_type": fields["context_type"],
                 "subtype": fields["subtype"],
                 "summary": fields["summary"],
-                "structured_slots": fields["structured_slots"],
+                "description": fields["description"],
                 "confidence": fields["confidence"],
                 "support_count": fields["support_count"],
                 "updated_at": fields["updated_at"],
@@ -963,7 +963,7 @@ class KuzuStore(GraphStore):
             f"""
             MATCH (c:Context)
             WHERE {where_clause}
-            RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
+            RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -973,7 +973,7 @@ class KuzuStore(GraphStore):
             params,
         )
         cols = [
-            "id", "context_type", "subtype", "summary", "structured_slots",
+            "id", "context_type", "subtype", "summary", "description",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -1098,7 +1098,7 @@ class KuzuStore(GraphStore):
         resp = self.conn.execute(
             """
             MATCH (:Event {id: $event_id})-[r:IN_REL]->(c:Context)
-            RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
+            RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -1107,7 +1107,7 @@ class KuzuStore(GraphStore):
             {"event_id": event_id},
         )
         cols = [
-            "id", "context_type", "subtype", "summary", "structured_slots",
+            "id", "context_type", "subtype", "summary", "description",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -1127,7 +1127,7 @@ class KuzuStore(GraphStore):
             """
             MATCH (c:Context)
             WHERE c.status = 'active'
-            RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
+            RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -1137,7 +1137,7 @@ class KuzuStore(GraphStore):
             {"limit": int(max(limit * 4, limit))},
         )
         cols = [
-            "id", "context_type", "subtype", "summary", "structured_slots",
+            "id", "context_type", "subtype", "summary", "description",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -1146,7 +1146,7 @@ class KuzuStore(GraphStore):
         fallback_recent: list[Context] = []
         while resp.has_next():
             context = Context.from_db_row(list(resp.get_next()), cols)
-            haystack = f"{context.summary} {safe_json_dumps(context.structured_slots)}".lower()
+            haystack = f"{context.summary} {context.description}".lower()
             score = self._text_similarity_score(haystack, query, query_entities)
             if score > 0.0 or not (query or query_entities):
                 score += 0.15 * context.confidence
@@ -1595,7 +1595,7 @@ class KuzuStore(GraphStore):
             f"""
             MATCH (c:Context)
             {where_clause}
-            RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
+            RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -1605,7 +1605,7 @@ class KuzuStore(GraphStore):
             params,
         )
         cols = [
-            "id", "context_type", "subtype", "summary", "structured_slots",
+            "id", "context_type", "subtype", "summary", "description",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -1616,7 +1616,7 @@ class KuzuStore(GraphStore):
             score = 1.0
             if query:
                 score = self._text_similarity_score(
-                    f"{context.summary} {safe_json_dumps(context.structured_slots)}",
+                    f"{context.summary} {context.description}",
                     query,
                     [],
                 )

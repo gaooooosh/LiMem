@@ -12,7 +12,7 @@
         {{
           "subtype": "state",
           "summary": "可复用的抽象上下文",
-          "structured_slots": {{}},
+          "description": "包含参与者、地点、时间、交互模态、环境状态等维度的丰富描述",
           "confidence": 0.88,
           "evidence_span": "必须来自该 item 的原文"
         }}
@@ -33,6 +33,7 @@
 3. 如果某个 item 没有高质量 Context，也必须返回对应 item_index，且 contexts 置为空数组。
 4. evidence_span 必须来自对应 item 的原文。
 5. summary 要短、可复用、去事件化，不要复制整句事件。
-6. 只输出 JSON，不要任何解释文本。
+6. description 要尽量补充参与者、地点类型、时间特征、交互模态、活动类型、环境状态等维度。
+7. 只输出 JSON，不要任何解释文本。
 
 {existing_contexts_note}

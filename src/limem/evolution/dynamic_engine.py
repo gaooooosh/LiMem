@@ -60,15 +60,6 @@ from ..utils import hash_summary, load_prompt, robust_json_loads, safe_json_dump
 
 logger = logging.getLogger(__name__)
 
-_CONTEXT_ECHO_SLOT_KEYS = {
-    "situation",
-    "state",
-    "constraint",
-    "goal",
-    "environment",
-    "phase",
-}
-
 
 @dataclass
 class DynamicEvolutionConfig:
@@ -394,7 +385,9 @@ class DynamicEvolutionEngine:
                         context_obj = None
                 context_embedding = getattr(context_obj, "embedding", None) if context_obj is not None else None
                 if not context_embedding:
-                    context_embedding = self._maybe_embed_context(summary_text)
+                    context_embedding = self._maybe_embed_context(
+                        self._context_embedding_text(context_obj) if context_obj is not None else summary_text
+                    )
                 score = self._event_embedding_similarity(query_embedding, context_embedding)
             scored.append((score, str(context_id or "").strip(), summary_text))
         if not scored:
@@ -418,6 +411,9 @@ class DynamicEvolutionEngine:
         subtype = self._context_subtype(context)
         if subtype:
             payload["subtype"] = subtype
+        description = self._context_description(context)
+        if description:
+            payload["description"] = description
         return payload
 
     def _build_extraction_query_text(
@@ -623,10 +619,8 @@ class DynamicEvolutionEngine:
             if not isinstance(item, dict):
                 continue
             summary = str(item.get("summary", "") or "").strip()
+            description = str(item.get("description", "") or "").strip()
             evidence_span = str(item.get("evidence_span", "") or "").strip()
-            structured_slots = item.get("structured_slots", {})
-            if not isinstance(structured_slots, dict):
-                structured_slots = {}
             try:
                 confidence = float(item.get("confidence", 0.6) or 0.6)
             except (TypeError, ValueError):
@@ -635,7 +629,7 @@ class DynamicEvolutionEngine:
                 ContextDraft(
                     subtype=str(item.get("subtype", "situation") or "situation"),
                     summary=summary,
-                    structured_slots=structured_slots,
+                    description=description,
                     confidence=confidence,
                     evidence_span=evidence_span or summary,
                     source_refs=[
@@ -900,15 +894,14 @@ class DynamicEvolutionEngine:
         evidence: ContextDraft,
         event: Optional[Event],
     ) -> Context:
+        del event
         now = max(evidence.valid_from or 0, int(time.time()))
-        merged_slots = dict(context_node.structured_slots)
-        for key, value in evidence.structured_slots.items():
-            if value not in (None, "", [], {}):
-                merged_slots[key] = value
-
-        context_node.structured_slots = merged_slots
         if not context_node.summary or len(evidence.summary) > len(context_node.summary):
             context_node.summary = evidence.summary
+        if not context_node.description:
+            context_node.description = evidence.description
+        elif evidence.description and len(evidence.description) > len(context_node.description):
+            context_node.description = evidence.description
         context_node.support_count += 1
         context_node.updated_at = now
         context_node.last_seen_at = now
@@ -924,6 +917,7 @@ class DynamicEvolutionEngine:
             (context_node.confidence * 0.8) + (evidence.confidence * 0.2) + self.config.reinforcement_step * 0.2,
         )
         context_node.status = "active"
+        context_node.embedding = self._maybe_embed_context(self._context_embedding_text(context_node))
         self.store.update_context(context_node)
         return context_node
 
@@ -932,7 +926,7 @@ class DynamicEvolutionEngine:
         context = context_draft.to_node(
             context_id=self._new_context_id(context_draft),
             timestamp=now,
-            embedding=self._maybe_embed_context(context_draft.summary),
+            embedding=self._maybe_embed_context(self._context_embedding_text(context_draft)),
         )
         self.store.save_context(context)
         return context
@@ -1571,9 +1565,6 @@ class DynamicEvolutionEngine:
     # Algorithm 5: Conflict and Drift Management
     # -------------------------------------------------------------------------
     def detect_conflict(self, node: Context, new_evidence: ContextDraft) -> bool:
-        overlap_count = self._context_overlap_key_count(node, new_evidence)
-        if overlap_count < 1:
-            return False
         return self._context_conflict_ratio(node, new_evidence) >= self.config.context_conflict_threshold
 
     def handle_context_conflict(self, context_node: Context, evidence: ContextDraft) -> Context:
@@ -1581,7 +1572,7 @@ class DynamicEvolutionEngine:
         sibling = evidence.to_node(
             context_id=f"{self._new_context_id(evidence)}_sib_{uuid.uuid4().hex[:6]}",
             timestamp=now,
-            embedding=self._maybe_embed_context(evidence.summary),
+            embedding=self._maybe_embed_context(self._context_embedding_text(evidence)),
         )
         sibling.confidence = max(0.45, sibling.confidence)
         self.store.save_context(sibling)
@@ -2022,107 +2013,66 @@ class DynamicEvolutionEngine:
         return right, left
 
     def _context_rank_key(self, context: Context) -> tuple[int, int, int, int]:
-        slot_count = len(self._effective_context_slots(context))
         return (
             int(context.support_count or 1),
-            slot_count,
+            1 if self._context_description(context) else 0,
             int(context.last_seen_at or context.updated_at or 0),
             int(context.created_at or 0),
         )
 
     def _context_conflict_ratio(self, a: Any, b: Any) -> float:
-        slots_a = self._effective_context_slots(a)
-        slots_b = self._effective_context_slots(b)
-        overlap_keys = set(slots_a.keys()) & set(slots_b.keys())
-        overlap = 0
-        conflicts = 0
-        for key in overlap_keys:
-            va = slots_a.get(key)
-            vb = slots_b.get(key)
-            if self._is_empty_slot_value(va) or self._is_empty_slot_value(vb):
-                continue
-            overlap += 1
-            if not self._value_overlap(va, vb):
-                conflicts += 1
-        return (conflicts / overlap) if overlap else 0.0
+        summary_overlap = self._context_text_overlap(
+            self._context_summary(a),
+            self._context_summary(b),
+        )
+        if summary_overlap >= 0.6:
+            return 0.0
 
-    def _context_overlap_key_count(self, a: Any, b: Any) -> int:
-        slots_a = self._effective_context_slots(a)
-        slots_b = self._effective_context_slots(b)
-        overlap_keys = set(slots_a.keys()) & set(slots_b.keys())
-        count = 0
-        for key in overlap_keys:
-            va = slots_a.get(key)
-            vb = slots_b.get(key)
-            if self._is_empty_slot_value(va) or self._is_empty_slot_value(vb):
-                continue
-            count += 1
-        return count
+        description_a = self._context_description(a)
+        description_b = self._context_description(b)
+        if not description_a or not description_b:
+            return 0.0
+
+        description_overlap = self._context_text_overlap(description_a, description_b)
+        semantic_similarity = self._context_embedding_similarity(a, b)
+        agreement = max(summary_overlap, description_overlap, semantic_similarity)
+        if agreement >= self.config.context_reuse_threshold:
+            return 0.0
+        return max(0.0, 1.0 - agreement)
 
     def _context_subtype_similarity(self, left: str, right: str) -> float:
         left_norm = str(left or "").strip().lower()
         right_norm = str(right or "").strip().lower()
         return 1.0 if left_norm and left_norm == right_norm else 0.0
 
-    def _build_context_summary(self, subtype: str, slots: dict[str, Any]) -> str:
-        preferred_keys = (
-            subtype,
-            "goal",
-            "constraint",
-            "state",
-            "environment",
-            "phase",
-            "scene",
-            "geo_context",
-            "digital_context",
-            "time_bucket",
-        )
-        for key in preferred_keys:
-            value = slots.get(key)
-            if value in (None, "", [], {}):
-                continue
-            if isinstance(value, list):
-                text = " / ".join(str(item) for item in value if str(item).strip())
-            else:
-                text = str(value).strip()
-            if text:
-                return text[:180]
-        return subtype[:180]
-
-    def _context_slots(self, node: Any) -> dict[str, Any]:
-        slots = getattr(node, "structured_slots", {})
-        return dict(slots) if isinstance(slots, dict) else {}
-
-    def _effective_context_slots(self, node: Any) -> dict[str, Any]:
-        return self._strip_echo_slots(
-            summary=self._context_summary(node),
-            slots=self._context_slots(node),
-        )
-
     def _normalized_context_text(self, value: Any) -> str:
         return re.sub(r"[\s，,。；;：:、/\\-]+", "", str(value or "").strip().lower())
 
-    def _strip_echo_slots(self, summary: str, slots: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(slots, dict) or not slots:
-            return {}
-        cleaned: dict[str, Any] = {}
-        summary_norm = self._normalized_context_text(summary)
-        for key, value in slots.items():
-            if key in _CONTEXT_ECHO_SLOT_KEYS and isinstance(value, str):
-                value_norm = self._normalized_context_text(value)
-                if summary_norm and value_norm:
-                    if value_norm == summary_norm:
-                        continue
-                    shorter, longer = (
-                        (value_norm, summary_norm)
-                        if len(value_norm) <= len(summary_norm)
-                        else (summary_norm, value_norm)
-                    )
-                    ratio = len(shorter) / max(1, len(longer))
-                    if len(shorter) > 8 and shorter in longer and ratio > 0.8:
-                        continue
-            cleaned[key] = value
-        return cleaned
+    def _context_description(self, node: Any) -> str:
+        return str(getattr(node, "description", "") or "").strip()
+
+    def _context_embedding_text(self, context: Any) -> str:
+        parts = [self._context_summary(context)]
+        description = self._context_description(context)
+        if description:
+            parts.append(description)
+        return " ".join(part for part in parts if part).strip()
+
+    def _context_text_overlap(self, left: str, right: str) -> float:
+        left_norm = self._normalized_context_text(left)
+        right_norm = self._normalized_context_text(right)
+        if not left_norm or not right_norm:
+            return 0.0
+        if left_norm == right_norm:
+            return 1.0
+        shorter, longer = (left_norm, right_norm) if len(left_norm) <= len(right_norm) else (right_norm, left_norm)
+        if shorter and shorter in longer:
+            return len(shorter) / max(1, len(longer))
+        left_tokens = set(re.findall(r"[\u4e00-\u9fff]{1,4}|[a-z0-9_]+", str(left or "").lower()))
+        right_tokens = set(re.findall(r"[\u4e00-\u9fff]{1,4}|[a-z0-9_]+", str(right or "").lower()))
+        if not left_tokens or not right_tokens:
+            return 0.0
+        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
     def _context_summary(self, node: Any) -> str:
         return str(getattr(node, "summary", "") or "").strip()
@@ -2137,14 +2087,14 @@ class DynamicEvolutionEngine:
         left_embedding = getattr(left, "embedding", None)
         right_embedding = getattr(right, "embedding", None)
         if not left_embedding:
-            left_embedding = self._maybe_embed_context(self._context_summary(left))
+            left_embedding = self._maybe_embed_context(self._context_embedding_text(left))
             if left_embedding is not None and hasattr(left, "embedding"):
                 try:
                     left.embedding = left_embedding
                 except Exception:
                     pass
         if not right_embedding:
-            right_embedding = self._maybe_embed_context(self._context_summary(right))
+            right_embedding = self._maybe_embed_context(self._context_embedding_text(right))
             if right_embedding is not None and hasattr(right, "embedding"):
                 try:
                     right.embedding = right_embedding
@@ -2169,16 +2119,6 @@ class DynamicEvolutionEngine:
         diff = abs(left_start - right_start)
         window = max(1, self.config.stale_seconds)
         return max(0.3, math.exp(-diff / window))
-
-    @staticmethod
-    def _is_empty_slot_value(value: Any) -> bool:
-        return value in (None, "", [], {})
-
-    def _filled_slot_values(self, slots: dict[str, Any]) -> dict[str, Any]:
-        return {
-            key: value for key, value in slots.items()
-            if not self._is_empty_slot_value(value)
-        }
 
     def _merge_source_refs(
         self,
@@ -2227,25 +2167,11 @@ class DynamicEvolutionEngine:
         right = self._normalized_context_text(self._context_summary(b))
         if left and left == right:
             return 1.0
-        return self._context_embedding_similarity(a, b)
-
-    def _value_overlap(self, va: Any, vb: Any) -> bool:
-        return self._value_overlap_score(va, vb) > 0.0
-
-    def _value_overlap_score(self, va: Any, vb: Any) -> float:
-        if isinstance(va, list) or isinstance(vb, list):
-            sa = {str(item).strip() for item in (va if isinstance(va, list) else [va]) if str(item).strip()}
-            sb = {str(item).strip() for item in (vb if isinstance(vb, list) else [vb]) if str(item).strip()}
-            if not sa and not sb:
-                return 0.0
-            return len(sa & sb) / len(sa | sb)
-        if isinstance(va, dict) or isinstance(vb, dict):
-            left = safe_json_dumps(va)
-            right = safe_json_dumps(vb)
-            return 1.0 if left == right else 0.0
-        a_str = str(va).strip().lower()
-        b_str = str(vb).strip().lower()
-        return 1.0 if a_str and a_str == b_str else 0.0
+        left_embedding = self._maybe_embed_context(self._context_summary(a))
+        right_embedding = self._maybe_embed_context(self._context_summary(b))
+        if not left_embedding or not right_embedding:
+            return 0.0
+        return self._event_embedding_similarity(left_embedding, right_embedding)
 
     def _merge_slots(self, a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         merged = dict(a)
@@ -2306,13 +2232,18 @@ class DynamicEvolutionEngine:
         canonical.confidence = min(1.0, max(canonical.confidence, merged.confidence) + 0.03)
         canonical.updated_at = ts
         canonical.last_seen_at = max(canonical.last_seen_at, merged.last_seen_at, ts)
-        canonical.structured_slots = self._merge_slots(canonical.structured_slots, merged.structured_slots)
         original_canonical_summary = str(canonical.summary or "").strip()
         original_merged_summary = str(merged.summary or "").strip()
+        original_canonical_description = self._context_description(canonical)
+        original_merged_description = self._context_description(merged)
         if (rewrite_strategy or "rewrite").strip().lower() == "rewrite":
             canonical.summary = self._rewrite_merged_context_summary(canonical, merged)
         else:
             canonical.summary = canonical.summary or merged.summary
+        if not canonical.description:
+            canonical.description = merged.description
+        elif merged.description and len(merged.description) > len(canonical.description):
+            canonical.description = merged.description
         canonical.source_refs = self._merge_source_refs(canonical.source_refs, merged.source_refs)
         canonical.source_refs = self._merge_source_refs(
             canonical.source_refs,
@@ -2324,11 +2255,15 @@ class DynamicEvolutionEngine:
                     "canonical_summary_before": original_canonical_summary,
                     "merged_summary_before": original_merged_summary,
                     "canonical_summary_after": canonical.summary,
+                    "canonical_description_before": original_canonical_description,
+                    "merged_description_before": original_merged_description,
+                    "canonical_description_after": canonical.description,
                     "merged_at": ts,
                 }
             ],
         )
         canonical.merged_from = sorted(set(canonical.merged_from + [merged.id] + merged.merged_from))
+        canonical.embedding = self._maybe_embed_context(self._context_embedding_text(canonical))
         self.store.update_context(canonical)
         moved_links = self.store.relink_context_edges(
             source_context_id=merged.id,
@@ -2348,17 +2283,14 @@ class DynamicEvolutionEngine:
         }
 
     def _rewrite_merged_context_summary(self, canonical: Context, merged: Context) -> str:
-        merged_slots = self._merge_slots(
-            dict(canonical.structured_slots if isinstance(canonical.structured_slots, dict) else {}),
-            dict(merged.structured_slots if isinstance(merged.structured_slots, dict) else {}),
-        )
-        subtype = self._context_subtype(canonical) or self._context_subtype(merged) or "situation"
-        rewritten = self._build_context_summary(subtype, merged_slots)
-        rewritten = str(rewritten or "").strip()
-        if rewritten:
-            return rewritten[:180]
-        fallback = str(canonical.summary or merged.summary or subtype).strip()
-        return fallback[:180]
+        candidates = [
+            str(canonical.summary or "").strip(),
+            str(merged.summary or "").strip(),
+        ]
+        candidates = [item for item in candidates if item]
+        if not candidates:
+            return (self._context_subtype(canonical) or self._context_subtype(merged) or "situation")[:128]
+        return max(candidates, key=len)[:128]
 
     def _apply_event_merge_plan(self, plan: dict[str, Any], merged_at: int) -> bool:
         canonical_event_id = str(plan.get("canonical_event_id", "") or "").strip()
@@ -2588,7 +2520,7 @@ class DynamicEvolutionEngine:
             "context_type": context.context_type,
             "subtype": context.subtype,
             "summary": context.summary,
-            "structured_slots": context.structured_slots,
+            "description": context.description,
             "confidence": context.confidence,
             "support_count": context.support_count,
             "last_seen_at": context.last_seen_at,
@@ -2597,9 +2529,8 @@ class DynamicEvolutionEngine:
 
     def _new_context_id(self, context: Any) -> str:
         summary = self._context_summary(context)
-        slots = self._effective_context_slots(context)
         subtype = self._context_subtype(context) or "situation"
-        signature = f"context|{subtype}|{summary}|{safe_json_dumps(slots)}"
+        signature = f"context|{subtype}|{summary}"
         return f"ctx_{hash_summary(signature)[:20]}"
 
     def _ensure_append_first_event_id(self, event: Event) -> str:
@@ -2676,7 +2607,7 @@ class DynamicEvolutionEngine:
             return 0.0
         best = 0.0
         for c in contexts:
-            context_embedding = c.embedding or self._maybe_embed_context(c.summary)
+            context_embedding = c.embedding or self._maybe_embed_context(self._context_embedding_text(c))
             score = self._event_embedding_similarity(query_embedding, context_embedding)
             if c.status != "active":
                 score *= 0.5
@@ -2689,13 +2620,13 @@ class DynamicEvolutionEngine:
             f"""
             MATCH (c:Context)
             {where}
-            RETURN c.id, c.context_type, c.subtype, c.summary, c.structured_slots,
+            RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
             """
         )
         cols = [
-            "id", "context_type", "subtype", "summary", "structured_slots",
+            "id", "context_type", "subtype", "summary", "description",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status", "embedding",
         ]
