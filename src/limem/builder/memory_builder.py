@@ -99,6 +99,11 @@ class MemoryBuilder:
         metrics["extract_episode_ms"] = self._elapsed_ms(stage_started_at)
 
         event_payloads = self._collect_event_payloads(extraction)
+        self._record_extraction_metrics(
+            metrics=metrics,
+            extraction=extraction,
+            event_payloads=event_payloads,
+        )
         pending_events: list[tuple[int, Event]] = []
         for idx, event_payload in enumerate(event_payloads):
             event = self._build_event_frame(event_payload, episode, current_time, index=idx)
@@ -151,6 +156,11 @@ class MemoryBuilder:
         extraction = self._extract_episode(episode)
         metrics["extract_episode_ms"] = self._elapsed_ms(stage_started_at)
         event_payloads = self._collect_event_payloads(extraction)
+        self._record_extraction_metrics(
+            metrics=metrics,
+            extraction=extraction,
+            event_payloads=event_payloads,
+        )
 
         pending_events: list[tuple[int, Event]] = []
         for idx, event_payload in enumerate(event_payloads):
@@ -228,6 +238,13 @@ class MemoryBuilder:
             "dynamic_evolution_ms": 0.0,
             "total_ms": 0.0,
             "event_count": 0,
+            "raw_event_count": 0,
+            "subject_event_count": 0,
+            "inline_context_count": 0,
+            "orphan_context_count": 0,
+            "episodes_with_orphan_contexts": 0,
+            "eventless_orphan_episode_count": 0,
+            "orphan_contexts": [],
             "deferred_evolution": bool(self.config.deferred_evolution),
         }
 
@@ -331,6 +348,48 @@ class MemoryBuilder:
             str(payload.get("causality", "") or "").strip(),
         ]
         return "|".join(parts) if any(parts) else ""
+
+    def _record_extraction_metrics(
+        self,
+        metrics: dict[str, Any],
+        extraction: ExtractionResult,
+        event_payloads: list[dict[str, Any]],
+    ) -> None:
+        orphan_contexts = [
+            item
+            for item in (getattr(extraction, "orphan_contexts", []) or [])
+            if isinstance(item, dict)
+        ]
+        metrics["raw_event_count"] = len(event_payloads)
+        metrics["subject_event_count"] = self._count_subject_event_payloads(event_payloads)
+        metrics["inline_context_count"] = self._count_inline_contexts(event_payloads)
+        metrics["orphan_context_count"] = len(orphan_contexts)
+        metrics["episodes_with_orphan_contexts"] = int(bool(orphan_contexts))
+        metrics["eventless_orphan_episode_count"] = int(bool(orphan_contexts) and not event_payloads)
+        metrics["orphan_contexts"] = orphan_contexts
+
+    def _count_subject_event_payloads(self, event_payloads: list[dict[str, Any]]) -> int:
+        count = 0
+        for item in event_payloads:
+            participants = item.get("participants")
+            if not isinstance(participants, list):
+                continue
+            if any(isinstance(participant, dict) and str(participant.get("role", "")).strip() for participant in participants):
+                count += 1
+        return count
+
+    def _count_inline_contexts(self, event_payloads: list[dict[str, Any]]) -> int:
+        count = 0
+        for item in event_payloads:
+            contexts = item.get("contexts")
+            if not isinstance(contexts, list):
+                continue
+            count += sum(
+                1
+                for context in contexts
+                if isinstance(context, dict) and str(context.get("summary", "")).strip()
+            )
+        return count
 
     def _is_effective_event(self, event: Event) -> bool:
         return any(

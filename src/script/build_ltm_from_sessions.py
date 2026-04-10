@@ -23,6 +23,7 @@ from script.session_loader import load_and_split_session_episodes
 
 # Reuse helpers from trips build script
 from script.build_ltm_from_trips import (
+    _combine_extraction_summaries,
     _capture_snapshot,
     _episode_to_dict,
     _ingest_result_to_dict,
@@ -233,6 +234,10 @@ def main() -> None:
         },
         "base_phase": base_phase,
         "debug_phase": debug_phase,
+        "extraction_summary": _combine_extraction_summaries(
+            base_phase.get("extraction_summary", {}),
+            debug_phase.get("extraction_summary", {}),
+        ),
         "consolidation_report": consolidation_report,
         "final_stats": final_stats,
         "final_snapshot": final_snapshot,

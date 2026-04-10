@@ -152,6 +152,112 @@ class TestSessionBatchRegressions(unittest.TestCase):
         self.assertEqual(report["timeline"][0]["error"], "RuntimeError('dashscope timeout')")
         self.assertEqual(report["timeline"][1]["error"], "extraction returned None")
 
+    def test_run_phase_aggregates_orphan_context_observation_metrics(self):
+        class StubLTM:
+            def __init__(self):
+                self.calls = 0
+
+            def ingest(self, episode):
+                self.calls += 1
+                if self.calls == 1:
+                    event = Event(
+                        id="evt_1",
+                        summary="用户发起导航",
+                        action="发起导航",
+                        time_range={"start": episode.timestamp, "end": episode.timestamp, "display_time_bucket": ""},
+                        timestamp=episode.timestamp,
+                        last_active=episode.timestamp,
+                        created_at=episode.timestamp,
+                        updated_at=episode.timestamp,
+                        valid_from=episode.timestamp,
+                        participants=[{"role": "用户", "seat": ""}],
+                        evidence=[],
+                    )
+                    return IngestResult(
+                        event=event,
+                        is_new=True,
+                        events=[event],
+                        metrics={
+                            "event_count": 1,
+                            "raw_event_count": 1,
+                            "subject_event_count": 1,
+                            "inline_context_count": 2,
+                            "orphan_context_count": 1,
+                            "episodes_with_orphan_contexts": 1,
+                            "eventless_orphan_episode_count": 0,
+                            "orphan_contexts": [
+                                {"subtype": "state", "summary": "时间紧张", "evidence_span": "马上开会"}
+                            ],
+                        },
+                    )
+
+                ignored_event = Event(
+                    id="ignored_2",
+                    summary="",
+                    action="",
+                    status="ignored",
+                    time_range={"start": episode.timestamp, "end": episode.timestamp, "display_time_bucket": ""},
+                    timestamp=episode.timestamp,
+                    last_active=episode.timestamp,
+                    created_at=episode.timestamp,
+                    updated_at=episode.timestamp,
+                    valid_from=episode.timestamp,
+                    participants=[],
+                    evidence=[],
+                )
+                return IngestResult(
+                    event=ignored_event,
+                    is_new=False,
+                    events=[],
+                    metrics={
+                        "event_count": 0,
+                        "raw_event_count": 0,
+                        "subject_event_count": 0,
+                        "inline_context_count": 0,
+                        "orphan_context_count": 2,
+                        "episodes_with_orphan_contexts": 1,
+                        "eventless_orphan_episode_count": 1,
+                        "orphan_contexts": [
+                            {"subtype": "state", "summary": "低电量", "evidence_span": "电量12%"},
+                            {"subtype": "environment", "summary": "车内安静", "evidence_span": "噪音34dB"},
+                        ],
+                    },
+                )
+
+            def get_stats(self):
+                return {"event_count": 1, "entity_count": 0, "context_count": 0}
+
+            def snapshot(self, limit=12, include_inactive=True):
+                return {"limit": limit, "include_inactive": include_inactive}
+
+        report = _run_phase(
+            ltm=StubLTM(),
+            episodes=[
+                Episode(content="用户导航去公司", timestamp=1),
+                Episode(content="环境数据", timestamp=2),
+            ],
+            phase_name="debug",
+            progress_every=0,
+            capture_every=1,
+            snapshot_limit=5,
+            batch_size=0,
+        )
+
+        extraction = report["extraction_summary"]
+        self.assertEqual(extraction["episodes"], 2)
+        self.assertEqual(extraction["event_count"], 1)
+        self.assertEqual(extraction["raw_event_count"], 1)
+        self.assertEqual(extraction["subject_event_count"], 1)
+        self.assertEqual(extraction["inline_context_count"], 2)
+        self.assertEqual(extraction["orphan_context_count"], 3)
+        self.assertEqual(extraction["episodes_with_orphan_contexts"], 2)
+        self.assertEqual(extraction["eventless_orphan_episode_count"], 1)
+        self.assertEqual(extraction["subject_event_ratio"], 1.0)
+        self.assertEqual(extraction["context_per_event_avg"], 2.0)
+        self.assertEqual(extraction["orphan_context_yield"], 1.5)
+        self.assertEqual(report["timeline"][0]["ingest_result"]["orphan_context_count"], 1)
+        self.assertEqual(report["timeline"][1]["ingest_result"]["orphan_context_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -218,6 +218,10 @@ class TripsDebuggerSession:
                     continue
                 episode = self._episodes[index]
                 ingest_result = self._ltm.ingest(episode)
+                metrics = dict(getattr(ingest_result, "metrics", {}) or {})
+                orphan_contexts = metrics.get("orphan_contexts", [])
+                if not isinstance(orphan_contexts, list):
+                    orphan_contexts = []
                 self._written_indices.add(index)
                 result = {
                     "index": index,
@@ -242,6 +246,9 @@ class TripsDebuggerSession:
                             }
                             for event in (ingest_result.events or [ingest_result.event])
                         ],
+                        "metrics": metrics,
+                        "orphan_context_count": int(metrics.get("orphan_context_count", 0) or 0),
+                        "orphan_contexts": orphan_contexts,
                     },
                 }
                 results.append(result)

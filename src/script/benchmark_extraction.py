@@ -48,22 +48,30 @@ class LLMCallTracker:
     prompt_aliases: dict[str, str] = field(default_factory=dict)
     total_calls: int = 0
     current_calls: int = 0
+    current_raw_outputs: list[Any] = field(default_factory=list)
     prompt_counts: Counter[str] = field(default_factory=Counter)
 
     def start_episode(self) -> None:
         self.current_calls = 0
+        self.current_raw_outputs = []
 
     def finish_episode(self) -> int:
         calls = self.current_calls
         self.current_calls = 0
+        self.current_raw_outputs = []
         return calls
+
+    def snapshot_raw_outputs(self) -> list[Any]:
+        return [_make_json_safe(item) for item in self.current_raw_outputs]
 
     def call(self, system_prompt: str, user_message: str, default: Any) -> Any:
         self.total_calls += 1
         self.current_calls += 1
         alias = self.prompt_aliases.get(system_prompt, "unknown")
         self.prompt_counts[alias] += 1
-        return self.runner(system_prompt, user_message, default)
+        payload = self.runner(system_prompt, user_message, default)
+        self.current_raw_outputs.append(_make_json_safe(payload))
+        return payload
 
 
 def _parse_args() -> argparse.Namespace:
@@ -140,6 +148,7 @@ def _serialize_extraction_result(result: ExtractionResult) -> dict[str, Any]:
         "events_data": result.events_data,
         "entities": result.entities,
         "confidence": result.confidence,
+        "orphan_contexts": result.orphan_contexts,
     }
 
 
@@ -149,6 +158,55 @@ def _count_non_empty_summaries(events_data: list[dict[str, Any]]) -> int:
 
 def _count_valid_entities(entities: list[str]) -> int:
     return sum(1 for item in entities if _normalize_entity_name(item))
+
+
+def compute_overlap_rate(event_summary: str, context_summary: str) -> float:
+    """Character overlap rate used only for evaluation."""
+    event_chars = {char for char in str(event_summary or "") if not char.isspace()}
+    ctx_chars = {char for char in str(context_summary or "") if not char.isspace()}
+    if not ctx_chars:
+        return 0.0
+    return len(event_chars & ctx_chars) / len(ctx_chars)
+
+
+def _count_subject_events(events_data: list[dict[str, Any]]) -> int:
+    count = 0
+    for item in events_data:
+        participants = item.get("participants")
+        if not isinstance(participants, list):
+            continue
+        if any(isinstance(participant, dict) and str(participant.get("role", "")).strip() for participant in participants):
+            count += 1
+    return count
+
+
+def _summarize_inline_contexts(events_data: list[dict[str, Any]]) -> tuple[int, float]:
+    context_count = 0
+    overlap_sum = 0.0
+    for item in events_data:
+        event_summary = str(item.get("summary", "") or "")
+        contexts = item.get("contexts")
+        if not isinstance(contexts, list):
+            continue
+        for context in contexts:
+            if not isinstance(context, dict):
+                continue
+            context_summary = str(context.get("summary", "") or "").strip()
+            if not context_summary:
+                continue
+            context_count += 1
+            overlap_sum += compute_overlap_rate(event_summary, context_summary)
+    return context_count, overlap_sum
+
+
+def _make_json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_make_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _make_json_safe(item) for key, item in value.items()}
+    return str(value)
 
 
 def _infer_relation_counts(events_data: list[dict[str, Any]]) -> dict[str, int]:
@@ -172,6 +230,10 @@ def _aggregate_group(
     total_entities = sum(record["entity_count"] for record in records)
     valid_entities = sum(record["valid_entity_count"] for record in records)
     summary_non_empty = sum(record["summary_non_empty_count"] for record in records)
+    total_orphan_contexts = sum(record["orphan_context_count"] for record in records)
+    total_subject_events = sum(record["subject_event_count"] for record in records)
+    total_inline_contexts = sum(record["context_count"] for record in records)
+    total_overlap_score = sum(record["event_context_overlap_rate"] * record["context_count"] for record in records)
     empty_count = sum(1 for record in records if record["empty"])
     llm_call_count = sum(record["llm_calls"] for record in records)
     llm_episode_count = sum(1 for record in records if record["llm_calls"] > 0)
@@ -188,6 +250,11 @@ def _aggregate_group(
         "entity_yield": _safe_div(total_entities, count),
         "entity_precision": _safe_div(valid_entities, total_entities),
         "summary_quality": _safe_div(summary_non_empty, total_events),
+        "orphan_context_count": total_orphan_contexts,
+        "orphan_context_yield": _safe_div(total_orphan_contexts, count),
+        "subject_event_ratio": _safe_div(total_subject_events, total_events),
+        "event_context_overlap_rate": _safe_div(total_overlap_score, total_inline_contexts),
+        "context_per_event_avg": _safe_div(total_inline_contexts, total_events),
         "empty": empty_count,
         "empty_rate": _safe_div(empty_count, count),
         "llm_call_count": llm_call_count,
@@ -267,9 +334,13 @@ def compute_metrics(
         "total_episodes": total_episodes,
         "total_events": overall["events"],
         "total_entities": overall["entities"],
+        "orphan_context_count": overall["orphan_context_count"],
         "empty_count": overall["empty"],
         "empty_rate": overall["empty_rate"],
         "event_yield": overall["event_yield"],
+        "subject_event_ratio": overall["subject_event_ratio"],
+        "event_context_overlap_rate": overall["event_context_overlap_rate"],
+        "context_per_event_avg": overall["context_per_event_avg"],
         "summary_quality": overall["summary_quality"],
         "entity_yield": overall["entity_yield"],
         "entity_precision": overall["entity_precision"],
@@ -356,6 +427,14 @@ def _compute_comparison(
     baseline_total_latency = baseline_metrics.get("total_latency_ms", 0.0)
     return {
         "event_count_delta": adaptive_metrics.get("total_events", 0) - baseline_metrics.get("total_events", 0),
+        "orphan_context_count_delta": adaptive_metrics.get("orphan_context_count", 0)
+        - baseline_metrics.get("orphan_context_count", 0),
+        "subject_event_ratio_delta": adaptive_metrics.get("subject_event_ratio", 0.0)
+        - baseline_metrics.get("subject_event_ratio", 0.0),
+        "event_context_overlap_rate_delta": adaptive_metrics.get("event_context_overlap_rate", 0.0)
+        - baseline_metrics.get("event_context_overlap_rate", 0.0),
+        "context_per_event_avg_delta": adaptive_metrics.get("context_per_event_avg", 0.0)
+        - baseline_metrics.get("context_per_event_avg", 0.0),
         "llm_savings": (
             None
             if baseline_llm_calls <= 0
@@ -438,9 +517,12 @@ def _benchmark_extractor(
         except Exception as exc:  # pragma: no cover - benchmark should keep running
             error = f"{type(exc).__name__}: {exc}"
             result = ExtractionResult(event_data={}, events_data=[], entities=[], confidence=0.0)
+        raw_llm_json = tracker.snapshot_raw_outputs()
         latency_ms = (time.perf_counter() - start) * 1000.0
         llm_calls = tracker.finish_episode()
         relation_counts = _infer_relation_counts(result.events_data)
+        subject_event_count = _count_subject_events(result.events_data)
+        context_count, context_overlap_sum = _summarize_inline_contexts(result.events_data)
         record = {
             "episode_index": episode_index,
             "bucket_name": str(episode.metadata.get("bucket_name", "") or ""),
@@ -451,12 +533,19 @@ def _benchmark_extractor(
             "latency_ms": latency_ms,
             "llm_calls": llm_calls,
             "event_count": len(result.events_data),
+            "orphan_context_count": len(result.orphan_contexts),
+            "subject_event_count": subject_event_count,
+            "subject_event_ratio": _safe_div(subject_event_count, len(result.events_data)),
+            "context_count": context_count,
+            "event_context_overlap_rate": _safe_div(context_overlap_sum, context_count),
             "entity_count": len(result.entities),
             "summary_non_empty_count": _count_non_empty_summaries(result.events_data),
             "valid_entity_count": _count_valid_entities(result.entities),
             "relation_counts": relation_counts,
             "empty": len(result.events_data) == 0,
             "error": error,
+            "raw_llm_json": raw_llm_json[0] if len(raw_llm_json) == 1 else raw_llm_json,
+            "extraction_result": _serialize_extraction_result(result),
         }
         records.append(record)
 
@@ -471,9 +560,11 @@ def _benchmark_extractor(
                     "route_score": record["route_score"],
                     "latency_ms": latency_ms,
                     "llm_calls": llm_calls,
+                    "orphan_context_count": record["orphan_context_count"],
                     "content": episode.content,
                     "metadata": episode.metadata,
                     "extraction_result": _serialize_extraction_result(result),
+                    "raw_llm_json": record["raw_llm_json"],
                     "reason": "extract_error" if error else "no_events_extracted",
                     "error": error,
                 }
@@ -554,10 +645,14 @@ def print_report(report: dict[str, Any]) -> None:
         f"Mode: {report['mode']}    "
         f"Total Episodes: {report['total_episodes']}    "
         f"Total Events: {report['total_events']}    "
+        f"Orphan Contexts: {report['orphan_context_count']}    "
         f"Empty: {report['empty_count']} ({_format_rate(report['empty_rate'])})"
     )
     print(
         f"Event Yield: {report['event_yield']:.3f}    "
+        f"Subject Event Ratio: {_format_rate(report['subject_event_ratio'])}    "
+        f"Overlap Rate: {report['event_context_overlap_rate']:.3f}    "
+        f"Ctx/Event: {report['context_per_event_avg']:.3f}    "
         f"Summary Quality: {_format_rate(report['summary_quality'])}    "
         f"Entity Yield: {report['entity_yield']:.3f}    "
         f"Entity Precision: {_format_rate(report['entity_precision'])}"
@@ -603,6 +698,10 @@ def print_report(report: dict[str, Any]) -> None:
         print("\n--- Vs UnifiedExtractor ---")
         print(
             f"baseline events: {baseline['total_events']} | "
+            f"orphan_context_delta: {comparison.get('orphan_context_count_delta', 0)} | "
+            f"subject_ratio_delta: {comparison.get('subject_event_ratio_delta', 0.0):.3f} | "
+            f"overlap_delta: {comparison.get('event_context_overlap_rate_delta', 0.0):.3f} | "
+            f"context_per_event_delta: {comparison.get('context_per_event_avg_delta', 0.0):.3f} | "
             f"event_count_delta: {comparison.get('event_count_delta', 0)} | "
             f"llm_savings: {llm_savings_text} | "
             f"latency_speedup: {latency_speedup_text}"
@@ -621,6 +720,7 @@ def print_report(report: dict[str, Any]) -> None:
 
     print(f"\nReport: {report['report_path']}")
     print(f"Empty episodes: {report['empty_episodes_path']}")
+    print(f"Episode records: {report['episode_records_path']}")
     print("====================================================")
 
 
@@ -641,9 +741,13 @@ def _build_report(
         "total_episodes": adaptive_run.metrics["total_episodes"],
         "total_events": adaptive_run.metrics["total_events"],
         "total_entities": adaptive_run.metrics["total_entities"],
+        "orphan_context_count": adaptive_run.metrics["orphan_context_count"],
         "empty_count": adaptive_run.metrics["empty_count"],
         "empty_rate": adaptive_run.metrics["empty_rate"],
         "event_yield": adaptive_run.metrics["event_yield"],
+        "subject_event_ratio": adaptive_run.metrics["subject_event_ratio"],
+        "event_context_overlap_rate": adaptive_run.metrics["event_context_overlap_rate"],
+        "context_per_event_avg": adaptive_run.metrics["context_per_event_avg"],
         "summary_quality": adaptive_run.metrics["summary_quality"],
         "entity_yield": adaptive_run.metrics["entity_yield"],
         "entity_precision": adaptive_run.metrics["entity_precision"],
@@ -664,6 +768,7 @@ def _build_report(
         "relations": adaptive_run.metrics["relations"],
         "llm_call_breakdown": adaptive_run.metrics["llm_call_breakdown"],
         "validation": adaptive_run.metrics["validation"],
+        "episode_records": adaptive_run.records,
         "notes": [],
     }
 
@@ -683,8 +788,10 @@ def _build_report(
     suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = os.path.join(output_dir, f"benchmark_report_{suffix}.json")
     empty_path = os.path.join(output_dir, f"empty_episodes_{suffix}.json")
+    records_path = os.path.join(output_dir, f"episode_records_{suffix}.json")
     report["report_path"] = report_path
     report["empty_episodes_path"] = empty_path
+    report["episode_records_path"] = records_path
     return report, adaptive_run.empty_episodes
 
 
@@ -729,6 +836,8 @@ def main() -> None:
         json.dump(report, f, ensure_ascii=False, indent=2)
     with open(report["empty_episodes_path"], "w", encoding="utf-8") as f:
         json.dump(empty_episodes, f, ensure_ascii=False, indent=2)
+    with open(report["episode_records_path"], "w", encoding="utf-8") as f:
+        json.dump(report["episode_records"], f, ensure_ascii=False, indent=2)
 
     print_report(report)
 

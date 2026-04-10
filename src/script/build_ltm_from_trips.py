@@ -139,6 +139,10 @@ def _episode_to_dict(episode: Any) -> dict[str, Any]:
 
 
 def _ingest_result_to_dict(result: Any) -> dict[str, Any]:
+    metrics = dict(getattr(result, "metrics", {}) or {})
+    orphan_contexts = metrics.get("orphan_contexts", [])
+    if not isinstance(orphan_contexts, list):
+        orphan_contexts = []
     return {
         "event_id": result.event.id,
         "summary": result.event.summary,
@@ -146,7 +150,9 @@ def _ingest_result_to_dict(result: Any) -> dict[str, Any]:
         "is_new": bool(result.is_new),
         "merged_with": result.merged_with,
         "entities_created": int(result.entities_created),
-        "metrics": dict(getattr(result, "metrics", {}) or {}),
+        "metrics": metrics,
+        "orphan_context_count": int(metrics.get("orphan_context_count", 0) or 0),
+        "orphan_contexts": orphan_contexts,
     }
 
 
@@ -157,6 +163,22 @@ def _init_timing_summary() -> dict[str, Any]:
         "totals_ms": {},
         "avg_ms_per_episode": {},
         "wall_clock_ms": 0.0,
+    }
+
+
+def _init_extraction_summary() -> dict[str, Any]:
+    return {
+        "episodes": 0,
+        "event_count": 0,
+        "raw_event_count": 0,
+        "subject_event_count": 0,
+        "inline_context_count": 0,
+        "orphan_context_count": 0,
+        "episodes_with_orphan_contexts": 0,
+        "eventless_orphan_episode_count": 0,
+        "subject_event_ratio": 0.0,
+        "context_per_event_avg": 0.0,
+        "orphan_context_yield": 0.0,
     }
 
 
@@ -171,6 +193,63 @@ def _record_ingest_metrics(summary: dict[str, Any], result: Any) -> None:
         if not str(key).endswith("_ms"):
             continue
         totals[key] = round(float(totals.get(key, 0.0)) + float(value or 0.0), 3)
+
+
+def _record_extraction_summary(summary: dict[str, Any], result: Any) -> None:
+    metrics = dict(getattr(result, "metrics", {}) or {})
+    if not metrics:
+        return
+    summary["episodes"] += 1
+    for key in (
+        "event_count",
+        "raw_event_count",
+        "subject_event_count",
+        "inline_context_count",
+        "orphan_context_count",
+        "episodes_with_orphan_contexts",
+        "eventless_orphan_episode_count",
+    ):
+        summary[key] += int(metrics.get(key, 0) or 0)
+
+
+def _finalize_extraction_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    episodes = int(summary.get("episodes", 0) or 0)
+    event_count = int(summary.get("event_count", 0) or 0)
+    subject_event_count = int(summary.get("subject_event_count", 0) or 0)
+    inline_context_count = int(summary.get("inline_context_count", 0) or 0)
+    orphan_context_count = int(summary.get("orphan_context_count", 0) or 0)
+    summary["subject_event_ratio"] = round(
+        float(subject_event_count) / event_count,
+        4,
+    ) if event_count else 0.0
+    summary["context_per_event_avg"] = round(
+        float(inline_context_count) / event_count,
+        4,
+    ) if event_count else 0.0
+    summary["orphan_context_yield"] = round(
+        float(orphan_context_count) / episodes,
+        4,
+    ) if episodes else 0.0
+    return summary
+
+
+def _combine_extraction_summaries(*summaries: dict[str, Any]) -> dict[str, Any]:
+    combined = _init_extraction_summary()
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        for key in (
+            "episodes",
+            "event_count",
+            "raw_event_count",
+            "subject_event_count",
+            "inline_context_count",
+            "orphan_context_count",
+            "episodes_with_orphan_contexts",
+            "eventless_orphan_episode_count",
+        ):
+            combined[key] += int(summary.get(key, 0) or 0)
+    return _finalize_extraction_summary(combined)
 
 
 def _finalize_timing_summary(summary: dict[str, Any], wall_clock_ms: float) -> dict[str, Any]:
@@ -208,6 +287,7 @@ def _run_phase(
     errors = 0
     timeline: list[dict[str, Any]] = []
     timing = _init_timing_summary()
+    extraction_summary = _init_extraction_summary()
     phase_events: list[Any] = []
     total = len(episodes)
     phase_started_at = time.perf_counter()
@@ -237,6 +317,7 @@ def _run_phase(
                     if run_deferred_evolution:
                         phase_events.extend(list(getattr(result, "events", []) or []))
                     _record_ingest_metrics(timing, result)
+                    _record_extraction_summary(extraction_summary, result)
                 if capture_every > 0 and (
                     abs_idx == 1 or abs_idx % capture_every == 0 or abs_idx == total
                 ):
@@ -259,6 +340,7 @@ def _run_phase(
                 if run_deferred_evolution:
                     phase_events.extend(list(getattr(result, "events", []) or []))
                 _record_ingest_metrics(timing, result)
+                _record_extraction_summary(extraction_summary, result)
             except Exception as ex:  # pragma: no cover - debug flow should keep going
                 errors += 1
                 timeline_entry["error"] = repr(ex)
@@ -288,12 +370,14 @@ def _run_phase(
         timing,
         wall_clock_ms=(time.perf_counter() - phase_started_at) * 1000.0,
     )
+    extraction_summary = _finalize_extraction_summary(extraction_summary)
 
     return {
         "episodes": total,
         "errors": errors,
         "timeline": timeline,
         "stats": ltm.get_stats(),
+        "extraction_summary": extraction_summary,
         "snapshot": _capture_snapshot(ltm, snapshot_limit),
         "timing": timing,
         "deferred_evolution": deferred_evolution_report,
@@ -536,6 +620,7 @@ def _render_html_report(report: dict[str, Any]) -> str:
       metric('切分点', report.split.split_index),
       metric('最终 Event', report.final_stats.event_count || 0),
       metric('最终 Context', report.final_stats.context_count || 0),
+      metric('显式 Orphan Ctx', report.extraction_summary?.orphan_context_count || 0),
     ].join('');
 
     document.getElementById('phaseCards').innerHTML = `
@@ -547,8 +632,13 @@ def _render_html_report(report: dict[str, Any]) -> str:
           `split ratio: ${{(report.split.split_ratio * 100).toFixed(1)}}%`,
           `wall ms: ${{Math.round(report.base_phase.timing?.wall_clock_ms || 0)}}`,
           `avg ingest ms: ${{Math.round(report.base_phase.timing?.avg_ms_per_episode?.total_ms || 0)}}`,
+          `orphans: ${{report.base_phase.extraction_summary?.orphan_context_count || 0}}`,
         ])}}
         <div>${{smallStats(report.base_phase.stats)}}</div>
+        <div>${{tags([
+          `subject ratio: ${{(((report.base_phase.extraction_summary?.subject_event_ratio || 0) * 100).toFixed(1))}}%`,
+          `ctx/event: ${{(report.base_phase.extraction_summary?.context_per_event_avg || 0).toFixed(2)}}`,
+        ])}}</div>
       </div>
       <div class="card">
         <h3>调试阶段</h3>
@@ -558,8 +648,13 @@ def _render_html_report(report: dict[str, Any]) -> str:
           `snapshots: ${{report.debug_phase.timeline.length}}`,
           `wall ms: ${{Math.round(report.debug_phase.timing?.wall_clock_ms || 0)}}`,
           `avg ingest ms: ${{Math.round(report.debug_phase.timing?.avg_ms_per_episode?.total_ms || 0)}}`,
+          `orphans: ${{report.debug_phase.extraction_summary?.orphan_context_count || 0}}`,
         ])}}
         <div>${{smallStats(report.debug_phase.stats)}}</div>
+        <div>${{tags([
+          `subject ratio: ${{(((report.debug_phase.extraction_summary?.subject_event_ratio || 0) * 100).toFixed(1))}}%`,
+          `ctx/event: ${{(report.debug_phase.extraction_summary?.context_per_event_avg || 0).toFixed(2)}}`,
+        ])}}</div>
       </div>
       <div class="card">
         <h3>后处理</h3>
@@ -575,6 +670,11 @@ def _render_html_report(report: dict[str, Any]) -> str:
     const finalSnapshot = report.final_snapshot || {{ events: [], contexts: [], edges: {{}} }};
     document.getElementById('finalCards').innerHTML = `
       <div class="card"><h3>事件 / 上下文</h3>${{smallStats(report.final_stats)}}</div>
+      <div class="card"><h3>Extraction 观测</h3>${{tags([
+        `orphans: ${{report.extraction_summary?.orphan_context_count || 0}}`,
+        `subject ratio: ${{(((report.extraction_summary?.subject_event_ratio || 0) * 100).toFixed(1))}}%`,
+        `ctx/event: ${{(report.extraction_summary?.context_per_event_avg || 0).toFixed(2)}}`,
+      ])}}</div>
       <div class="card"><h3>边统计</h3>${{tags([
         `event-context: ${{(finalSnapshot.edges?.event_context || []).length}}`,
         `next: ${{(finalSnapshot.edges?.next || []).length}}`,
@@ -603,6 +703,7 @@ def _render_html_report(report: dict[str, Any]) -> str:
           · ${{entry.ingest_result?.summary || entry.episode?.content || 'unknown'}}
           · events=${{entry.stats?.event_count || 0}}
           · contexts=${{entry.stats?.context_count || 0}}
+          · orphans=${{entry.ingest_result?.orphan_context_count || 0}}
         </summary>
         <div style="margin-top: 10px;">
           ${{entry.error ? `<div class="pill-warn">Error: ${{entry.error}}</div>` : `<div class="pill-ok">event_id: ${{entry.ingest_result?.event_id || '-'}}</div>`}}
@@ -701,6 +802,10 @@ def main() -> None:
         },
         "base_phase": base_phase,
         "debug_phase": debug_phase,
+        "extraction_summary": _combine_extraction_summaries(
+            base_phase.get("extraction_summary", {}),
+            debug_phase.get("extraction_summary", {}),
+        ),
         "consolidation_report": consolidation_report,
         "final_stats": final_stats,
         "final_snapshot": final_snapshot,

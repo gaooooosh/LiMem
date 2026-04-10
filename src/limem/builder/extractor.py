@@ -25,6 +25,7 @@ class ExtractionResult:
     events_data: list[dict[str, Any]] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
     confidence: float = 1.0
+    orphan_contexts: list[dict[str, Any]] = field(default_factory=list)
 
     def has_valid_event(self) -> bool:
         """检查是否有有效的事件数据"""
@@ -88,16 +89,17 @@ class UnifiedExtractor(LLMExtractor):
     ) -> ExtractionResult:
         del metadata
         try:
-            events_data = self._extract_events(text)
+            events_data, orphan_contexts = self._extract_events(text)
         except Exception:
-            events_data = []
+            events_data, orphan_contexts = [], []
         return ExtractionResult(
             event_data=events_data[0] if events_data else {},
             events_data=events_data,
             entities=[],
+            orphan_contexts=orphan_contexts,
         )
 
-    def _extract_events(self, text: str) -> list[dict[str, Any]]:
+    def _extract_events(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         data = self._call_generation_json(
             system_prompt=self._system_prompt,
             user_message=self._user_prompt.format(episode_text=text),
@@ -105,10 +107,16 @@ class UnifiedExtractor(LLMExtractor):
         )
         return self._normalize_events(data, text)
 
-    def _normalize_events(self, payload: Any, episode_text: str) -> list[dict[str, Any]]:
+    def _normalize_events(
+        self,
+        payload: Any,
+        episode_text: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return (valid_events, orphan_contexts)."""
         if not payload:
-            return []
+            return [], []
 
+        orphan_contexts = self._collect_orphan_contexts(payload)
         normalized: list[dict[str, Any]] = []
         for item in self._collect_raw_event_items(payload):
             if not isinstance(item, dict):
@@ -116,7 +124,16 @@ class UnifiedExtractor(LLMExtractor):
             normalized_item = normalize_event_payload({"event": item}, episode_text=episode_text)
             if self._has_event_semantics(normalized_item):
                 normalized.append(normalized_item)
-        return self._dedupe_events(normalized)
+        return self._dedupe_events(normalized), orphan_contexts
+
+    def _collect_orphan_contexts(self, payload: Any) -> list[dict[str, Any]]:
+        """Collect orphan_contexts explicitly returned by the LLM without reclassification."""
+        if not isinstance(payload, dict):
+            return []
+        raw = payload.get("orphan_contexts", [])
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict) and str(item.get("summary", "")).strip()]
 
     def _has_event_semantics(self, payload: dict[str, Any]) -> bool:
         if not isinstance(payload, dict):
@@ -177,4 +194,3 @@ class UnifiedExtractor(LLMExtractor):
             return result
 
         return [payload]
-

@@ -140,6 +140,74 @@ class TestUnifiedExtractor(unittest.TestCase):
 
         self.assertEqual(result.event_data["contexts"][0]["summary"], "车内音乐播放场景")
         self.assertEqual(result.events_data[0]["contexts"][0]["subtype"], "environment")
+        self.assertEqual(result.orphan_contexts, [])
+
+    def test_orphan_contexts_are_passthrough_without_generating_events(self):
+        extractor = _make_extractor()
+
+        extractor._call_generation_json = lambda system_prompt, user_message, default: {
+            "events": [],
+            "orphan_contexts": [
+                {
+                    "subtype": "environment",
+                    "summary": "办公场所环境",
+                    "evidence_span": "位置=某办公楼",
+                    "confidence": 0.82,
+                },
+                {
+                    "subtype": "state",
+                    "summary": "",
+                    "evidence_span": "噪音34dB",
+                    "confidence": 0.6,
+                },
+                "invalid",
+            ],
+        }
+
+        result = extractor.extract("环境数据：温度28℃，噪音34dB，位置=某办公楼。")
+
+        self.assertEqual(result.event_data, {})
+        self.assertEqual(result.events_data, [])
+        self.assertEqual(
+            result.orphan_contexts,
+            [
+                {
+                    "subtype": "environment",
+                    "summary": "办公场所环境",
+                    "evidence_span": "位置=某办公楼",
+                    "confidence": 0.82,
+                }
+            ],
+        )
+
+    def test_orphan_contexts_are_preserved_alongside_valid_events(self):
+        extractor = _make_extractor()
+
+        extractor._call_generation_json = lambda system_prompt, user_message, default: {
+            "events": [
+                {
+                    "summary": "用户查询天气，系统返回天气预报",
+                    "participants": [{"role": "用户"}],
+                    "action": "查询天气",
+                    "time": {"text": "明天"},
+                    "causality": "",
+                }
+            ],
+            "orphan_contexts": [
+                {
+                    "subtype": "situation",
+                    "summary": "出行规划场景",
+                    "evidence_span": "帮我查一下明天的天气",
+                    "confidence": 0.9,
+                }
+            ],
+        }
+
+        result = extractor.extract("用户说：帮我查一下明天的天气。")
+
+        self.assertEqual(len(result.events_data), 1)
+        self.assertEqual(result.events_data[0]["action"], "查询天气")
+        self.assertEqual(result.orphan_contexts[0]["summary"], "出行规划场景")
 
     def test_llm_failure_returns_empty_result(self):
         extractor = _make_extractor()
@@ -154,6 +222,7 @@ class TestUnifiedExtractor(unittest.TestCase):
         self.assertEqual(result.event_data, {})
         self.assertEqual(result.events_data, [])
         self.assertEqual(result.entities, [])
+        self.assertEqual(result.orphan_contexts, [])
 
     def test_empty_llm_output_returns_no_events(self):
         extractor = _make_extractor()
@@ -163,6 +232,7 @@ class TestUnifiedExtractor(unittest.TestCase):
 
         self.assertEqual(result.event_data, {})
         self.assertEqual(result.events_data, [])
+        self.assertEqual(result.orphan_contexts, [])
 
 
 if __name__ == "__main__":

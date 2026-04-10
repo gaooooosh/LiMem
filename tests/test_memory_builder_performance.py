@@ -21,6 +21,10 @@ class _FakeExtractor:
                 "causality": "",
                 "participants": [{"role": "用户", "seat": ""}],
                 "time_range": {"start": 100, "end": 100, "display_time_bucket": ""},
+                "contexts": [
+                    {"subtype": "goal", "summary": "前往目的地"},
+                    {"subtype": "state", "summary": "正在出行"},
+                ],
             },
             {
                 "summary": "系统开始规划路线",
@@ -28,6 +32,9 @@ class _FakeExtractor:
                 "causality": "响应导航请求",
                 "participants": [{"role": "系统", "seat": ""}],
                 "time_range": {"start": 101, "end": 101, "display_time_bucket": ""},
+                "contexts": [
+                    {"subtype": "environment", "summary": "车机导航场景"},
+                ],
             },
         ]
         return ExtractionResult(
@@ -35,6 +42,14 @@ class _FakeExtractor:
             events_data=events,
             entities=[],
             confidence=1.0,
+            orphan_contexts=[
+                {
+                    "subtype": "state",
+                    "summary": "路况未知",
+                    "evidence_span": "detail",
+                    "confidence": 0.9,
+                }
+            ],
         )
 
 
@@ -154,6 +169,13 @@ class TestMemoryBuilderPerformance(unittest.TestCase):
         self.assertEqual(store.link_events_to_episode_batch_calls, 1)
         self.assertEqual(store.link_event_to_episode_calls, 0)
         self.assertEqual(result.metrics["event_count"], 2)
+        self.assertEqual(result.metrics["raw_event_count"], 2)
+        self.assertEqual(result.metrics["subject_event_count"], 2)
+        self.assertEqual(result.metrics["inline_context_count"], 3)
+        self.assertEqual(result.metrics["orphan_context_count"], 1)
+        self.assertEqual(result.metrics["episodes_with_orphan_contexts"], 1)
+        self.assertEqual(result.metrics["eventless_orphan_episode_count"], 0)
+        self.assertEqual(result.metrics["orphan_contexts"][0]["summary"], "路况未知")
 
     def test_build_can_defer_dynamic_evolution(self):
         store = _BatchAwareStore()
@@ -171,6 +193,36 @@ class TestMemoryBuilderPerformance(unittest.TestCase):
         self.assertEqual(len(result.events), 2)
         self.assertEqual(dynamic_engine.calls, 0)
         self.assertTrue(result.metrics["deferred_evolution"])
+
+    def test_build_preserves_orphan_context_metrics_for_eventless_episode(self):
+        class _OrphanOnlyExtractor:
+            def extract(self, text, metadata=None):
+                del text, metadata
+                return ExtractionResult(
+                    event_data={},
+                    events_data=[],
+                    entities=[],
+                    orphan_contexts=[
+                        {"subtype": "state", "summary": "低电量", "evidence_span": "电量12%"},
+                        {"subtype": "environment", "summary": "车内安静", "evidence_span": "噪音34dB"},
+                    ],
+                )
+
+        builder = MemoryBuilder(
+            extractor=_OrphanOnlyExtractor(),
+            store=_BatchAwareStore(),
+            config=BuilderConfig(),
+        )
+
+        result = builder.build(Episode(content="环境数据", timestamp=789))
+
+        self.assertEqual(result.event.status, "ignored")
+        self.assertEqual(result.metrics["event_count"], 0)
+        self.assertEqual(result.metrics["raw_event_count"], 0)
+        self.assertEqual(result.metrics["orphan_context_count"], 2)
+        self.assertEqual(result.metrics["episodes_with_orphan_contexts"], 1)
+        self.assertEqual(result.metrics["eventless_orphan_episode_count"], 1)
+        self.assertEqual(result.metrics["orphan_contexts"][0]["summary"], "低电量")
 
 
 if __name__ == "__main__":

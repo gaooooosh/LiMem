@@ -822,53 +822,94 @@ const INGEST_STAGES = [
   {
     id: 'unified-extract',
     name: 'Unified 事件抽取',
-    desc: 'LLM 驱动的单次抽取：直接输出粗粒度事件与内联 contexts',
+    desc: 'LLM 驱动的单次抽取：输出具主体意图的 Event、内联 contexts 与 orphan_contexts',
     color: 'var(--stage-llm)',
     tags: ['LLM', '核心'],
     detail: {
       steps: [
-        { text: '单次 LLM 调用统一提取', sub: '直接从 Episode.content 输出 coarse events 与内联 contexts' },
-        { text: '按完整交互场景聚合 Event', sub: '一轮意图 -> 响应 -> 结果合并成 1 个事件，同意图链不再拆碎' },
-        { text: '内联输出 0-3 个 contexts', sub: 'summary 要短、可复用、去事件化，evidence_span 保留原文细节' },
-        { text: '标准化抽取结果 <code>normalize_event_payload()</code>', sub: '验证 summary/action/causality，清理 evidence，保留 contexts，填充 time_range' },
+        { text: '单次 LLM 调用统一提取', sub: '直接从 Episode.content 输出 Event、内联 contexts 和 orphan_contexts' },
+        { text: 'Prompt-First 边界判定', sub: 'Event = 明确人物主体 + 意图性动作 + 可观测变化；Context = 事件发生时已存在的条件/状态' },
+        { text: '按完整意图链聚合 Event', sub: '一轮意图 -> 响应 -> 结果合并成 1 个事件，同意图链不再拆碎' },
+        { text: '无有效 Event 时输出 orphan_contexts', sub: '传感器读数、被动观察、自动流程、纯背景信息不包装成 Event' },
+        { text: '标准化抽取结果 <code>normalize_event_payload()</code>', sub: '仅标准化 Event payload；orphan_contexts 原样透传，不做代码层重分类' },
       ],
       prompt: `<div class="prompt-label">System Prompt (extract_unified_system.txt)</div>
 你是长期记忆的统一事件抽取器。
 
 目标：
 - 每个 Episode 只调用一次 LLM。
-- 输出粗粒度 Event，每个 Event 表示完整交互场景。
-- 每个 Event 内联 0-3 个可复用 contexts。
+- Event = 明确人物主体 + 意图性动作 + 可观测变化。
+- Context = 事件发生时已存在的环境条件、背景状态或约束。
+- 无有效 Event 但存在状态信息时，输出 orphan_contexts。
 
 输出 JSON：
-{ "events": [{ "summary", "participants", "action", "time", "causality", "contexts" }] }`,
+{ "events": [{ "summary", "participants", "action", "time", "causality", "contexts" }], "orphan_contexts": [{ "subtype", "summary", "evidence_span", "confidence" }] }`,
       input: `<span class="comment">// Episode.content (原始文本)</span>
-<span class="str">"今天下午两点和同事在星巴克讨论了新项目的技术方案，
-决定使用 GraphRAG 架构来构建知识图谱。"</span>`,
+<span class="str">"用户说：帮我查一下明天的天气，系统回答：明天晴，最高温32度。
+当时车内很安静，手机电量只剩 12%。"</span>`,
       output: `<span class="comment">// ExtractionResult</span>
 {
+  <span class="key">"event_data"</span>: {
+    <span class="key">"summary"</span>: <span class="str">"用户查询天气，系统返回天气预报"</span>,
+    <span class="key">"action"</span>: <span class="str">"查询天气"</span>,
+    <span class="key">"causality"</span>: <span class="str">"用户希望了解明天天气情况"</span>,
+    <span class="key">"participants"</span>: [
+      { <span class="key">"role"</span>: <span class="str">"用户"</span>, <span class="key">"seat"</span>: <span class="str">""</span> }
+    ],
+    <span class="key">"contexts"</span>: [
+      {
+        <span class="key">"subtype"</span>: <span class="str">"goal"</span>,
+        <span class="key">"summary"</span>: <span class="str">"了解天气情况"</span>,
+        <span class="key">"evidence_span"</span>: <span class="str">"帮我查一下明天的天气"</span>,
+        <span class="key">"confidence"</span>: <span class="num">0.93</span>
+      }
+    ],
+    <span class="key">"time_range"</span>: { <span class="key">"start"</span>: <span class="num">0</span>, <span class="key">"end"</span>: <span class="num">0</span>, <span class="key">"display_time_bucket"</span>: <span class="str">"afternoon"</span> }
+  },
   <span class="key">"events_data"</span>: [
     {
-      <span class="key">"summary"</span>: <span class="str">"下午两点与同事在星巴克讨论新项目技术方案，决定采用 GraphRAG 架构"</span>,
-      <span class="key">"action"</span>: <span class="str">"讨论技术方案并做出架构决策"</span>,
-      <span class="key">"causality"</span>: <span class="str">"需要为新项目选择合适的技术架构"</span>,
+      <span class="key">"summary"</span>: <span class="str">"用户查询天气，系统返回天气预报"</span>,
+      <span class="key">"action"</span>: <span class="str">"查询天气"</span>,
+      <span class="key">"causality"</span>: <span class="str">"用户希望了解明天天气情况"</span>,
       <span class="key">"participants"</span>: [
-        { <span class="key">"role"</span>: <span class="str">"用户"</span>, <span class="key">"seat"</span>: <span class="str">""</span> },
-        { <span class="key">"role"</span>: <span class="str">"同事"</span>, <span class="key">"seat"</span>: <span class="str">""</span> }
+        { <span class="key">"role"</span>: <span class="str">"用户"</span>, <span class="key">"seat"</span>: <span class="str">""</span> }
       ],
-      <span class="key">"time"</span>: { <span class="key">"start"</span>: <span class="num">0</span>, <span class="key">"end"</span>: <span class="num">0</span>, <span class="key">"text"</span>: <span class="str">"今天下午两点"</span> }
+      <span class="key">"contexts"</span>: [
+        {
+          <span class="key">"subtype"</span>: <span class="str">"goal"</span>,
+          <span class="key">"summary"</span>: <span class="str">"了解天气情况"</span>,
+          <span class="key">"evidence_span"</span>: <span class="str">"帮我查一下明天的天气"</span>,
+          <span class="key">"confidence"</span>: <span class="num">0.93</span>
+        }
+      ],
+      <span class="key">"time_range"</span>: { <span class="key">"start"</span>: <span class="num">0</span>, <span class="key">"end"</span>: <span class="num">0</span>, <span class="key">"display_time_bucket"</span>: <span class="str">"afternoon"</span> }
     }
   ],
+  <span class="key">"orphan_contexts"</span>: [
+    {
+      <span class="key">"subtype"</span>: <span class="str">"state"</span>,
+      <span class="key">"summary"</span>: <span class="str">"低电量状态"</span>,
+      <span class="key">"evidence_span"</span>: <span class="str">"手机电量只剩 12%"</span>,
+      <span class="key">"confidence"</span>: <span class="num">0.88</span>
+    },
+    {
+      <span class="key">"subtype"</span>: <span class="str">"environment"</span>,
+      <span class="key">"summary"</span>: <span class="str">"安静环境"</span>,
+      <span class="key">"evidence_span"</span>: <span class="str">"车内很安静"</span>,
+      <span class="key">"confidence"</span>: <span class="num">0.84</span>
+    }
+  ],
+  <span class="key">"entities"</span>: [],
   <span class="key">"confidence"</span>: <span class="num">1.0</span>
 }`,
       params: [
-        ['TEXT_THRESHOLD', '4000', '字符，触发分段抽取的阈值'],
-        ['GENERATION_MODEL', 'qwen-plus', 'LLM 生成模型'],
-        ['LLM_CONCURRENCY', '4', '并发 LLM 调用数'],
+        ['GENERATION_MODEL', 'qwen3.5-35b-a3b', '统一抽取的生成模型'],
+        ['ENABLE_THINKING', 'false', '在线模式下显式关闭 thinking，控制延迟'],
+        ['LLM_CONCURRENCY', '4', '批量主流程中的并发抽取数'],
       ],
       branches: {
-        left: { label: '短文本 (≤ 4000 chars)', content: 'extract_event_only\n单次 LLM 调用\n直接输出事件列表' },
-        right: { label: '长文本 (> 4000 chars)', content: 'Stage 1: extract_event_segments\nStage 2: extract_event_struct_batch\n分段 → 批量结构化' },
+        left: { label: '有人物主动动作', content: '输出 events[] + inline contexts\nparticipants 必填\n同一意图链合并为 1 个 Event' },
+        right: { label: '纯状态 / 环境信息', content: 'events = []\norphan_contexts = [...]\n仅透传，不自动入图' },
       },
     },
   },
@@ -880,25 +921,26 @@ const INGEST_STAGES = [
     tags: ['转换'],
     detail: {
       steps: [
-        { text: '遍历每个抽取出的事件字典', sub: '一个 Episode 可能产生多个 Event' },
+        { text: '遍历每个抽取出的事件字典', sub: '只消费 <code>events_data</code>；一个 Episode 可能产生多个 Event' },
         { text: '生成事件 ID: <code>id = hash(summary)</code>', sub: 'Append-First 模式下使用 append_first_event_id() 加入时间戳避免碰撞' },
         { text: '构建时间范围 <code>time_range</code>', sub: '{ start, end, display_time_bucket } — 时间桶用于检索分组' },
         { text: '组装完整 Event 对象', sub: '填入 summary, action, causality, participants, evidence, payload 等全部字段' },
-        { text: '有效性过滤 <code>_is_effective_event()</code>', sub: '过滤掉 summary 为空或无效的事件' },
+        { text: '有效性过滤 <code>_is_effective_event()</code>', sub: '仅检查 summary/action/causality 非空，不额外做语义重分类' },
+        { text: 'orphan_contexts 保持观测态', sub: '显式 orphan_contexts 进入 metrics / debug report，不在此阶段自动转成图节点' },
       ],
       input: `<span class="comment">// 抽取结果字典</span>
 {
-  <span class="key">"summary"</span>: <span class="str">"与同事在星巴克讨论新项目技术方案..."</span>,
-  <span class="key">"action"</span>: <span class="str">"讨论技术方案并做出架构决策"</span>,
-  <span class="key">"causality"</span>: <span class="str">"需要为新项目选择合适的技术架构"</span>,
+  <span class="key">"summary"</span>: <span class="str">"用户查询天气，系统返回天气预报"</span>,
+  <span class="key">"action"</span>: <span class="str">"查询天气"</span>,
+  <span class="key">"causality"</span>: <span class="str">"用户希望了解明天天气情况"</span>,
   ...
 }`,
       output: `<span class="comment">// Event 对象</span>
 {
   <span class="key">"id"</span>: <span class="str">"evt_8a3f2c..."</span>,     <span class="comment">// hash(summary) + timestamp</span>
-  <span class="key">"summary"</span>: <span class="str">"与同事在星巴克讨论新项目技术方案..."</span>,
-  <span class="key">"action"</span>: <span class="str">"讨论技术方案并做出架构决策"</span>,
-  <span class="key">"causality"</span>: <span class="str">"需要选择合适的技术架构"</span>,
+  <span class="key">"summary"</span>: <span class="str">"用户查询天气，系统返回天气预报"</span>,
+  <span class="key">"action"</span>: <span class="str">"查询天气"</span>,
+  <span class="key">"causality"</span>: <span class="str">"用户希望了解明天天气情况"</span>,
   <span class="key">"time_range"</span>: {
     <span class="key">"start"</span>: <span class="num">1712649600</span>,
     <span class="key">"end"</span>: <span class="num">1712649600</span>,
@@ -911,8 +953,9 @@ const INGEST_STAGES = [
   <span class="key">"support_count"</span>: <span class="num">1</span>,
   <span class="key">"payload"</span>: {
     <span class="key">"episode_id"</span>: <span class="str">"a3f7c2e1..."</span>,
-    <span class="key">"episode_text"</span>: <span class="str">"今天下午两点..."</span>,
-    <span class="key">"event_index"</span>: <span class="num">0</span>
+    <span class="key">"episode_text"</span>: <span class="str">"用户说：帮我查一下明天的天气..."</span>,
+    <span class="key">"event_index"</span>: <span class="num">0</span>,
+    <span class="key">"contexts"</span>: [ ... ]   <span class="comment">// inline contexts 保留在 payload 中</span>
   }
 }`,
     },
@@ -962,7 +1005,7 @@ const INGEST_STAGES = [
       input: `<span class="comment">// Event 对象 (带 embedding)</span>
 Event {
   <span class="key">id</span>: <span class="str">"evt_8a3f2c..."</span>,
-  <span class="key">summary</span>: <span class="str">"与同事在星巴克讨论..."</span>,
+  <span class="key">summary</span>: <span class="str">"用户查询天气，系统返回天气预报"</span>,
   <span class="key">embedding</span>: [<span class="num">0.0234</span>, ...],
   ...
 }`,
@@ -988,6 +1031,7 @@ Event {
     detail: {
       steps: [
         { text: '上下文候选检测 <code>detect_context_candidates(record, event)</code>', sub: '从 event.payload 中提取 context_note, state, constraint, goal 等信号' },
+        { text: '与 Unified 抽取解耦', sub: 'inline contexts / orphan_contexts 主要用于抽取观测；orphan_contexts 当前不自动入图' },
         { text: 'LLM 上下文抽取', sub: '调用 extract_context prompts，判断每个候选是否为真正的上下文条件' },
         { text: '验证和清洗 <code>validate_context_drafts()</code>', sub: '检查 subtype 合法性、summary 长度 ≤64、evidence_span 匹配度 ≥50%' },
         { text: '规范化 <code>canonicalize_context()</code>', sub: '生成 CanonicalContextKey 用于后续匹配' },
@@ -1163,13 +1207,14 @@ should_link 才能为 true。`,
   {
     id: 'ingest-result',
     name: 'IngestResult 输出',
-    desc: '返回完整的摄入结果，包括事件、计时指标和演化报告',
+    desc: '返回完整的摄入结果，包括事件、计时指标和 extraction 观测指标',
     color: 'var(--stage-output)',
     tags: ['输出'],
     detail: {
       steps: [
         { text: '汇总所有构建的事件', sub: 'events: list[Event]' },
         { text: '收集时间指标', sub: 'save_episode_ms, extract_ms, embedding_ms, persist_ms, evolution_ms, total_ms' },
+        { text: '附带 extraction 观测', sub: 'raw_event_count / subject_event_count / inline_context_count / orphan_context_count 等进入 metrics' },
         { text: '返回 <code>IngestResult</code> 对象', sub: '包含所有事件和处理指标' },
       ],
       output: `<span class="comment">// IngestResult</span>
@@ -1186,7 +1231,14 @@ should_link 才能为 true。`,
     <span class="key">"persist_events_ms"</span>: <span class="num">45</span>,
     <span class="key">"dynamic_evolution_ms"</span>: <span class="num">3102</span>,
     <span class="key">"total_ms"</span>: <span class="num">4916</span>,
-    <span class="key">"event_count"</span>: <span class="num">2</span>
+    <span class="key">"event_count"</span>: <span class="num">1</span>,
+    <span class="key">"raw_event_count"</span>: <span class="num">1</span>,
+    <span class="key">"subject_event_count"</span>: <span class="num">1</span>,
+    <span class="key">"inline_context_count"</span>: <span class="num">1</span>,
+    <span class="key">"orphan_context_count"</span>: <span class="num">2</span>,
+    <span class="key">"episodes_with_orphan_contexts"</span>: <span class="num">1</span>,
+    <span class="key">"eventless_orphan_episode_count"</span>: <span class="num">0</span>,
+    <span class="key">"orphan_contexts"</span>: [ ... ]   <span class="comment">// 仅观测，不自动入图</span>
   }
 }`,
     },
