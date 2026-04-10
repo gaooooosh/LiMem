@@ -264,7 +264,12 @@ class GraphStore(ABC):
         source_episode_id: str,
         source_session_id: str,
         timestamp: int,
-    ) -> None:
+        operation: str = "",
+        value_before: str = "",
+        value_after: str = "",
+        recall_channel: str = "",
+        recall_score: float = 0.0,
+    ) -> bool:
         """创建或更新 Event->Event 关系边。"""
         pass
 
@@ -327,6 +332,20 @@ class GraphStore(ABC):
 
     def get_event_contexts(self, event_id: str) -> list[Any]:
         raise NotImplementedError("get_event_contexts is not implemented")
+
+    def get_active_events_with_embeddings(self, limit: int = 200) -> list[Event]:
+        raise NotImplementedError("get_active_events_with_embeddings is not implemented")
+
+    def find_events_by_state_key(
+        self,
+        entity: str,
+        attribute: str,
+        limit: int = 20,
+    ) -> list[Event]:
+        raise NotImplementedError("find_events_by_state_key is not implemented")
+
+    def find_events_by_thread(self, thread_id: str, limit: int = 20) -> list[Event]:
+        raise NotImplementedError("find_events_by_thread is not implemented")
 
     def retrieve_candidate_contexts_for_query(
         self,

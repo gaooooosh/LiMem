@@ -32,6 +32,7 @@ from ..config import (
     DECAY_STEP,
     ENABLE_AUTO_CONSOLIDATION,
     ENABLE_EVENT_RELATIONS,
+    ENABLE_DERIVE_OPERATION,
     EVENT_CONSOLIDATION_CANDIDATE_LIMIT,
     EVENT_CONSOLIDATION_EMBEDDING_CANDIDATE_THRESHOLD,
     EVENT_CONSOLIDATION_EMBEDDING_TOP_K,
@@ -41,7 +42,23 @@ from ..config import (
     EVENT_MERGE_TRACE_STRATEGY_VERSION,
     GENERATION_MODEL,
     LLM_CONCURRENCY,
+    MAX_DERIVATIONS_PER_BATCH,
     REINFORCEMENT_STEP,
+    RECALL_ENTITY_LIMIT,
+    RECALL_MAX_CANDIDATES,
+    RECALL_REFERENCE_LIMIT,
+    RECALL_SEMANTIC_LIMIT,
+    RECALL_SEMANTIC_THRESHOLD,
+    RECALL_STATE_LIMIT,
+    RECALL_TEMPORAL_LIMIT,
+    RECALL_TEMPORAL_WINDOW,
+    RECALL_WEIGHT_ENTITY,
+    RECALL_WEIGHT_REFERENCE,
+    RECALL_WEIGHT_SEMANTIC,
+    RECALL_WEIGHT_STATE,
+    RECALL_WEIGHT_TEMPORAL,
+    RELATION_CLASSIFICATION_BATCH_SIZE,
+    RELATION_MIN_CONFIDENCE,
     RETRIEVAL_DEFAULT_CANDIDATE_LIMIT,
     RETRIEVAL_WEIGHT_CONTEXT,
     RETRIEVAL_WEIGHT_EVENT_SIM,
@@ -57,6 +74,8 @@ from ..core.context import Context, ContextDraft
 from ..core.event import Event
 from ..llm import DashScopeClient
 from ..utils import hash_summary, load_prompt, robust_json_loads, safe_json_dumps, safe_json_loads
+from .recall_pipeline import RecallPipeline
+from .relation_processor import ProcessResult, RelationProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +120,23 @@ class DynamicEvolutionConfig:
     event_merge_trace_strategy_version: str = EVENT_MERGE_TRACE_STRATEGY_VERSION
     event_merge_trace_log_path: str = EVENT_MERGE_TRACE_LOG_PATH
     enable_event_relations: bool = ENABLE_EVENT_RELATIONS
+    recall_max_candidates: int = RECALL_MAX_CANDIDATES
+    recall_temporal_window: int = RECALL_TEMPORAL_WINDOW
+    recall_temporal_limit: int = RECALL_TEMPORAL_LIMIT
+    recall_entity_limit: int = RECALL_ENTITY_LIMIT
+    recall_semantic_limit: int = RECALL_SEMANTIC_LIMIT
+    recall_semantic_threshold: float = RECALL_SEMANTIC_THRESHOLD
+    recall_state_limit: int = RECALL_STATE_LIMIT
+    recall_reference_limit: int = RECALL_REFERENCE_LIMIT
+    recall_weight_temporal: float = RECALL_WEIGHT_TEMPORAL
+    recall_weight_entity: float = RECALL_WEIGHT_ENTITY
+    recall_weight_semantic: float = RECALL_WEIGHT_SEMANTIC
+    recall_weight_state: float = RECALL_WEIGHT_STATE
+    recall_weight_reference: float = RECALL_WEIGHT_REFERENCE
+    relation_classification_batch_size: int = RELATION_CLASSIFICATION_BATCH_SIZE
+    relation_min_confidence: float = RELATION_MIN_CONFIDENCE
+    enable_derive_operation: bool = ENABLE_DERIVE_OPERATION
+    max_derivations_per_batch: int = MAX_DERIVATIONS_PER_BATCH
 
     def __post_init__(self) -> None:
         self.llm_base_url = normalize_dashscope_base_url(self.llm_base_url)
@@ -110,6 +146,13 @@ class EvolutionReport(TypedDict):
     context_links: int
     next_links: int
     event_relation_links: int
+    updates: int
+    extensions: int
+    derivations: int
+    merges: int
+    links: int
+    skipped: int
+    recall_candidates: int
 
 
 class WriteBatchReport(EvolutionReport):
@@ -124,6 +167,8 @@ class DynamicEvolutionEngine:
         store: Any,
         config: Optional[DynamicEvolutionConfig] = None,
         llm_client: Optional[DashScopeClient] = None,
+        recall_pipeline: Optional[RecallPipeline] = None,
+        relation_processor: Optional[RelationProcessor] = None,
     ):
         self.store = store
         self.config = config or DynamicEvolutionConfig()
@@ -139,6 +184,18 @@ class DynamicEvolutionEngine:
             generation_model=self.config.llm_model,
             llm_client=self.llm_client,
         )
+        self.recall_pipeline = recall_pipeline or RecallPipeline(
+            store=self.store,
+            config=self.config,
+        )
+        self.relation_processor = relation_processor or RelationProcessor(
+            store=self.store,
+            llm_client=self.llm_client,
+            config=self.config,
+        )
+        bind_engine = getattr(self.relation_processor, "bind_engine", None)
+        if callable(bind_engine):
+            bind_engine(self)
         self._extract_relation_system_prompt = load_prompt("extract_relation_system.txt")
         self._rewrite_merged_event_system_prompt = load_prompt("rewrite_merged_event_system.txt")
         self._rewrite_merged_event_user_prompt = load_prompt("rewrite_merged_event_user.txt")
@@ -170,6 +227,43 @@ class DynamicEvolutionEngine:
             return [Event.from_extraction(raw, now)]
         return []
 
+    def _empty_evolution_report(self) -> EvolutionReport:
+        return {
+            "context_links": 0,
+            "next_links": 0,
+            "event_relation_links": 0,
+            "updates": 0,
+            "extensions": 0,
+            "derivations": 0,
+            "merges": 0,
+            "links": 0,
+            "skipped": 0,
+            "recall_candidates": 0,
+        }
+
+    def _merge_evolution_reports(
+        self,
+        base: EvolutionReport,
+        update: EvolutionReport,
+    ) -> EvolutionReport:
+        merged = self._empty_evolution_report()
+        for key in merged:
+            merged[key] = int(base.get(key, 0) or 0) + int(update.get(key, 0) or 0)
+        return merged
+
+    def _coerce_relation_report(self, raw: Any) -> EvolutionReport:
+        if isinstance(raw, dict):
+            report = self._empty_evolution_report()
+            for key in report:
+                report[key] = int(raw.get(key, 0) or 0)
+            return report
+        report = self._empty_evolution_report()
+        try:
+            report["event_relation_links"] = int(raw or 0)
+        except (TypeError, ValueError):
+            report["event_relation_links"] = 0
+        return report
+
     def write_event_batch(
         self,
         events: list[Event],
@@ -179,14 +273,11 @@ class DynamicEvolutionEngine:
         if not events:
             return {
                 "event_count": 0,
-                "context_links": 0,
-                "next_links": 0,
-                "event_relation_links": 0,
+                **self._empty_evolution_report(),
             }
 
         new_events: list[Event] = []
-        in_links = 0
-        relation_links = 0
+        report = self._empty_evolution_report()
         now = int(time.time())
 
         # Append-first: create event nodes without global rescoring.
@@ -205,12 +296,15 @@ class DynamicEvolutionEngine:
             record=record,
         )
         for event, resolved_contexts in zip(new_events, resolved_context_batches):
-            in_links += self.attach_contexts_to_event(event, resolved_contexts)
+            report["context_links"] += self.attach_contexts_to_event(event, resolved_contexts)
         if self.config.enable_event_relations:
-            relation_links += self.extract_event_event_relations(
-                events=new_events,
-                record=record,
+            relation_report = self._coerce_relation_report(
+                self.extract_event_event_relations(
+                    events=new_events,
+                    record=record,
+                )
             )
+            report = self._merge_evolution_reports(report, relation_report)
         if self._should_run_auto_consolidation():
             ts = int(time.time())
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
@@ -218,41 +312,77 @@ class DynamicEvolutionEngine:
 
         return {
             "event_count": len(new_events),
-            "context_links": in_links,
-            "next_links": 0,
-            "event_relation_links": relation_links,
+            **report,
         }
 
     def evolve_existing_events(self, events: list[Event]) -> EvolutionReport:
         """Apply local dynamic updates for already-persisted events."""
         if not events:
-            return {"context_links": 0, "next_links": 0, "event_relation_links": 0}
+            return self._empty_evolution_report()
 
-        context_links = 0
-        relation_links = 0
+        report = self._empty_evolution_report()
         resolved_context_batches = self._resolve_context_pairs_for_event_batch(
             events=events,
             record=None,
         )
         for event, resolved_contexts in zip(events, resolved_context_batches):
-            context_links += self.attach_contexts_to_event(event, resolved_contexts)
+            report["context_links"] += self.attach_contexts_to_event(event, resolved_contexts)
         if self.config.enable_event_relations:
-            relation_links += self.extract_event_event_relations(
-                events=events,
-                record=None,
+            relation_report = self._coerce_relation_report(
+                self.extract_event_event_relations(
+                    events=events,
+                    record=None,
+                )
             )
+            report = self._merge_evolution_reports(report, relation_report)
         if self._should_run_auto_consolidation():
             ts = int(time.time())
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
                 self.run_consolidation(current_time=ts)
 
-        return {
-            "context_links": context_links,
-            "next_links": 0,
-            "event_relation_links": relation_links,
-        }
+        return report
 
     def extract_event_event_relations(
+        self,
+        events: list[Event],
+        record: Optional[Any] = None,
+    ) -> EvolutionReport:
+        if not events:
+            return self._empty_evolution_report()
+        if self._should_use_legacy_relation_extraction():
+            return self._coerce_relation_report(
+                self._extract_event_event_relations_legacy(events=events, record=record)
+            )
+        return self._run_relation_pipeline(events=events, record=record)
+
+    def _run_relation_pipeline(
+        self,
+        events: list[Event],
+        record: Optional[Any] = None,
+    ) -> EvolutionReport:
+        report = self._empty_evolution_report()
+        source_text = self._extract_relation_source_text(record=record, events=events)
+        if not source_text:
+            source_text = " ".join(event.summary for event in events if event.summary).strip()
+        processed_events: list[Event] = []
+        for event in events:
+            if not event or event.status in {"merged", "archived"}:
+                continue
+            candidate_set = self.recall_pipeline.recall(
+                event=event,
+                intra_batch_events=processed_events,
+            )
+            report["recall_candidates"] += len(candidate_set.candidates)
+            result = self.relation_processor.process(
+                e_new=event,
+                candidates=candidate_set,
+                source_text=source_text,
+            )
+            report = self._merge_evolution_reports(report, self._process_result_to_report(result))
+            processed_events.append(event)
+        return report
+
+    def _extract_event_event_relations_legacy(
         self,
         events: list[Event],
         record: Optional[Any] = None,
@@ -313,18 +443,26 @@ class DynamicEvolutionEngine:
             relation = self._normalize_relation_decision(left=left, right=right, decision=decision)
             if relation is None:
                 continue
-            self.store.upsert_event_relation(
-                from_event_id=relation["from_event_id"],
-                to_event_id=relation["to_event_id"],
-                relation_type=relation["relation_type"],
-                description=relation["description"],
-                confidence=relation["confidence"],
-                evidence_span=relation["evidence_span"],
-                source_episode_id=relation["source_episode_id"],
-                source_session_id=relation["source_session_id"],
-                timestamp=relation["timestamp"],
+            created += int(
+                bool(
+                    self.store.upsert_event_relation(
+                        from_event_id=relation["from_event_id"],
+                        to_event_id=relation["to_event_id"],
+                        relation_type=relation["relation_type"],
+                        operation="link",
+                        description=relation["description"],
+                        confidence=relation["confidence"],
+                        evidence_span=relation["evidence_span"],
+                        value_before="",
+                        value_after="",
+                        recall_channel="legacy_pairwise",
+                        recall_score=relation["confidence"],
+                        source_episode_id=relation["source_episode_id"],
+                        source_session_id=relation["source_session_id"],
+                        timestamp=relation["timestamp"],
+                    )
+                )
             )
-            created += 1
         return created
 
     def _extract_relation_source_text(self, record: Optional[Any], events: list[Event]) -> str:
@@ -585,6 +723,29 @@ class DynamicEvolutionEngine:
     def _llm_workers(self, task_count: int) -> int:
         concurrency = max(1, int(self.config.llm_concurrency or 1))
         return max(1, min(concurrency, task_count))
+
+    def _should_use_legacy_relation_extraction(self) -> bool:
+        return self._method_is_overridden("_call_relation_llm", type(self)._call_relation_llm)
+
+    def _method_is_overridden(self, name: str, default: Any) -> bool:
+        current = getattr(self, name, None)
+        if current is None or default is None:
+            return False
+        func = getattr(current, "__func__", None)
+        if func is not None:
+            return func is not default
+        return current is not default
+
+    def _process_result_to_report(self, result: ProcessResult) -> EvolutionReport:
+        report = self._empty_evolution_report()
+        report["event_relation_links"] = int(result.total_links or 0)
+        report["updates"] = int(result.updates or 0)
+        report["extensions"] = int(result.extensions or 0)
+        report["derivations"] = int(result.derivations or 0)
+        report["merges"] = int(result.merges or 0)
+        report["links"] = int(result.links or 0)
+        report["skipped"] = int(result.skipped or 0)
+        return report
 
     def _should_run_auto_consolidation(self) -> bool:
         if not self.config.enable_auto_consolidation:
@@ -2188,29 +2349,13 @@ class DynamicEvolutionEngine:
         similarity_score: float = 1.0,
         merge_reason: str = "manual_merge",
     ) -> dict[str, Any]:
-        canonical = self.store.get_event(canonical_event_id)
-        merged = self.store.get_event(merged_event_id)
-        if canonical is None:
-            raise ValueError(f"Canonical event not found: {canonical_event_id}")
-        if merged is None:
-            raise ValueError(f"Merged event not found: {merged_event_id}")
-        if canonical.id == merged.id:
-            raise ValueError("Cannot merge the same event")
-        ts = int(merged_at or time.time())
-        self._merge_event_pair(
-            canonical=canonical,
-            merged=merged,
+        return self.relation_processor.merge_events(
+            canonical_event_id=canonical_event_id,
+            merged_event_id=merged_event_id,
+            merged_at=merged_at,
             similarity_score=similarity_score,
             merge_reason=merge_reason,
-            merged_at=ts,
         )
-        return {
-            "canonical_event_id": canonical.id,
-            "merged_event_id": merged.id,
-            "merged_at": ts,
-            "similarity_score": float(similarity_score),
-            "merge_reason": merge_reason,
-        }
 
     def merge_contexts(
         self,

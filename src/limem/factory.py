@@ -12,6 +12,8 @@ from .storage.kuzu_store import KuzuStore
 from .builder.memory_builder import MemoryBuilder, BuilderConfig
 from .builder.extractor import UnifiedExtractor
 from .evolution import DynamicEvolutionEngine, DynamicEvolutionConfig
+from .evolution.recall_pipeline import RecallPipeline
+from .evolution.relation_processor import RelationProcessor
 from .config import (
     APPEND_FIRST_MODE,
     BULK_INGEST_MODE,
@@ -130,10 +132,21 @@ def create_ltm_system(
             if field.name in config:
                 setattr(dynamic_config, field.name, config[field.name])
         dynamic_config.__post_init__()
+        recall_pipeline = RecallPipeline(
+            store=store,
+            config=dynamic_config,
+        )
+        relation_processor = RelationProcessor(
+            store=store,
+            llm_client=llm_client,
+            config=dynamic_config,
+        )
         dynamic_engine = DynamicEvolutionEngine(
             store=store,
             config=dynamic_config,
             llm_client=llm_client,
+            recall_pipeline=recall_pipeline,
+            relation_processor=relation_processor,
         )
 
     builder = MemoryBuilder(

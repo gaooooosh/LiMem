@@ -122,10 +122,20 @@ Rewrite policy：
   "events": [
     {
       "summary": "完整交互场景描述",
+      "event_type": "action",
+      "canonical_predicate": "规范化谓词",
       "participants": [{"role": "主体", "seat": ""}],
       "action": "完整变化链",
       "time": {"start": 0, "end": 0, "text": ""},
       "causality": "",
+      "state_changes": [
+        {
+          "entity": "状态主体",
+          "attribute": "状态属性",
+          "value_before": "",
+          "value_after": ""
+        }
+      ],
       "contexts": [
         {
           "subtype": "situation",
@@ -160,3 +170,6 @@ Rewrite policy：
 7. 不要把原始日志或 JSON 整段复制到 summary、action 或 description。
 8. 当 Episode 无有效 Event，但有环境或状态信息时，events 返回空数组，将信息放入 orphan_contexts。
 9. orphan_contexts 与 Event 内 contexts 的字段结构相同。
+10. `event_type` 只能使用：action、decision、observation、state_change、communication。
+11. `canonical_predicate` 要尽量抽象成稳定谓词短语。
+12. `state_changes` 仅在原文明确出现状态变更时填写，否则返回空数组。

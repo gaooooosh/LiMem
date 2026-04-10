@@ -68,7 +68,18 @@ class LTMemoryImpl(LTMemory):
     def evolve_events(self, events: list[Event]) -> EvolutionReport:
         """Run dynamic evolution for already-persisted events."""
         if not self.dynamic_engine or not events:
-            return {"context_links": 0, "next_links": 0, "event_relation_links": 0}
+            return {
+                "context_links": 0,
+                "next_links": 0,
+                "event_relation_links": 0,
+                "updates": 0,
+                "extensions": 0,
+                "derivations": 0,
+                "merges": 0,
+                "links": 0,
+                "skipped": 0,
+                "recall_candidates": 0,
+            }
         return self.dynamic_engine.evolve_existing_events(events)
 
     def ingest_batch(

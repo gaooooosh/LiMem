@@ -176,9 +176,14 @@ class KuzuStore(GraphStore):
             CREATE REL TABLE IF NOT EXISTS EVENT_RELATION(
                 FROM Event TO Event,
                 relation_type STRING,
+                operation STRING,
                 description STRING,
                 confidence DOUBLE,
                 evidence_span STRING,
+                value_before STRING,
+                value_after STRING,
+                recall_channel STRING,
+                recall_score DOUBLE,
                 source_episode_id STRING,
                 source_session_id STRING,
                 created_at INT64,
@@ -236,9 +241,14 @@ class KuzuStore(GraphStore):
             "ALTER TABLE EVENT_MERGE_TRACE ADD merged_at INT64",
             "ALTER TABLE EVENT_MERGE_TRACE ADD strategy_version STRING",
             "ALTER TABLE EVENT_RELATION ADD relation_type STRING",
+            "ALTER TABLE EVENT_RELATION ADD operation STRING",
             "ALTER TABLE EVENT_RELATION ADD description STRING",
             "ALTER TABLE EVENT_RELATION ADD confidence DOUBLE",
             "ALTER TABLE EVENT_RELATION ADD evidence_span STRING",
+            "ALTER TABLE EVENT_RELATION ADD value_before STRING",
+            "ALTER TABLE EVENT_RELATION ADD value_after STRING",
+            "ALTER TABLE EVENT_RELATION ADD recall_channel STRING",
+            "ALTER TABLE EVENT_RELATION ADD recall_score DOUBLE",
             "ALTER TABLE EVENT_RELATION ADD source_episode_id STRING",
             "ALTER TABLE EVENT_RELATION ADD source_session_id STRING",
             "ALTER TABLE EVENT_RELATION ADD created_at INT64",
@@ -744,17 +754,27 @@ class KuzuStore(GraphStore):
         source_episode_id: str,
         source_session_id: str,
         timestamp: int,
-    ) -> None:
+        operation: str = "",
+        value_before: str = "",
+        value_after: str = "",
+        recall_channel: str = "",
+        recall_score: float = 0.0,
+    ) -> bool:
         relation_type = str(relation_type or "").strip()
         if not relation_type or not from_event_id or not to_event_id or from_event_id == to_event_id:
-            return
+            return False
         params = {
             "from_event_id": from_event_id,
             "to_event_id": to_event_id,
             "relation_type": relation_type,
+            "operation": str(operation or "").strip(),
             "description": str(description or "").strip(),
             "confidence": float(confidence),
             "evidence_span": str(evidence_span or "").strip(),
+            "value_before": str(value_before or "").strip(),
+            "value_after": str(value_after or "").strip(),
+            "recall_channel": str(recall_channel or "").strip(),
+            "recall_score": float(recall_score or 0.0),
             "source_episode_id": str(source_episode_id or "").strip(),
             "source_session_id": str(source_session_id or "").strip(),
             "timestamp": int(timestamp),
@@ -775,24 +795,34 @@ class KuzuStore(GraphStore):
             self.conn.execute(
                 """
                 MATCH (:Event {id: $from_event_id})-[r:EVENT_RELATION {relation_type: $relation_type}]->(:Event {id: $to_event_id})
-                SET r.description = $description,
+                SET r.operation = $operation,
+                    r.description = $description,
                     r.confidence = $confidence,
                     r.evidence_span = $evidence_span,
+                    r.value_before = $value_before,
+                    r.value_after = $value_after,
+                    r.recall_channel = $recall_channel,
+                    r.recall_score = $recall_score,
                     r.source_episode_id = $source_episode_id,
                     r.source_session_id = $source_session_id,
                     r.updated_at = $timestamp
                 """,
                 params,
             )
-            return
+            return False
         self.conn.execute(
             """
             MATCH (src:Event {id: $from_event_id}), (dst:Event {id: $to_event_id})
             CREATE (src)-[:EVENT_RELATION {
                 relation_type: $relation_type,
+                operation: $operation,
                 description: $description,
                 confidence: $confidence,
                 evidence_span: $evidence_span,
+                value_before: $value_before,
+                value_after: $value_after,
+                recall_channel: $recall_channel,
+                recall_score: $recall_score,
                 source_episode_id: $source_episode_id,
                 source_session_id: $source_session_id,
                 created_at: $timestamp,
@@ -801,6 +831,7 @@ class KuzuStore(GraphStore):
             """,
             params,
         )
+        return True
 
     def list_event_event_edges(
         self,
@@ -818,9 +849,9 @@ class KuzuStore(GraphStore):
             f"""
             MATCH (src:Event)-[r:EVENT_RELATION]->(dst:Event)
             {where_clause}
-            RETURN src.id, dst.id, r.relation_type, r.description, r.confidence,
-                   r.evidence_span, r.source_episode_id, r.source_session_id,
-                   r.created_at, r.updated_at
+            RETURN src.id, dst.id, r.relation_type, r.operation, r.description, r.confidence,
+                   r.evidence_span, r.value_before, r.value_after, r.recall_channel, r.recall_score,
+                   r.source_episode_id, r.source_session_id, r.created_at, r.updated_at
             ORDER BY r.updated_at DESC
             LIMIT $limit
             """,
@@ -834,13 +865,18 @@ class KuzuStore(GraphStore):
                     "from_event_id": row[0],
                     "to_event_id": row[1],
                     "relation_type": row[2] or "",
-                    "description": row[3] or "",
-                    "confidence": float(row[4] or 0.0),
-                    "evidence_span": row[5] or "",
-                    "source_episode_id": row[6] or "",
-                    "source_session_id": row[7] or "",
-                    "created_at": int(row[8] or 0),
-                    "updated_at": int(row[9] or 0),
+                    "operation": row[3] or "",
+                    "description": row[4] or "",
+                    "confidence": float(row[5] or 0.0),
+                    "evidence_span": row[6] or "",
+                    "value_before": row[7] or "",
+                    "value_after": row[8] or "",
+                    "recall_channel": row[9] or "",
+                    "recall_score": float(row[10] or 0.0),
+                    "source_episode_id": row[11] or "",
+                    "source_session_id": row[12] or "",
+                    "created_at": int(row[13] or 0),
+                    "updated_at": int(row[14] or 0),
                 }
             )
         return rows
@@ -1090,6 +1126,78 @@ class KuzuStore(GraphStore):
             {"min_ts": min_ts, "limit": int(limit)},
         )
         events = []
+        while resp.has_next():
+            events.append(self._row_to_event(list(resp.get_next())))
+        return events
+
+    def get_active_events_with_embeddings(self, limit: int = 200) -> list[Event]:
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Event)
+            WHERE e.status = 'active'
+            RETURN {self._event_select_clause('e')}
+            ORDER BY e.last_active DESC
+            LIMIT $limit
+            """,
+            {"limit": int(max(limit, 1))},
+        )
+        events: list[Event] = []
+        while resp.has_next():
+            event = self._row_to_event(list(resp.get_next()))
+            if event.embedding:
+                events.append(event)
+        return events
+
+    def find_events_by_state_key(
+        self,
+        entity: str,
+        attribute: str,
+        limit: int = 20,
+    ) -> list[Event]:
+        entity_text = str(entity or "").strip()
+        attribute_text = str(attribute or "").strip()
+        if not entity_text or not attribute_text:
+            return []
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Event)
+            WHERE e.status = 'active'
+              AND e.payload CONTAINS $entity_text
+              AND e.payload CONTAINS $attribute_text
+            RETURN {self._event_select_clause('e')}
+            ORDER BY e.last_active DESC
+            LIMIT $limit
+            """,
+            {
+                "entity_text": entity_text,
+                "attribute_text": attribute_text,
+                "limit": int(max(limit, 1)),
+            },
+        )
+        events: list[Event] = []
+        while resp.has_next():
+            events.append(self._row_to_event(list(resp.get_next())))
+        return events
+
+    def find_events_by_thread(self, thread_id: str, limit: int = 20) -> list[Event]:
+        thread_text = str(thread_id or "").strip()
+        if not thread_text:
+            return []
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Event)
+            WHERE e.status = 'active'
+              AND e.payload CONTAINS $thread_text
+            RETURN {self._event_select_clause('e')}
+            ORDER BY e.last_active DESC
+            LIMIT $limit
+            """,
+            {
+                "thread_text": thread_text,
+                "limit": int(max(limit, 1)),
+            },
+        )
+        events: list[Event] = []
         while resp.has_next():
             events.append(self._row_to_event(list(resp.get_next())))
         return events
@@ -1441,7 +1549,8 @@ class KuzuStore(GraphStore):
         outgoing = self.conn.execute(
             """
             MATCH (:Event {id: $source_event_id})-[r:EVENT_RELATION]->(dst:Event)
-            RETURN dst.id, r.relation_type, r.description, r.confidence, r.evidence_span,
+            RETURN dst.id, r.relation_type, r.operation, r.description, r.confidence, r.evidence_span,
+                   r.value_before, r.value_after, r.recall_channel, r.recall_score,
                    r.source_episode_id, r.source_session_id, r.updated_at
             """,
             {"source_event_id": source_event_id},
@@ -1455,12 +1564,17 @@ class KuzuStore(GraphStore):
                 from_event_id=target_event_id,
                 to_event_id=dst_id,
                 relation_type=row[1] or "关联",
-                description=row[2] or "",
-                confidence=float(row[3] or 0.0),
-                evidence_span=row[4] or "",
-                source_episode_id=row[5] or "",
-                source_session_id=row[6] or "",
-                timestamp=int(row[7] or ts),
+                operation=row[2] or "",
+                description=row[3] or "",
+                confidence=float(row[4] or 0.0),
+                evidence_span=row[5] or "",
+                value_before=row[6] or "",
+                value_after=row[7] or "",
+                recall_channel=row[8] or "",
+                recall_score=float(row[9] or 0.0),
+                source_episode_id=row[10] or "",
+                source_session_id=row[11] or "",
+                timestamp=int(row[12] or ts),
             )
             moved["event_relations"] += 1
         self.conn.execute(
@@ -1474,7 +1588,8 @@ class KuzuStore(GraphStore):
         incoming = self.conn.execute(
             """
             MATCH (src:Event)-[r:EVENT_RELATION]->(:Event {id: $source_event_id})
-            RETURN src.id, r.relation_type, r.description, r.confidence, r.evidence_span,
+            RETURN src.id, r.relation_type, r.operation, r.description, r.confidence, r.evidence_span,
+                   r.value_before, r.value_after, r.recall_channel, r.recall_score,
                    r.source_episode_id, r.source_session_id, r.updated_at
             """,
             {"source_event_id": source_event_id},
@@ -1488,12 +1603,17 @@ class KuzuStore(GraphStore):
                 from_event_id=src_id,
                 to_event_id=target_event_id,
                 relation_type=row[1] or "关联",
-                description=row[2] or "",
-                confidence=float(row[3] or 0.0),
-                evidence_span=row[4] or "",
-                source_episode_id=row[5] or "",
-                source_session_id=row[6] or "",
-                timestamp=int(row[7] or ts),
+                operation=row[2] or "",
+                description=row[3] or "",
+                confidence=float(row[4] or 0.0),
+                evidence_span=row[5] or "",
+                value_before=row[6] or "",
+                value_after=row[7] or "",
+                recall_channel=row[8] or "",
+                recall_score=float(row[9] or 0.0),
+                source_episode_id=row[10] or "",
+                source_session_id=row[11] or "",
+                timestamp=int(row[12] or ts),
             )
             moved["event_relations"] += 1
         self.conn.execute(
