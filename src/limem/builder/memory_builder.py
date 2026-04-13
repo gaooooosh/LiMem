@@ -107,7 +107,7 @@ class MemoryBuilder:
         pending_events: list[tuple[int, Event]] = []
         for idx, event_payload in enumerate(event_payloads):
             event = self._build_event_frame(event_payload, episode, current_time, index=idx)
-            if self._is_effective_event(event):
+            if event.summary:
                 pending_events.append((idx, event))
         metrics["event_count"] = len(pending_events)
 
@@ -165,7 +165,7 @@ class MemoryBuilder:
         pending_events: list[tuple[int, Event]] = []
         for idx, event_payload in enumerate(event_payloads):
             event = self._build_event_frame(event_payload, episode, current_time, index=idx)
-            if self._is_effective_event(event):
+            if event.summary:
                 pending_events.append((idx, event))
         metrics["event_count"] = len(pending_events)
 
@@ -390,12 +390,6 @@ class MemoryBuilder:
                 if isinstance(context, dict) and str(context.get("summary", "")).strip()
             )
         return count
-
-    def _is_effective_event(self, event: Event) -> bool:
-        return any(
-            str(value or "").strip()
-            for value in (event.summary, event.action, event.causality)
-        )
 
     def _update_entity_relations(
         self,

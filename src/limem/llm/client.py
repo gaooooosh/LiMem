@@ -41,6 +41,8 @@ class DashScopeClient:
             self._openai_client = _OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
+                timeout=120.0,
+                max_retries=2,
             )
         return self._openai_client
 

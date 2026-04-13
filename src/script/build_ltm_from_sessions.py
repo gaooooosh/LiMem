@@ -183,6 +183,7 @@ def main() -> None:
             "enable_dynamic_evolution": True,
             "append_first_mode": not args.legacy_merge,
             "bulk_ingest_mode": True,
+            "deferred_evolution": True,
             "llm_concurrency": 4,
         },
     )

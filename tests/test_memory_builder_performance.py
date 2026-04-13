@@ -224,6 +224,48 @@ class TestMemoryBuilderPerformance(unittest.TestCase):
         self.assertEqual(result.metrics["eventless_orphan_episode_count"], 1)
         self.assertEqual(result.metrics["orphan_contexts"][0]["summary"], "低电量")
 
+    def test_build_only_persists_events_with_summary_after_frame_build(self):
+        class _MixedExtractor:
+            def extract(self, text, metadata=None):
+                del text, metadata
+                return ExtractionResult(
+                    event_data={
+                        "summary": "系统开启沉浸会议模式",
+                        "participants": [{"role": "车机系统", "seat": ""}],
+                        "action": "开启沉浸会议模式",
+                        "causality": "检测到会议即将开始",
+                    },
+                    events_data=[
+                        {
+                            "summary": "系统开启沉浸会议模式",
+                            "participants": [{"role": "车机系统", "seat": ""}],
+                            "action": "开启沉浸会议模式",
+                            "causality": "检测到会议即将开始",
+                        },
+                        {
+                            "summary": "",
+                            "participants": [{"role": "车机系统", "seat": ""}],
+                            "action": "自动暂停当前媒体",
+                            "causality": "保持座舱安静",
+                        },
+                    ],
+                    entities=[],
+                )
+
+        builder = MemoryBuilder(
+            extractor=_MixedExtractor(),
+            store=_BatchAwareStore(),
+            config=BuilderConfig(append_first_mode=True),
+        )
+        builder._get_embeddings = lambda texts: [[0.0] * 1536 for _ in texts]
+
+        result = builder.build(Episode(content="会议即将开始，系统开启沉浸会议模式", timestamp=999))
+
+        self.assertEqual(result.metrics["raw_event_count"], 2)
+        self.assertEqual(result.metrics["event_count"], 1)
+        self.assertEqual(len(result.events), 1)
+        self.assertEqual(result.events[0].summary, "系统开启沉浸会议模式")
+
 
 if __name__ == "__main__":
     unittest.main()
