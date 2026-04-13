@@ -124,8 +124,44 @@ class _NoopLLM:
         return "{}"
 
 
+def _make_config(**overrides):
+    defaults = dict(
+        recall_max_candidates=10,
+        recall_min_aggregate_score=0.12,
+        recall_temporal_window=100,
+        recall_temporal_limit=5,
+        recall_entity_limit=8,
+        recall_semantic_limit=8,
+        recall_semantic_threshold=0.78,
+        recall_state_limit=5,
+        recall_reference_limit=5,
+        recall_weight_temporal=0.10,
+        recall_weight_entity=0.30,
+        recall_weight_semantic=0.35,
+        recall_weight_state=0.15,
+        recall_weight_reference=0.10,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _make_processor_config(**overrides):
+    defaults = dict(
+        llm_model="test-model",
+        relation_classification_batch_size=15,
+        relation_min_confidence=0.75,
+        relation_max_links_per_event=3,
+        enable_derive_operation=False,
+        max_derivations_per_batch=3,
+        event_merge_trace_strategy_version="v1",
+        event_merge_trace_log_path=tempfile.mktemp(),
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 class TestRelationPipeline(unittest.TestCase):
-    def test_recall_pipeline_merges_channels_and_includes_intra_batch_events(self):
+    def test_recall_pipeline_merges_channels(self):
         combo = Event(
             id="evt_combo",
             summary="组合候选",
@@ -154,13 +190,6 @@ class TestRelationPipeline(unittest.TestCase):
             last_active=117,
             embedding=[0.98, 0.02],
         )
-        intra_batch = Event(
-            id="evt_batch",
-            summary="批次内候选",
-            timestamp=121,
-            last_active=121,
-            embedding=[0.9, 0.1],
-        )
         new_event = Event(
             id="evt_new",
             summary="新事件",
@@ -180,31 +209,52 @@ class TestRelationPipeline(unittest.TestCase):
                 "evt_entity": ["导航"],
             },
         )
-        config = SimpleNamespace(
-            recall_max_candidates=10,
-            recall_temporal_window=100,
-            recall_temporal_limit=10,
-            recall_entity_limit=10,
-            recall_semantic_limit=10,
+        config = _make_config(
             recall_semantic_threshold=0.65,
-            recall_state_limit=10,
-            recall_reference_limit=10,
-            recall_weight_temporal=0.15,
-            recall_weight_entity=0.25,
-            recall_weight_semantic=0.35,
-            recall_weight_state=0.15,
-            recall_weight_reference=0.10,
+            recall_min_aggregate_score=0.0,
         )
         pipeline = RecallPipeline(store=store, config=config)
 
-        result = pipeline.recall(new_event, intra_batch_events=[intra_batch])
+        result = pipeline.recall(new_event)
         ids = [candidate.event.id for candidate in result.candidates]
 
-        self.assertIn("evt_batch", ids)
         self.assertEqual(ids.count("evt_combo"), 1)
         combo_candidate = next(candidate for candidate in result.candidates if candidate.event.id == "evt_combo")
         self.assertEqual(set(combo_candidate.features["channels"].keys()), {"temporal", "entity", "semantic"})
         self.assertGreater(combo_candidate.features["aggregate_score"], 0.7)
+
+    def test_recall_aggregate_score_floor_filters_weak_candidates(self):
+        """Candidates below min_aggregate_score should be filtered out."""
+        weak_event = Event(
+            id="evt_weak",
+            summary="弱候选",
+            timestamp=50,
+            last_active=50,
+            embedding=[0.1, 0.9],
+        )
+        new_event = Event(
+            id="evt_new",
+            summary="新事件",
+            timestamp=122,
+            last_active=122,
+            embedding=[1.0, 0.0],
+        )
+
+        store = _RecallStore(
+            recent_events=[weak_event],
+            entity_events=[],
+            semantic_events=[],
+            entity_map={},
+        )
+        config = _make_config(
+            recall_min_aggregate_score=0.25,
+            recall_temporal_window=1000,
+        )
+        pipeline = RecallPipeline(store=store, config=config)
+
+        result = pipeline.recall(new_event)
+        ids = [c.event.id for c in result.candidates]
+        self.assertNotIn("evt_weak", ids)
 
     def test_relation_processor_legacy_compat_creates_link_edge(self):
         new_event = Event(id="evt_new", summary="用户发起导航", timestamp=100, last_active=100)
@@ -213,15 +263,7 @@ class TestRelationPipeline(unittest.TestCase):
         processor = RelationProcessor(
             store=store,
             llm_client=_NoopLLM(),
-            config=SimpleNamespace(
-                llm_model="test-model",
-                relation_classification_batch_size=15,
-                relation_min_confidence=0.5,
-                enable_derive_operation=False,
-                max_derivations_per_batch=3,
-                event_merge_trace_strategy_version="v1",
-                event_merge_trace_log_path=tempfile.mktemp(),
-            ),
+            config=_make_processor_config(),
         )
         processor._legacy_relation_enabled = lambda: True
         processor._legacy_relation_payload = lambda left, right, source_text: {
@@ -243,7 +285,7 @@ class TestRelationPipeline(unittest.TestCase):
                     event=candidate_event,
                     channel="semantic",
                     channel_score=0.91,
-                    features={"aggregate_score": 0.91},
+                    features={"aggregate_score": 0.91, "channels": {"semantic": 0.91}},
                 )
             ],
             channel_stats={"semantic": 1},
@@ -274,19 +316,10 @@ class TestRelationPipeline(unittest.TestCase):
             payload={"state_changes": [{"entity": "账户", "attribute": "余额", "value_before": "100", "value_after": "120"}]},
         )
         store = _RelationStore([old_event, new_event])
-        trace_log = tempfile.mktemp()
         processor = RelationProcessor(
             store=store,
             llm_client=_NoopLLM(),
-            config=SimpleNamespace(
-                llm_model="test-model",
-                relation_classification_batch_size=15,
-                relation_min_confidence=0.5,
-                enable_derive_operation=False,
-                max_derivations_per_batch=3,
-                event_merge_trace_strategy_version="v1",
-                event_merge_trace_log_path=trace_log,
-            ),
+            config=_make_processor_config(),
         )
         processor._classify_batch = lambda e_new, candidates, source_text: [
             OperationDecision(
@@ -324,6 +357,53 @@ class TestRelationPipeline(unittest.TestCase):
         version_event = store.saved_events[0]
         self.assertEqual(version_event.payload["parent_event_id"], "evt_old")
         self.assertIn("evt_new", version_event.payload["version_source"])
+
+    def test_link_budget_limits_link_operations(self):
+        """Link operations should be capped at relation_max_links_per_event."""
+        new_event = Event(id="evt_new", summary="新事件", timestamp=100, last_active=100)
+        candidates = []
+        for i in range(5):
+            candidates.append(Event(
+                id=f"evt_c{i}",
+                summary=f"候选事件{i}",
+                timestamp=90 + i,
+                last_active=90 + i,
+            ))
+        store = _RelationStore([new_event] + candidates)
+        processor = RelationProcessor(
+            store=store,
+            llm_client=_NoopLLM(),
+            config=_make_processor_config(relation_max_links_per_event=2),
+        )
+        recall_candidates = [
+            RecallCandidate(
+                event=c,
+                channel="semantic",
+                channel_score=0.9,
+                features={"aggregate_score": 0.9, "channels": {"semantic": 0.9, "entity": 0.8}},
+            )
+            for c in candidates
+        ]
+        processor._classify_batch = lambda e_new, candidates, source_text: [
+            OperationDecision(
+                candidate=rc,
+                operation="link",
+                confidence=0.85,
+                reason="因果关系",
+                link_subtype="因果",
+                direction="new_to_candidate",
+            )
+            for rc in candidates.candidates
+        ]
+        candidate_set = CandidateSet(
+            candidates=recall_candidates,
+            channel_stats={"semantic": 5},
+        )
+
+        result = processor.process(new_event, candidate_set, "测试源文本")
+
+        self.assertEqual(result.links, 2)
+        self.assertGreaterEqual(result.skipped, 3)
 
 
 if __name__ == "__main__":

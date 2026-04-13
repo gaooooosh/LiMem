@@ -207,11 +207,11 @@ class RelationProcessor:
                 "decisions": [
                     {
                         "index": 0,
-                        "operation": "link",
-                        "confidence": 0.8,
-                        "reason": "简短原因",
-                        "direction": "candidate_to_new",
-                        "link_subtype": "促成",
+                        "operation": "skip",
+                        "confidence": 0.3,
+                        "reason": "两个事件主题相关但无明确因果链",
+                        "direction": "",
+                        "link_subtype": "",
                         "value_before": "",
                         "value_after": "",
                     }
@@ -305,6 +305,8 @@ class RelationProcessor:
 
         structural_executed = False
         derivations_used = 0
+        links_used = 0
+        max_links = max(0, int(getattr(self.config, "relation_max_links_per_event", 3) or 3))
         ordered = sorted(decisions, key=lambda item: item.confidence, reverse=True)
         for decision in ordered:
             candidate = decision.candidate.event
@@ -334,6 +336,13 @@ class RelationProcessor:
                 decision_log["status"] = "candidate_inactive"
                 result.decisions.append(decision_log)
                 continue
+
+            if decision.operation == "link":
+                if links_used >= max_links:
+                    result.skipped += 1
+                    decision_log["status"] = "link_budget_exhausted"
+                    result.decisions.append(decision_log)
+                    continue
 
             if decision.operation in self._STRUCTURAL_OPS:
                 if structural_executed:
@@ -367,6 +376,8 @@ class RelationProcessor:
 
             if decision.operation in self._STRUCTURAL_OPS and operation_result.get("executed", False):
                 structural_executed = True
+            if decision.operation == "link" and operation_result.get("executed", False):
+                links_used += 1
             if e_new.status in {"merged", "archived"}:
                 break
         return result

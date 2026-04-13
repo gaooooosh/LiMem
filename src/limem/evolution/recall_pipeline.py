@@ -35,32 +35,9 @@ class RecallPipeline:
         self.store = store
         self.config = config
 
-    def recall(
-        self,
-        event: Event,
-        intra_batch_events: Optional[list[Event]] = None,
-    ) -> CandidateSet:
+    def recall(self, event: Event) -> CandidateSet:
         now = int(event.last_active or event.timestamp or time.time())
         channel_results = self._run_channels(event=event, current_time=now)
-        if intra_batch_events:
-            channel_results["temporal"] = list(channel_results.get("temporal", []))
-            for prior_event in intra_batch_events:
-                if not isinstance(prior_event, Event):
-                    continue
-                channel_results["temporal"].append(
-                    RecallCandidate(
-                        event=prior_event,
-                        channel="temporal",
-                        channel_score=1.0,
-                        features={
-                            "source": "intra_batch",
-                            "delta_seconds": max(
-                                0,
-                                now - int(prior_event.last_active or prior_event.timestamp or now),
-                            ),
-                        },
-                    )
-                )
         return self._merge_candidates(
             event=event,
             channel_results=channel_results,
@@ -137,6 +114,7 @@ class RecallPipeline:
                         candidate.features or {}
                     )
 
+        min_aggregate = float(getattr(self.config, "recall_min_aggregate_score", 0.25) or 0.25)
         candidates: list[RecallCandidate] = []
         for candidate in merged.values():
             channel_scores = candidate.features.get("channels", {})
@@ -144,7 +122,8 @@ class RecallPipeline:
             for channel, score in channel_scores.items():
                 aggregate_score += float(weights.get(channel, 0.0)) * float(score or 0.0)
             candidate.features["aggregate_score"] = round(float(aggregate_score), 6)
-            candidates.append(candidate)
+            if aggregate_score >= min_aggregate:
+                candidates.append(candidate)
 
         candidates.sort(
             key=lambda item: (
@@ -187,9 +166,8 @@ class RecallPipeline:
         return results[:limit]
 
     def _recall_entity(self, event: Event, current_time: int) -> list[RecallCandidate]:
-        limit = max(1, int(getattr(self.config, "recall_entity_limit", 20) or 20))
+        limit = max(1, int(getattr(self.config, "recall_entity_limit", 8) or 8))
         entity_ids = self._event_entity_ids(event)
-        session_id = self._event_session_id(event)
         candidate_map: dict[str, RecallCandidate] = {}
 
         if entity_ids:
@@ -205,53 +183,15 @@ class RecallPipeline:
                 shared = shared_expected & candidate_entities
                 denominator = max(1, len(shared_expected | candidate_entities))
                 shared_ratio = len(shared) / denominator
-                session_bonus = 0.2 if session_id and session_id == self._event_session_id(candidate) else 0.0
-                score = min(1.0, shared_ratio + session_bonus)
                 candidate_map[candidate.id] = RecallCandidate(
                     event=candidate,
                     channel="entity",
-                    channel_score=score,
+                    channel_score=shared_ratio,
                     features={
                         "shared_entities": sorted(shared),
                         "shared_ratio": round(float(shared_ratio), 6),
-                        "session_bonus": session_bonus,
                     },
                 )
-
-        if session_id:
-            try:
-                recent_events = self.store.get_recent_events(
-                    current_time=current_time,
-                    window_seconds=max(
-                        1,
-                        int(getattr(self.config, "recall_temporal_window", 1) or 1),
-                    ),
-                    limit=max(limit * 5, 50),
-                )
-            except Exception:
-                recent_events = []
-            for candidate in recent_events:
-                if candidate.id == event.id or self._event_session_id(candidate) != session_id:
-                    continue
-                existing = candidate_map.get(candidate.id)
-                if existing is None or existing.channel_score < 0.2:
-                    candidate_map[candidate.id] = RecallCandidate(
-                        event=candidate,
-                        channel="entity",
-                        channel_score=max(0.2, float(existing.channel_score or 0.0) if existing else 0.0),
-                        features={
-                            **(existing.features if existing else {}),
-                            "session_bonus": 0.2,
-                            "shared_entities": list(
-                                sorted(
-                                    set((existing.features if existing else {}).get("shared_entities", []))
-                                )
-                            ),
-                            "shared_ratio": float(
-                                (existing.features if existing else {}).get("shared_ratio", 0.0)
-                            ),
-                        },
-                    )
 
         ranked = sorted(
             candidate_map.values(),
@@ -371,10 +311,6 @@ class RecallPipeline:
             if isinstance(raw_ids, list):
                 entity_ids = [str(item or "").strip() for item in raw_ids if str(item or "").strip()]
         return sorted(set(entity_ids))
-
-    def _event_session_id(self, event: Event) -> str:
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        return str(payload.get("session_id", "") or "").strip()
 
     def _state_channel_available(self, event: Event) -> bool:
         payload = event.payload if isinstance(event.payload, dict) else {}

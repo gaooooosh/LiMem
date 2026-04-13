@@ -46,6 +46,7 @@ from ..config import (
     REINFORCEMENT_STEP,
     RECALL_ENTITY_LIMIT,
     RECALL_MAX_CANDIDATES,
+    RECALL_MIN_AGGREGATE_SCORE,
     RECALL_REFERENCE_LIMIT,
     RECALL_SEMANTIC_LIMIT,
     RECALL_SEMANTIC_THRESHOLD,
@@ -58,6 +59,7 @@ from ..config import (
     RECALL_WEIGHT_STATE,
     RECALL_WEIGHT_TEMPORAL,
     RELATION_CLASSIFICATION_BATCH_SIZE,
+    RELATION_MAX_LINKS_PER_EVENT,
     RELATION_MIN_CONFIDENCE,
     RETRIEVAL_DEFAULT_CANDIDATE_LIMIT,
     RETRIEVAL_WEIGHT_CONTEXT,
@@ -121,6 +123,7 @@ class DynamicEvolutionConfig:
     event_merge_trace_log_path: str = EVENT_MERGE_TRACE_LOG_PATH
     enable_event_relations: bool = ENABLE_EVENT_RELATIONS
     recall_max_candidates: int = RECALL_MAX_CANDIDATES
+    recall_min_aggregate_score: float = RECALL_MIN_AGGREGATE_SCORE
     recall_temporal_window: int = RECALL_TEMPORAL_WINDOW
     recall_temporal_limit: int = RECALL_TEMPORAL_LIMIT
     recall_entity_limit: int = RECALL_ENTITY_LIMIT
@@ -135,6 +138,7 @@ class DynamicEvolutionConfig:
     recall_weight_reference: float = RECALL_WEIGHT_REFERENCE
     relation_classification_batch_size: int = RELATION_CLASSIFICATION_BATCH_SIZE
     relation_min_confidence: float = RELATION_MIN_CONFIDENCE
+    relation_max_links_per_event: int = RELATION_MAX_LINKS_PER_EVENT
     enable_derive_operation: bool = ENABLE_DERIVE_OPERATION
     max_derivations_per_batch: int = MAX_DERIVATIONS_PER_BATCH
 
@@ -364,14 +368,10 @@ class DynamicEvolutionEngine:
         source_text = self._extract_relation_source_text(record=record, events=events)
         if not source_text:
             source_text = " ".join(event.summary for event in events if event.summary).strip()
-        processed_events: list[Event] = []
         for event in events:
             if not event or event.status in {"merged", "archived"}:
                 continue
-            candidate_set = self.recall_pipeline.recall(
-                event=event,
-                intra_batch_events=processed_events,
-            )
+            candidate_set = self.recall_pipeline.recall(event=event)
             report["recall_candidates"] += len(candidate_set.candidates)
             result = self.relation_processor.process(
                 e_new=event,
@@ -379,7 +379,6 @@ class DynamicEvolutionEngine:
                 source_text=source_text,
             )
             report = self._merge_evolution_reports(report, self._process_result_to_report(result))
-            processed_events.append(event)
         return report
 
     def _extract_event_event_relations_legacy(
