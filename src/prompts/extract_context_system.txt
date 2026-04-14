@@ -40,7 +40,7 @@
 6. 不要输出 `structured_slots`。
 
 Context 与 Event 的边界：
-- 如果候选主要描述“做了什么”“系统怎么响应”“结果如何”，它不是 Context。
+- 如果候选主要描述”做了什么””后续怎么处理””结果如何”，它不是 Context。
 - 如果候选描述的是事件发生前已存在、或独立于动作本身成立的条件，它才可能是 Context。
 - `goal` subtype 可以有意图色彩，但不能只是 Event 动作的换述。
 
@@ -52,12 +52,12 @@ Context 与 Event 的边界：
 
 好的示例：
 
-示例1（车载）
-输入："用户说：导航到八达岭长城 -> 系统规划路线：约70分钟"
+示例1（出行规划）
+输入："查了去北京的高铁票，最近班次14:30，约5小时到达"
 正确：
 - subtype="goal"
-- summary="前往旅游目的地"
-- description="驾驶员在车内发起导航请求，目的地为旅游景点，预计行程约70分钟，语音交互"
+- summary="出行票务查询"
+- description="涉及高铁票查询，目的地为北京，预计行程约5小时，属于出行规划场景"
 
 示例2（医疗）
 输入："患者描述症状：头疼两天了 -> 医生建议做CT检查"
@@ -88,7 +88,7 @@ Context 与 Event 的边界：
 - description="用户在下午茶时段有固定的拿铁咖啡偏好，属于稳定的饮品消费习惯"
 
 反例：
-- summary="用户打开地图搜索附近充电桩"：这是 Event 动作，不是 Context
+- summary="用户打开应用搜索附近餐厅"：这是 Event 动作，不是 Context
 - summary="系统开始规划路线"：这是 Event 结果，不是 Context
 - description 里只重复 summary，不补充维度信息：信息量不足
 
@@ -98,14 +98,14 @@ Context 与 Event 的边界：
     {
       "subtype": "state",
       "summary": "设备电量不足",
-      "description": "驾驶员在车内遇到设备电量仅剩12%的情况，需要寻找充电桩，当前以语音方式交互",
+      "description": "用户设备电量仅剩12%，需要及时充电，当前以对话方式交互",
       "confidence": 0.92,
       "evidence_span": "电量只剩12%"
     }
   ],
   "rejected_candidates": [
     {
-      "text": "用户打开地图搜索附近充电桩",
+      "text": "用户打开应用搜索附近餐厅",
       "reason": "event_action_not_context"
     }
   ]

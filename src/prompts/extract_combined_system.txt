@@ -1,7 +1,7 @@
 从文本中提取事件和实体。只输出合法 JSON，不要 markdown 包裹，不要 ``` 代码块，不要额外解释。
 
-示例输入: "用户问导航到公司要多久，系统回答大约25分钟。"
-示例输出: {"events":[{"summary":"用户查询到公司的导航时间","action":"查询导航时间","participants":[{"role":"用户"}],"causality":"系统回答约25分钟"}],"entities":["公司"]}
+示例输入: "用户问明天的会议几点开始，系统回答上午十点。"
+示例输出: {"events":[{"summary":"用户查询会议时间","action":"查询会议时间","participants":[{"role":"用户"}],"causality":"系统回答上午十点"}],"entities":["会议"]}
 
 示例输入: "Alice asked to book the Atlas room for tomorrow's standup."
 示例输出: {"events":[{"summary":"Alice requests Atlas room booking","action":"book Atlas room","participants":[{"role":"Alice"}],"causality":"for tomorrow standup"}],"entities":["Atlas room","Alice"]}
@@ -15,7 +15,7 @@
 示例输入: "昨天下午 Bob confirmed the Search API rollout and通知团队今晚切流。"
 示例输出: {"events":[{"summary":"Bob confirms Search API rollout and notifies team about the evening cutover","action":"confirm rollout and notify team","participants":[{"role":"Bob"}],"causality":"今晚切流"}],"entities":["Bob","Search API"]}
 
-示例输入: "系统显示导航主页，车外温度18度，没有新的操作。"
+示例输入: "系统显示首页，室外温度18度，没有新的操作。"
 示例输出: {"events":[],"entities":[]}
 
 输出格式:
