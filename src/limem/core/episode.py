@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Episode - 原始对话片段模型
+"""Episode - Agent 的原始观测。
 
-Episode 是记忆系统的输入单元，表示原始的对话片段。
-生命周期：临时存在，TTL后自动清理。
+Agent 在某一时刻接收到的原始输入，不做任何解读。
+生命周期：临时存在，TTL 后自动清理。
 """
 
 from dataclasses import dataclass, field
@@ -12,19 +12,19 @@ import uuid
 
 @dataclass
 class Episode:
-    """原始对话片段 - 记忆系统的输入单元
+    """Episode - Agent 在某一时刻接收到的原始观测单元。
 
-    职责：封装原始对话数据，提供统一的事件来源抽象。
-    生命周期：临时存在，TTL后自动清理。
+    职责：封装 Agent 的原始观测，为后续记忆构建提供统一输入。
+    生命周期：临时存在，TTL 后自动清理。
 
     Attributes:
         id: 唯一标识符（默认自动生成UUID）
-        content: 原始对话文本
+        content: Agent 接收到的原始观测内容
         timestamp: Unix时间戳
         metadata: 扩展元数据（如说话人、上下文等）
     """
 
-    content: str
+    content: str  # Agent 接收到的原始观测内容
     timestamp: int
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     metadata: dict[str, Any] = field(default_factory=dict)

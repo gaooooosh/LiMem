@@ -20,7 +20,6 @@ from ..core.context import (
     ALLOWED_CONTEXT_SUBTYPES,
     CanonicalContextKey,
     ContextDraft,
-    ContextSpan,
     normalize_context_subtype,
 )
 from ..core.event import Event
@@ -34,7 +33,6 @@ logger = logging.getLogger(__name__)
 class _PreparedContextRequest:
     record_text: str
     event: Optional[Event]
-    candidate_spans: list[ContextSpan]
     existing_contexts: Optional[list[dict[str, Any]]] = None
 
 
@@ -76,7 +74,6 @@ class ContextExtractionPipeline:
         llm_drafts = self.llm_extract_contexts(
             prepared.record_text,
             prepared.event,
-            prepared.candidate_spans,
             existing_contexts=prepared.existing_contexts,
         )
         return self._finalize_context_extraction(prepared=prepared, llm_drafts=llm_drafts)
@@ -141,11 +138,9 @@ class ContextExtractionPipeline:
         existing_contexts: Optional[list[dict[str, Any]]] = None,
     ) -> _PreparedContextRequest:
         record_text = self._record_text(record, event)
-        candidate_spans = self.detect_context_candidates(record, event)
         return _PreparedContextRequest(
             record_text=record_text,
             event=event,
-            candidate_spans=candidate_spans,
             existing_contexts=(
                 [dict(item) for item in existing_contexts if isinstance(item, dict)]
                 if existing_contexts
@@ -170,80 +165,19 @@ class ContextExtractionPipeline:
         ]
         return self._dedupe_drafts(canonicalized)
 
-    def detect_context_candidates(
-        self,
-        record: Any,
-        event: Optional[Event] = None,
-    ) -> list[ContextSpan]:
-        text = self._record_text(record, event)
-        spans: list[ContextSpan] = []
-        seen: set[tuple[str, str]] = set()
-
-        def add_span(text_value: Any, signal: str, subtype_hint: str, source: str) -> None:
-            candidate = self._normalize_free_text(text_value)
-            if not candidate:
-                return
-            key = (candidate, signal)
-            if key in seen:
-                return
-            seen.add(key)
-            spans.append(
-                ContextSpan(
-                    text=candidate,
-                    signal=signal,
-                    subtype_hint=subtype_hint,
-                    source=source,
-                )
-            )
-
-        if text:
-            add_span(text, "record", "situation", "record")
-
-        if event is not None and isinstance(event.payload, dict):
-            payload = event.payload
-            for key, subtype in (
-                ("context_note", "situation"),
-                ("state", "state"),
-                ("constraint", "constraint"),
-                ("goal", "goal"),
-                ("phase", "phase"),
-                ("environment", "environment"),
-            ):
-                add_span(payload.get(key), f"event_payload:{key}", subtype, "event")
-
-            context_payload = payload.get("context", {})
-            if isinstance(context_payload, dict):
-                for key, subtype in (
-                    ("scene", "situation"),
-                    ("state", "state"),
-                    ("constraint", "constraint"),
-                    ("goal", "goal"),
-                    ("phase", "phase"),
-                    ("environment", "environment"),
-                    ("geo_context", "environment"),
-                    ("digital_context", "environment"),
-                ):
-                    add_span(
-                        context_payload.get(key),
-                        f"event_payload:context.{key}",
-                        subtype,
-                        "event",
-                    )
-
-        return spans[: max(1, CONTEXT_EXTRACTION_BATCH_SIZE)]
+    # detect_context_candidates() removed — the LLM works directly from
+    # observation text + event without a rule-based candidate pre-filter.
 
     def llm_extract_contexts(
         self,
         record_text: str,
         event: Optional[Event],
-        candidate_spans: list[ContextSpan],
         existing_contexts: Optional[list[dict[str, Any]]] = None,
     ) -> list[ContextDraft]:
         parsed = self._call_context_llm_json(
             self._build_context_user_message(
                 record_text=record_text,
                 event=event,
-                candidate_spans=candidate_spans,
                 existing_contexts=existing_contexts,
             )
         )
@@ -251,7 +185,6 @@ class ContextExtractionPipeline:
         return self._build_context_drafts_from_raw(
             raw_contexts=raw_contexts,
             event=event,
-            candidate_spans=candidate_spans,
         )
 
     def llm_extract_contexts_batch(
@@ -297,7 +230,6 @@ class ContextExtractionPipeline:
                 drafts_by_index[absolute_index] = self._build_context_drafts_from_raw(
                     raw_contexts=item.get("contexts", []),
                     event=prepared.event,
-                    candidate_spans=prepared.candidate_spans,
                 )
 
         return True, drafts_by_index
@@ -306,15 +238,11 @@ class ContextExtractionPipeline:
         self,
         record_text: str,
         event: Optional[Event],
-        candidate_spans: list[ContextSpan],
         existing_contexts: Optional[list[dict[str, Any]]] = None,
     ) -> str:
         return self._user_prompt.format(
             record_text=record_text or "",
             event_json=safe_json_dumps(self._event_payload(event)),
-            candidate_spans_json=safe_json_dumps(
-                self._candidate_spans_payload(candidate_spans)
-            ),
             existing_contexts_section=self._existing_contexts_section(existing_contexts),
         )
 
@@ -325,11 +253,10 @@ class ContextExtractionPipeline:
         items = []
         has_existing_contexts = False
         for idx, prepared in enumerate(prepared_requests):
-            item = {
+            item: dict[str, Any] = {
                 "item_index": idx,
                 "record_text": prepared.record_text or "",
                 "event": self._event_payload(prepared.event),
-                "candidate_spans": self._candidate_spans_payload(prepared.candidate_spans),
             }
             if prepared.existing_contexts:
                 item["existing_contexts"] = prepared.existing_contexts
@@ -348,11 +275,11 @@ class ContextExtractionPipeline:
         if not existing_contexts:
             return ""
         return (
-            "\n\n可复用已有 Context（仅在真正语义等价时，复用完全相同的 summary；"
+            "\n\n你记忆中的已有情境条件（仅在真正语义等价时，复用完全相同的 summary；"
             "否则正常抽取新的抽象 summary）：\n"
             + safe_json_dumps(existing_contexts)
             + "\n\n补充规则：\n"
-            "- 如果某个已有 Context 与当前输入等价，优先直接使用该 summary，保持字面完全一致。\n"
+            "- 如果你记忆中的某个已有 Context 与当前输入等价，优先直接使用该 summary，保持字面完全一致。\n"
             "- 如果没有等价项，正常返回新的抽象 summary。\n"
             "- 不要因为主题相近或处于同一大类场景就强行复用。"
         )
@@ -361,24 +288,10 @@ class ContextExtractionPipeline:
         if not has_existing_contexts:
             return ""
         return (
-            "补充字段说明：item 中可能包含 existing_contexts。\n"
+            "补充字段说明：item 中可能包含你记忆里的 existing_contexts。\n"
             "只有在与其中某一项真正语义等价时，才复用该项的 summary，并保持字面完全一致；\n"
             "否则正常产出新的抽象 summary。不要因为主题相关就复用。"
         )
-
-    def _candidate_spans_payload(
-        self,
-        candidate_spans: list[ContextSpan],
-    ) -> list[dict[str, Any]]:
-        return [
-            {
-                "text": span.text,
-                "signal": span.signal,
-                "subtype_hint": span.subtype_hint,
-                "source": span.source,
-            }
-            for span in candidate_spans
-        ]
 
     def _call_context_llm_json(self, user_msg: str) -> Any:
         try:
@@ -394,7 +307,6 @@ class ContextExtractionPipeline:
         self,
         raw_contexts: Any,
         event: Optional[Event],
-        candidate_spans: list[ContextSpan],
     ) -> list[ContextDraft]:
         if not isinstance(raw_contexts, list):
             return []
@@ -407,7 +319,6 @@ class ContextExtractionPipeline:
             summary = str(item.get("summary", "") or "").strip()
             description = str(item.get("description", "") or "").strip()
             evidence_span = str(item.get("evidence_span", "") or "").strip()
-            signal = self._match_signal(evidence_span, candidate_spans)
             drafts.append(
                 ContextDraft(
                     subtype=subtype,
@@ -418,7 +329,7 @@ class ContextExtractionPipeline:
                     source_refs=self._make_source_refs(
                         event=event,
                         evidence_span=evidence_span,
-                        signal=signal,
+                        signal="llm_context",
                         source="llm_context_extraction",
                     ),
                     valid_from=self._event_timestamp(event),
@@ -462,10 +373,12 @@ class ContextExtractionPipeline:
             if not self.is_valid_context_draft(draft):
                 continue
 
-            evidence_span = self._normalize_free_text(draft.evidence_span or draft.summary)
-            if evidence_span and record_text and not self._evidence_matches_text(evidence_span, record_text):
+            # Use full evidence text for matching — don't truncate before validation.
+            raw_evidence = self._normalize_whitespace(draft.evidence_span or draft.summary)
+            if raw_evidence and record_text and not self._evidence_matches_text(raw_evidence, record_text):
                 continue
 
+            evidence_span = self._normalize_description(raw_evidence) if raw_evidence else self._normalize_free_text(draft.summary)
             validated.append(
                 ContextDraft(
                     subtype=normalize_context_subtype(draft.subtype),
@@ -474,10 +387,10 @@ class ContextExtractionPipeline:
                         draft.description or draft.evidence_span or draft.summary
                     ),
                     confidence=max(0.0, min(1.0, float(draft.confidence or 0.0))),
-                    evidence_span=evidence_span or self._normalize_free_text(draft.summary),
+                    evidence_span=evidence_span,
                     source_refs=draft.source_refs or self._make_source_refs(
                         event=event,
-                        evidence_span=evidence_span or self._normalize_free_text(draft.summary),
+                        evidence_span=evidence_span,
                         signal="validated_context",
                         source="context_validation",
                     ),
@@ -616,17 +529,12 @@ class ContextExtractionPipeline:
             ref["timestamp"] = self._event_timestamp(event)
         return [ref]
 
-    def _match_signal(self, evidence_span: str, candidate_spans: list[ContextSpan]) -> str:
-        for span in candidate_spans:
-            if span.text == evidence_span:
-                return span.signal
-            if evidence_span and evidence_span in span.text:
-                return span.signal
-        return "llm_context"
+    def _normalize_whitespace(self, text: Any) -> str:
+        """Normalize whitespace and trailing punctuation without truncation."""
+        return re.sub(r"\s+", " ", str(text or "")).strip(" ，,。；;：:")
 
     def _normalize_free_text(self, text: Any) -> str:
-        normalized = re.sub(r"\s+", " ", str(text or "")).strip(" ，,。；;：:")
-        return normalized[:128]
+        return self._normalize_whitespace(text)[:128]
 
     def _normalize_description(self, text: Any) -> str:
         normalized = re.sub(r"\s+", " ", str(text or "")).strip(" ，,。；;：:")

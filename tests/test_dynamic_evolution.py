@@ -55,6 +55,97 @@ class TestDynamicEvolution(unittest.TestCase):
             self.assertEqual(write_report["event_count"], 1)
             self.assertEqual(write_report["context_links"], 0)
 
+    def test_write_event_batch_creates_entities_from_participants(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_dynamic_write_entities.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._resolve_context_pairs_for_event_batch = lambda events, record=None: [[] for _ in events]
+            engine.extract_event_event_relations = lambda events, record=None: 0
+
+            new_event = Event(
+                summary="用户让车机导航去公司",
+                action="发起导航",
+                participants=[
+                    {"role": "用户", "seat": "主驾"},
+                    {"name": "车机系统", "type": "SYSTEM"},
+                    "公司",
+                ],
+                timestamp=1773326410,
+                last_active=1773326410,
+            )
+            engine.write_event_batch([new_event], record=None)
+
+            stats = ltm.get_stats()
+            self.assertEqual(stats.get("entity_count", 0), 3)
+            self.assertEqual(stats.get("involves_count", 0), 3)
+            self.assertCountEqual(
+                ltm.store.get_event_entities(new_event.id),
+                ["用户", "车机系统", "公司"],
+            )
+
+    def test_evolve_existing_events_creates_missing_entities_from_participants(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test_dynamic_existing_entities.kz")
+            ltm = create_ltm(
+                db_path=db_path,
+                config={
+                    "offline_mode": True,
+                    "enable_dynamic_evolution": True,
+                    "append_first_mode": True,
+                    "enable_auto_consolidation": False,
+                    "generate_answer": False,
+                },
+            )
+
+            ts = 1773326500
+            ltm.write(
+                {
+                    "id": "evt_existing_entities",
+                    "summary": "系统开始播放收藏歌单",
+                    "action": "播放歌单",
+                    "timestamp": ts,
+                    "last_active": ts,
+                    "participants": [
+                        {"name": "车机", "type": "SYSTEM"},
+                        "用户",
+                    ],
+                },
+                kind="event",
+                evolve=False,
+            )
+
+            engine = ltm.dynamic_engine
+            self.assertIsNotNone(engine)
+            engine._resolve_context_pairs_for_event_batch = lambda events, record=None: [[] for _ in events]
+            engine.extract_event_event_relations = lambda events, record=None: 0
+
+            self.assertEqual(ltm.get_stats().get("entity_count", 0), 0)
+            engine.evolve_existing_events([ltm.get_event("evt_existing_entities")])
+            stats = ltm.get_stats()
+            self.assertEqual(stats.get("entity_count", 0), 2)
+            self.assertEqual(stats.get("involves_count", 0), 2)
+            self.assertCountEqual(
+                ltm.store.get_event_entities("evt_existing_entities"),
+                ["车机", "用户"],
+            )
+
+            engine.evolve_existing_events([ltm.get_event("evt_existing_entities")])
+            repeated_stats = ltm.get_stats()
+            self.assertEqual(repeated_stats.get("entity_count", 0), 2)
+            self.assertEqual(repeated_stats.get("involves_count", 0), 2)
+
     def test_append_first_and_dynamic_edges(self):
         with tempfile.TemporaryDirectory() as td:
             db_path = os.path.join(td, "test_dynamic.kz")

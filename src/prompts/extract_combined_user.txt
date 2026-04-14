@@ -1,2 +1,4 @@
+以下是你接收到的一段原始观测（Episode）：
 {episode_text}
-输出JSON:
+
+请按 legacy schema 输出 JSON：

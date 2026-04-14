@@ -21,7 +21,9 @@ from __future__ import annotations
 import argparse
 import http.server
 import os
+import shlex
 import socketserver
+import subprocess
 import sys
 import webbrowser
 from pathlib import Path
@@ -32,6 +34,33 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from limem.visualization import GraphVisualizer, VisualizationConfig
+
+
+def _open_browser_quietly(url: str) -> bool:
+    """Best-effort browser launch without leaking helper logs to stdout."""
+    browser_cmd = os.environ.get("BROWSER")
+    if browser_cmd:
+        try:
+            cmd = shlex.split(browser_cmd)
+            if cmd:
+                if any("%s" in part for part in cmd):
+                    cmd = [part.replace("%s", url) for part in cmd]
+                else:
+                    cmd.append(url)
+                subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return True
+        except Exception:
+            pass
+
+    try:
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
 
 
 def main():
@@ -200,7 +229,9 @@ def main():
         print("按 Ctrl+C 停止")
 
         if not args.no_browser:
-            webbrowser.open(f"http://localhost:{port}/{Path(result_path).name}")
+            url = f"http://localhost:{port}/{Path(result_path).name}"
+            if not _open_browser_quietly(url):
+                print(f"浏览器未自动打开，请手动访问: {url}")
 
         with socketserver.TCPServer(("", port), handler) as httpd:
             try:

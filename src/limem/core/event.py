@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Event - 结构化事件模型。
+"""Event - Agent 对观测的结构化解读。
 
-Event 是从 Episode 提取的最小动态变化单元。
+Agent 从原始观测中识别出的、值得纳入长期记忆的结构化认知单元。
 当前主路径为 append-first 写入，事件归并由离线 consolidation 处理。
 """
 
@@ -13,11 +13,21 @@ from ..utils import hash_summary
 
 @dataclass
 class Event:
+    """Event - Agent 对单段观测形成的结构化记忆单元。
+
+    Attributes:
+        summary: Agent 对这段观测的概括性理解
+        action: Agent 识别出的核心动作、变化或决策
+        causality: Agent 对原因、结果或影响的因果判断
+        participants: Agent 识别出的参与者列表
+        evidence: 支撑该解读的观测证据
+    """
+
     # 核心语义字段
-    summary: str
+    summary: str  # Agent 对这段观测的概括性理解
     id: str = ""
-    action: str = ""
-    causality: str = ""
+    action: str = ""  # Agent 识别出的核心动作、变化或决策
+    causality: str = ""  # Agent 对原因、结果或影响的因果判断
 
     # 时间信息
     time_range: dict[str, Any] = field(default_factory=dict)
@@ -29,11 +39,11 @@ class Event:
     valid_to: Optional[int] = None
 
     # 参与者与扩展负载
-    participants: list[dict[str, Any]] = field(default_factory=list)
+    participants: list[dict[str, Any]] = field(default_factory=list)  # Agent 识别出的参与者
     payload: dict[str, Any] = field(default_factory=dict)
 
     # 证据与状态
-    evidence: list[dict[str, Any]] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)  # 支撑该解读的观测证据
     status: str = "active"
     support_count: int = 1
 

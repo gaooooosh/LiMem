@@ -925,7 +925,7 @@ const INGEST_STAGES = [
         { text: '生成事件 ID: <code>id = hash(summary)</code>', sub: 'Append-First 模式下使用 append_first_event_id() 加入时间戳避免碰撞' },
         { text: '构建时间范围 <code>time_range</code>', sub: '{ start, end, display_time_bucket } — 时间桶用于检索分组' },
         { text: '组装完整 Event 对象', sub: '填入 summary, action, causality, participants, evidence, payload 等全部字段' },
-        { text: '有效性过滤 <code>_is_effective_event()</code>', sub: '仅检查 summary/action/causality 非空，不额外做语义重分类' },
+        { text: '有效性过滤 <code>summary</code>', sub: '仅保留 summary 非空的 Event；语义兜底已在 extractor 归一化阶段完成' },
         { text: 'orphan_contexts 保持观测态', sub: '显式 orphan_contexts 进入 metrics / debug report，不在此阶段自动转成图节点' },
       ],
       input: `<span class="comment">// 抽取结果字典</span>

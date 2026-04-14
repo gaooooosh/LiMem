@@ -1,21 +1,17 @@
-原始输入:
+以下是你接收到的一段原始观测：
 {record_text}
 
-已识别 Event:
+你已经识别出的 Event：
 {event_json}
 
-候选上下文片段:
-{candidate_spans_json}
-
-请抽取高复用 Context，并对 summary 做抽象改写。
+请从原始观测中识别值得写入你长期记忆的 Context，并对 summary 做抽象改写。
 
 输出要求：
-- summary 要短、可复用、去事件化（不要复制整句事件）
-- description 要尽量包含参与者、地点类型、时间特征、交互模态、活动类型、环境状态等维度信息
-- evidence_span 必须来自原文，尽量保留原始细节
-- 可以利用候选片段，但不要被候选片段限制
-- 如果候选主要是动作/结果，请拒绝并在 rejected_candidates 说明原因
-- 如果没有高质量 Context，返回 contexts: []
-- 只输出 JSON，不要任何解释文本
+- summary 要短、可复用、去事件化，不要复制整句事件。
+- description 要尽量补充参与者、地点类型、时间特征、交互模态、活动类型、环境状态、限制条件等维度信息。
+- evidence_span 必须是原文中的原始片段，不要改写或总结。
+- 从原始观测的完整内容中直接识别情境条件，不受预设候选的限制。
+- 如果没有高质量 Context，返回 contexts: []。
+- 只输出 JSON，不要任何解释文本。
 
 {existing_contexts_section}

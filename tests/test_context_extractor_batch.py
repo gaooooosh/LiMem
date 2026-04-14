@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from limem.builder.context_extractor import ContextExtractionPipeline
-from limem.core.context import Context, ContextDraft, ContextSpan
+from limem.core.context import Context, ContextDraft
 from limem.core.event import Event
 from limem.evolution.dynamic_engine import DynamicEvolutionConfig, DynamicEvolutionEngine
 from limem.llm import DashScopeClient
@@ -74,11 +74,6 @@ class TestContextExtractorBatch(unittest.TestCase):
             generation_model="test-model",
             llm_client=_make_mock_client(fake_create),
         )
-        pipeline.detect_context_candidates = lambda record, event=None: (
-            [ContextSpan(text="电量只剩12%", signal="battery", subtype_hint="state", source="record")]
-            if "12%" in str(record)
-            else [ContextSpan(text="快迟到了", signal="deadline", subtype_hint="constraint", source="record")]
-        )
         pipeline.validate_context_drafts = lambda drafts, record_text, event: drafts
         pipeline.canonicalize_context = lambda draft: draft
 
@@ -124,17 +119,16 @@ class TestContextExtractorBatch(unittest.TestCase):
         user_message = pipeline._build_context_user_message(
             record_text=prepared.record_text,
             event=prepared.event,
-            candidate_spans=prepared.candidate_spans,
             existing_contexts=prepared.existing_contexts,
         )
         batch_message = pipeline._build_context_batch_user_message([prepared])
 
-        self.assertIn("可复用已有 Context", user_message)
+        self.assertIn("你记忆中的已有情境条件", user_message)
         self.assertIn('"summary":', user_message)
         self.assertIn("\\u97f3\\u4e50\\u64ad\\u653e\\u573a\\u666f", user_message)
         self.assertIn("保持字面完全一致", user_message)
         self.assertIn('"existing_contexts": [', batch_message)
-        self.assertIn("item 中可能包含 existing_contexts", batch_message)
+        self.assertIn("item 中可能包含你记忆里的 existing_contexts", batch_message)
 
     def test_extract_batch_falls_back_to_single_item_extraction_when_batch_slice_is_missing(self):
         call_count = 0
@@ -159,9 +153,6 @@ class TestContextExtractorBatch(unittest.TestCase):
             generation_model="test-model",
             llm_client=_make_mock_client(fake_create),
         )
-        pipeline.detect_context_candidates = lambda record, event=None: [
-            ContextSpan(text=str(record), signal="record", subtype_hint="goal", source="record")
-        ]
         pipeline.validate_context_drafts = lambda drafts, record_text, event: drafts
         pipeline.canonicalize_context = lambda draft: draft
 
