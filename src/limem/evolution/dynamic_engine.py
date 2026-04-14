@@ -200,6 +200,9 @@ class DynamicEvolutionEngine:
         bind_engine = getattr(self.relation_processor, "bind_engine", None)
         if callable(bind_engine):
             bind_engine(self)
+        self._context_embedding_cache: dict[str, list[float]] = {}
+        self._context_candidates_cache: dict[tuple[str, str], list[Context]] = {}
+        self._context_summary_index_cache: dict[str, list[tuple[str, str]]] = {}
         self._extract_relation_system_prompt = load_prompt("extract_relation_system.txt")
         self._rewrite_merged_event_system_prompt = load_prompt("rewrite_merged_event_system.txt")
         self._rewrite_merged_event_user_prompt = load_prompt("rewrite_merged_event_user.txt")
@@ -315,6 +318,8 @@ class DynamicEvolutionEngine:
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
                 self.run_consolidation(current_time=ts)
 
+        self._context_embedding_cache.clear()
+        self._invalidate_context_query_caches()
         return {
             "event_count": len(new_events),
             **report,
@@ -349,12 +354,14 @@ class DynamicEvolutionEngine:
         if self.config.enable_event_relations:
             if progress_cb:
                 progress_cb("relations", 0, len(events))
+            relation_kwargs: dict[str, Any] = {
+                "events": events,
+                "record": None,
+            }
+            if progress_cb is not None:
+                relation_kwargs["progress_cb"] = progress_cb
             relation_report = self._coerce_relation_report(
-                self.extract_event_event_relations(
-                    events=events,
-                    record=None,
-                    progress_cb=progress_cb,
-                )
+                self.extract_event_event_relations(**relation_kwargs)
             )
             report = self._merge_evolution_reports(report, relation_report)
         if self._should_run_auto_consolidation():
@@ -362,11 +369,27 @@ class DynamicEvolutionEngine:
             if ts - self._last_consolidation_at >= self.config.consolidation_min_interval_seconds:
                 self.run_consolidation(current_time=ts)
 
+        self._context_embedding_cache.clear()
+        self._invalidate_context_query_caches()
         return report
 
     def _create_entities_for_events(self, events: list[Event]) -> int:
         if not events:
             return 0
+
+        unique_entities: dict[tuple[str, str], None] = {}
+        for event in events:
+            if not event or not event.id or event.status in {"merged", "archived"}:
+                continue
+            participants = event.participants if isinstance(event.participants, list) else []
+            for participant in participants:
+                entity_ref = self._participant_entity_ref(participant)
+                if not entity_ref:
+                    continue
+                unique_entities.setdefault(entity_ref, None)
+
+        for entity_name, entity_type in unique_entities:
+            self.store.ensure_entity(entity_name, entity_type)
 
         linked = 0
         fallback_now = int(time.time())
@@ -390,7 +413,6 @@ class DynamicEvolutionEngine:
                 if entity_name in seen_entities:
                     continue
                 seen_entities.add(entity_name)
-                self.store.ensure_entity(entity_name, entity_type)
                 relation = self.store.get_involves_relation(event.id, entity_name)
                 if relation:
                     continue
@@ -429,19 +451,23 @@ class DynamicEvolutionEngine:
         if not source_text:
             source_text = " ".join(event.summary for event in events if event.summary).strip()
         total = len(events)
-        for idx, event in enumerate(events):
-            if not event or event.status in {"merged", "archived"}:
-                continue
-            if progress_cb:
-                progress_cb("relations", idx + 1, total)
-            candidate_set = self.recall_pipeline.recall(event=event)
-            report["recall_candidates"] += len(candidate_set.candidates)
-            result = self.relation_processor.process(
-                e_new=event,
-                candidates=candidate_set,
-                source_text=source_text,
-            )
-            report = self._merge_evolution_reports(report, self._process_result_to_report(result))
+        self.recall_pipeline.begin_batch()
+        try:
+            for idx, event in enumerate(events):
+                if not event or event.status in {"merged", "archived"}:
+                    continue
+                if progress_cb:
+                    progress_cb("relations", idx + 1, total)
+                candidate_set = self.recall_pipeline.recall(event=event)
+                report["recall_candidates"] += len(candidate_set.candidates)
+                result = self.relation_processor.process(
+                    e_new=event,
+                    candidates=candidate_set,
+                    source_text=source_text,
+                )
+                report = self._merge_evolution_reports(report, self._process_result_to_report(result))
+        finally:
+            self.recall_pipeline.end_batch()
         return report
 
     def _extract_event_event_relations_legacy(
@@ -1044,12 +1070,42 @@ class DynamicEvolutionEngine:
 
         return self.update_context_with_evidence(match, context_draft, event)
 
-    def match_existing_context(self, context_draft: ContextDraft) -> Optional[Context]:
-        all_candidates = self.store.find_context_candidates(
-            context_type=context_draft.context_type,
-            subtype="",
+    def _cached_find_context_candidates(
+        self, context_type: str, subtype: str,
+    ) -> list[Context]:
+        cache_key = (context_type, subtype)
+        cached = self._context_candidates_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = self.store.find_context_candidates(
+            context_type=context_type,
+            subtype=subtype,
             limit=self.config.context_candidate_limit,
             only_active=True,
+        )
+        self._context_candidates_cache[cache_key] = result
+        return result
+
+    def _cached_find_contexts_summary_index(
+        self, context_type: str,
+    ) -> list[tuple[str, str]]:
+        cached = self._context_summary_index_cache.get(context_type)
+        if cached is not None:
+            return cached
+        result = self.store.find_contexts_summary_index(
+            context_type=context_type,
+            only_active=True,
+        )
+        self._context_summary_index_cache[context_type] = result
+        return result
+
+    def _invalidate_context_query_caches(self) -> None:
+        self._context_candidates_cache.clear()
+        self._context_summary_index_cache.clear()
+
+    def match_existing_context(self, context_draft: ContextDraft) -> Optional[Context]:
+        all_candidates = self._cached_find_context_candidates(
+            context_type=context_draft.context_type, subtype="",
         )
         draft_summary_key = self._normalized_context_text(self._context_summary(context_draft))
         seen_candidate_ids = {candidate.id for candidate in all_candidates}
@@ -1062,9 +1118,8 @@ class DynamicEvolutionEngine:
 
         if draft_summary_key:
             global_exact_matches: list[Context] = []
-            for context_id, summary in self.store.find_contexts_summary_index(
+            for context_id, summary in self._cached_find_contexts_summary_index(
                 context_type=context_draft.context_type,
-                only_active=True,
             ):
                 if context_id in seen_candidate_ids:
                     continue
@@ -1076,11 +1131,8 @@ class DynamicEvolutionEngine:
             if global_exact_matches:
                 return max(global_exact_matches, key=self._context_rank_key)
 
-        candidates = self.store.find_context_candidates(
-            context_type=context_draft.context_type,
-            subtype=context_draft.subtype,
-            limit=self.config.context_candidate_limit,
-            only_active=True,
+        candidates = self._cached_find_context_candidates(
+            context_type=context_draft.context_type, subtype=context_draft.subtype,
         )
         best: Optional[Context] = None
         best_score = -1.0
@@ -1093,11 +1145,8 @@ class DynamicEvolutionEngine:
             return best
 
         # Secondary pass: allow cross-subtype reuse for highly similar contexts.
-        cross_candidates = self.store.find_context_candidates(
-            context_type=context_draft.context_type,
-            subtype="",
-            limit=self.config.context_candidate_limit,
-            only_active=True,
+        cross_candidates = self._cached_find_context_candidates(
+            context_type=context_draft.context_type, subtype="",
         )
         for candidate in cross_candidates:
             score = self._context_similarity(candidate, context_draft)
@@ -1152,6 +1201,7 @@ class DynamicEvolutionEngine:
             embedding=self._maybe_embed_context(self._context_embedding_text(context_draft)),
         )
         self.store.save_context(context)
+        self._invalidate_context_query_caches()
         return context
 
     def maybe_deprecate_context(self, context_node: Context, now: Optional[int] = None) -> Context:
@@ -2363,13 +2413,21 @@ class DynamicEvolutionEngine:
     def _maybe_embed_context(self, text: str) -> Optional[list[float]]:
         if not text:
             return None
+        cache_key = text.strip()
+        cached = self._context_embedding_cache.get(cache_key)
+        if cached is not None:
+            return cached
         embedding_client = getattr(self.store, "embedding_client", None)
         try:
             if embedding_client is not None and hasattr(embedding_client, "get_embedding"):
-                return embedding_client.get_embedding(text)
-            return self.llm_client.embed_text(text=text)
+                result = embedding_client.get_embedding(text)
+            else:
+                result = self.llm_client.embed_text(text=text)
         except Exception:
             return None
+        if result is not None:
+            self._context_embedding_cache[cache_key] = result
+        return result
 
     def _participant_labels(self, participants: list[Any]) -> list[str]:
         if not isinstance(participants, list):

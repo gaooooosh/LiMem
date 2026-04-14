@@ -11,7 +11,74 @@ from limem.core.event import Event
 from limem.evolution import DynamicEvolutionConfig, DynamicEvolutionEngine
 
 
+class _EntityTrackingStore:
+    def __init__(self):
+        self.ensure_calls = []
+        self.created_relations = []
+        self._relations = set()
+
+    def ensure_entity(self, entity_name, entity_type="UNKNOWN"):
+        self.ensure_calls.append((entity_name, entity_type))
+        return True
+
+    def get_involves_relation(self, event_id, entity_id):
+        return (event_id, entity_id) if (event_id, entity_id) in self._relations else None
+
+    def create_involves_relation(self, event_id, entity_id, **kwargs):
+        del kwargs
+        self._relations.add((event_id, entity_id))
+        self.created_relations.append((event_id, entity_id))
+
+
 class TestDynamicEvolution(unittest.TestCase):
+    def test_create_entities_for_events_deduplicates_ensure_entity_across_events(self):
+        store = _EntityTrackingStore()
+        engine = DynamicEvolutionEngine(
+            store=store,
+            config=DynamicEvolutionConfig(enable_auto_consolidation=False),
+        )
+        events = [
+            Event(
+                id="evt_a",
+                summary="用户发起导航",
+                participants=[
+                    {"role": "用户"},
+                    {"name": "车机", "type": "SYSTEM"},
+                ],
+                timestamp=100,
+                last_active=100,
+            ),
+            Event(
+                id="evt_b",
+                summary="系统开始规划路线",
+                participants=[
+                    {"role": "用户"},
+                    {"name": "车机", "type": "SYSTEM"},
+                    "公司",
+                ],
+                timestamp=110,
+                last_active=110,
+            ),
+        ]
+
+        linked = engine._create_entities_for_events(events)
+
+        self.assertEqual(linked, 5)
+        self.assertCountEqual(
+            store.ensure_calls,
+            [("用户", "UNKNOWN"), ("车机", "SYSTEM"), ("公司", "UNKNOWN")],
+        )
+        self.assertCountEqual(
+            store.created_relations,
+            [
+                ("evt_a", "用户"),
+                ("evt_a", "车机"),
+                ("evt_b", "用户"),
+                ("evt_b", "车机"),
+                ("evt_b", "公司"),
+            ],
+        )
+
     def test_bulk_ingest_mode_skips_auto_consolidation_for_new_and_existing_events(self):
         with tempfile.TemporaryDirectory() as td:
             db_path = os.path.join(td, "test_bulk_ingest_no_auto_consolidation.kz")

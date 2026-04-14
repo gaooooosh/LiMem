@@ -34,6 +34,23 @@ class RecallPipeline:
     def __init__(self, store: Any, config: Any):
         self.store = store
         self.config = config
+        self._cached_semantic_pool: Optional[list[Event]] = None
+        self._cached_temporal_pool: Optional[list[Event]] = None
+        self._batch_active: bool = False
+        self._cached_semantic_limit: int = 0
+        self._cached_temporal_limit: int = 0
+        self._cached_temporal_min_ts: Optional[int] = None
+
+    def begin_batch(self) -> None:
+        self._batch_active = True
+
+    def end_batch(self) -> None:
+        self._cached_semantic_pool = None
+        self._cached_temporal_pool = None
+        self._cached_semantic_limit = 0
+        self._cached_temporal_limit = 0
+        self._cached_temporal_min_ts = None
+        self._batch_active = False
 
     def recall(self, event: Event) -> CandidateSet:
         now = int(event.last_active or event.timestamp or time.time())
@@ -142,16 +159,40 @@ class RecallPipeline:
     def _recall_temporal(self, event: Event, current_time: int) -> list[RecallCandidate]:
         window = max(1, int(getattr(self.config, "recall_temporal_window", 1) or 1))
         limit = max(1, int(getattr(self.config, "recall_temporal_limit", 20) or 20))
-        recent_events = self.store.get_recent_events(
-            current_time=current_time,
-            window_seconds=window,
-            limit=max(limit * 3, limit),
-        )
+        query_limit = max(limit * 3, limit)
+        min_ts = int(current_time) - int(window)
+        recent_events: list[Event]
+        if self._batch_active:
+            should_refresh = (
+                self._cached_temporal_pool is None
+                or self._cached_temporal_min_ts is None
+                or min_ts < self._cached_temporal_min_ts
+                or query_limit > self._cached_temporal_limit
+            )
+            if should_refresh:
+                recent_events = self.store.get_recent_events(
+                    current_time=current_time,
+                    window_seconds=window,
+                    limit=query_limit,
+                )
+                self._cached_temporal_pool = recent_events
+                self._cached_temporal_limit = query_limit
+                self._cached_temporal_min_ts = min_ts
+            else:
+                recent_events = self._cached_temporal_pool
+        else:
+            recent_events = self.store.get_recent_events(
+                current_time=current_time,
+                window_seconds=window,
+                limit=query_limit,
+            )
         results: list[RecallCandidate] = []
         for candidate in recent_events:
             if candidate.id == event.id:
                 continue
             ts = int(candidate.last_active or candidate.timestamp or current_time)
+            if ts < min_ts:
+                continue
             delta = max(0, current_time - ts)
             score = math.exp(-float(delta) / float(window))
             results.append(
@@ -209,8 +250,15 @@ class RecallPipeline:
         query_embedding = event.embedding or self._embed_event(event)
         if not query_embedding:
             return []
+        query_limit = max(limit * 10, 200)
         try:
-            candidates = self.store.get_active_events_with_embeddings(limit=max(limit * 10, 200))
+            if self._batch_active:
+                if self._cached_semantic_pool is None or query_limit > self._cached_semantic_limit:
+                    self._cached_semantic_pool = self.store.get_active_events_with_embeddings(limit=query_limit)
+                    self._cached_semantic_limit = query_limit
+                candidates = self._cached_semantic_pool
+            else:
+                candidates = self.store.get_active_events_with_embeddings(limit=query_limit)
         except Exception:
             candidates = []
         ranked: list[RecallCandidate] = []
