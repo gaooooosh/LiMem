@@ -2,14 +2,101 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from limem import Episode, Event, IngestResult, create_ltm
 from limem.builder.extractor import UnifiedExtractor
 from limem.utils import normalize_event_payload
+from script import build_ltm_from_sessions
 from script.build_ltm_from_trips import _run_phase
 
 
 class TestSessionBatchRegressions(unittest.TestCase):
+    def test_sessions_main_enables_deferred_phase_evolution_for_both_phases(self):
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                sessions_path=os.path.join(td, "session_v1.json"),
+                db_path=os.path.join(td, "dynamic_sessions.kz"),
+                max_items=0,
+                debug_max_items=0,
+                sources="",
+                split_index=0,
+                split_ratio=1.0,
+                no_sort=False,
+                online=False,
+                legacy_merge=False,
+                clear_db=False,
+                progress_every=0,
+                debug_snapshot_every=0,
+                snapshot_limit=5,
+                run_consolidation=False,
+                skip_visualize=True,
+                batch_size=8,
+                output_dir=td,
+            )
+            split_result = SimpleNamespace(
+                total_episodes=2,
+                base_episodes=[Episode(content="base", timestamp=1)],
+                debug_episodes=[Episode(content="debug", timestamp=2)],
+                split_index=1,
+                split_ratio=0.5,
+            )
+            phase_calls = []
+
+            class StubLTM:
+                def run_consolidation(self):
+                    return {}
+
+                def get_stats(self):
+                    return {
+                        "event_count": 0,
+                        "entity_count": 0,
+                        "context_count": 0,
+                        "involves_count": 0,
+                        "in_count": 0,
+                        "event_relation_count": 0,
+                    }
+
+                def snapshot(self, limit=12, include_inactive=True):
+                    return {
+                        "limit": limit,
+                        "include_inactive": include_inactive,
+                        "stats": self.get_stats(),
+                        "edges": {},
+                    }
+
+            def fake_run_phase(**kwargs):
+                phase_calls.append(kwargs)
+                return {
+                    "episodes": len(kwargs["episodes"]),
+                    "errors": 0,
+                    "timeline": [],
+                    "stats": kwargs["ltm"].get_stats(),
+                    "extraction_summary": {},
+                    "snapshot": {},
+                    "timing": {},
+                    "deferred_evolution": {},
+                }
+
+            with (
+                patch.object(build_ltm_from_sessions, "_parse_args", return_value=args),
+                patch.object(
+                    build_ltm_from_sessions,
+                    "load_and_split_session_episodes",
+                    return_value=split_result,
+                ),
+                patch.object(build_ltm_from_sessions, "create_ltm", return_value=StubLTM()),
+                patch.object(build_ltm_from_sessions, "_run_phase", side_effect=fake_run_phase),
+                patch.object(build_ltm_from_sessions, "_capture_snapshot", return_value={}),
+                patch.object(build_ltm_from_sessions, "_combine_extraction_summaries", return_value={}),
+                patch.object(build_ltm_from_sessions, "_render_html_report", return_value="<html></html>"),
+            ):
+                build_ltm_from_sessions.main()
+
+            self.assertEqual(len(phase_calls), 2)
+            self.assertTrue(all(call.get("run_deferred_evolution") is True for call in phase_calls))
+
     def test_unified_generation_json_uses_safe_client_wrapper(self):
         extractor = object.__new__(UnifiedExtractor)
         extractor.generation_model = "test-generation-model"

@@ -295,6 +295,7 @@ class DynamicEvolutionEngine:
             self.store.save_event(event)
             new_events.append(event)
 
+        self._create_entities_for_events(new_events)
         resolved_context_batches = self._resolve_context_pairs_for_event_batch(
             events=new_events,
             record=record,
@@ -325,6 +326,7 @@ class DynamicEvolutionEngine:
             return self._empty_evolution_report()
 
         report = self._empty_evolution_report()
+        self._create_entities_for_events(events)
         resolved_context_batches = self._resolve_context_pairs_for_event_batch(
             events=events,
             record=None,
@@ -345,6 +347,46 @@ class DynamicEvolutionEngine:
                 self.run_consolidation(current_time=ts)
 
         return report
+
+    def _create_entities_for_events(self, events: list[Event]) -> int:
+        if not events:
+            return 0
+
+        linked = 0
+        fallback_now = int(time.time())
+        for event in events:
+            if not event or not event.id or event.status in {"merged", "archived"}:
+                continue
+            current_time = (
+                event.last_active
+                or event.timestamp
+                or event.updated_at
+                or event.created_at
+                or fallback_now
+            )
+            seen_entities: set[str] = set()
+            participants = event.participants if isinstance(event.participants, list) else []
+            for participant in participants:
+                entity_ref = self._participant_entity_ref(participant)
+                if not entity_ref:
+                    continue
+                entity_name, entity_type = entity_ref
+                if entity_name in seen_entities:
+                    continue
+                seen_entities.add(entity_name)
+                self.store.ensure_entity(entity_name, entity_type)
+                relation = self.store.get_involves_relation(event.id, entity_name)
+                if relation:
+                    continue
+                self.store.create_involves_relation(
+                    event_id=event.id,
+                    entity_id=entity_name,
+                    t_created=current_time,
+                    t_valid=current_time,
+                    c_valid=1,
+                )
+                linked += 1
+        return linked
 
     def extract_event_event_relations(
         self,
@@ -2313,14 +2355,43 @@ class DynamicEvolutionEngine:
             return []
         labels = []
         for item in participants:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "") or "").strip()
-            seat = str(item.get("seat", "") or "").strip()
-            label = "/".join([part for part in [role, seat] if part])
+            seat = ""
+            if isinstance(item, dict):
+                label = str(
+                    item.get("role")
+                    or item.get("name")
+                    or item.get("id")
+                    or item.get("value")
+                    or item.get("actor")
+                    or item.get("label")
+                    or ""
+                ).strip()
+                seat = str(item.get("seat", "") or "").strip()
+            else:
+                label = str(item or "").strip()
+            label = "/".join([part for part in [label, seat] if part])
             if label:
                 labels.append(label)
         return sorted(set(labels))
+
+    def _participant_entity_ref(self, participant: Any) -> Optional[tuple[str, str]]:
+        if isinstance(participant, dict):
+            entity_name = str(
+                participant.get("id")
+                or participant.get("name")
+                or participant.get("role")
+                or participant.get("value")
+                or participant.get("actor")
+                or participant.get("label")
+                or ""
+            ).strip()
+            entity_type = str(participant.get("type", "UNKNOWN") or "UNKNOWN").strip() or "UNKNOWN"
+        else:
+            entity_name = str(participant or "").strip()
+            entity_type = "UNKNOWN"
+        if not entity_name:
+            return None
+        return entity_name, entity_type
 
     def _summary_semantic_similarity(self, a: Any, b: Any) -> float:
         left = self._normalized_context_text(self._context_summary(a))

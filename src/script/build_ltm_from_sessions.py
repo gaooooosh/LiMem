@@ -196,6 +196,7 @@ def main() -> None:
         capture_every=0,
         snapshot_limit=args.snapshot_limit,
         batch_size=args.batch_size,
+        run_deferred_evolution=True,
     )
     debug_phase = _run_phase(
         ltm=ltm,
@@ -205,6 +206,7 @@ def main() -> None:
         capture_every=max(args.debug_snapshot_every, 0),
         snapshot_limit=args.snapshot_limit,
         batch_size=args.batch_size,
+        run_deferred_evolution=True,
     )
 
     print("[post] Running consolidation (event merge + context merge + decay) ...")
