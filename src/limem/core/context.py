@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Context models for the dynamic long-term memory graph."""
+"""Context - Agent 识别的情境条件。
+
+独立于事件的背景状态，可复用于未来决策。
+"""
 
 from __future__ import annotations
 
@@ -127,7 +130,7 @@ def _normalize_context_description(value: Any) -> str:
 
 @dataclass
 class ContextSpan:
-    """Candidate text span that may describe an event condition."""
+    """Agent 从观测中圈出的、可能描述情境条件的候选片段。"""
 
     text: str
     signal: str = ""
@@ -145,7 +148,7 @@ class ContextSpan:
 
 @dataclass
 class CanonicalContextKey:
-    """Stable matching key produced from a ContextDraft."""
+    """Agent 为情境条件生成的稳定匹配键。"""
 
     context_type: str = "context"
     subtype: str = "situation"
@@ -166,7 +169,7 @@ class CanonicalContextKey:
 
 @dataclass
 class ContextDraft:
-    """Draft extracted from raw text or an Event before graph resolution."""
+    """Agent 在图解析前形成的情境条件草稿。"""
 
     subtype: str = "situation"
     summary: str = ""
@@ -212,7 +215,7 @@ class ContextDraft:
 
 @dataclass
 class Context:
-    """Context node that stores reusable conditions for events."""
+    """Agent 记忆图中的 Context 节点，存储可复用的情境条件。"""
 
     id: str
     context_type: str = "context"

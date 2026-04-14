@@ -1,6 +1,6 @@
 待处理 item 总数：{item_total}
 
-以下是待抽取 Context 的 item 列表（item_index 从 0 开始）：
+以下是待识别 Context 的 item 列表（item_index 从 0 开始）：
 {items_json}
 
 请为每个 item 返回一条结果，严格 JSON：
@@ -11,15 +11,15 @@
       "contexts": [
         {{
           "subtype": "state",
-          "summary": "可复用的抽象上下文",
+          "summary": "可复用的抽象情境标签",
           "description": "包含参与者、地点、时间、交互模态、环境状态等维度的丰富描述",
           "confidence": 0.88,
-          "evidence_span": "必须来自该 item 的原文"
+          "evidence_span": "必须来自该 item 原始观测的原文片段"
         }}
       ],
       "rejected_candidates": [
         {{
-          "text": "候选片段",
+          "text": "被拒绝的片段",
           "reason": "event_action_not_context"
         }}
       ]
@@ -29,9 +29,9 @@
 
 规则：
 1. 返回数量必须等于 {item_total}，每个 item 恰好一条结果。
-2. 每条结果只能使用对应 item 的 record_text / event / candidate_spans，不要跨 item 混用信息。
+2. 每条结果只能使用对应 item 的 record_text 和 event，不要跨 item 混用信息。
 3. 如果某个 item 没有高质量 Context，也必须返回对应 item_index，且 contexts 置为空数组。
-4. evidence_span 必须来自对应 item 的原文。
+4. evidence_span 必须是对应 item 原始观测中的原文片段，不要改写。
 5. summary 要短、可复用、去事件化，不要复制整句事件。
 6. description 要尽量补充参与者、地点类型、时间特征、交互模态、活动类型、环境状态等维度。
 7. 只输出 JSON，不要任何解释文本。
