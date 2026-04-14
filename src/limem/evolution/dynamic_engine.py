@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Optional, TypedDict
+from typing import Any, Callable, Optional, TypedDict
 import json
 import logging
 import math
@@ -320,13 +320,26 @@ class DynamicEvolutionEngine:
             **report,
         }
 
-    def evolve_existing_events(self, events: list[Event]) -> EvolutionReport:
-        """Apply local dynamic updates for already-persisted events."""
+    def evolve_existing_events(
+        self,
+        events: list[Event],
+        progress_cb: Optional[Callable[[str, int, int], None]] = None,
+    ) -> EvolutionReport:
+        """Apply local dynamic updates for already-persisted events.
+
+        Args:
+            events: Already-persisted events to evolve.
+            progress_cb: Optional callback(stage, current, total) for progress reporting.
+        """
         if not events:
             return self._empty_evolution_report()
 
         report = self._empty_evolution_report()
+        if progress_cb:
+            progress_cb("entities", 0, len(events))
         self._create_entities_for_events(events)
+        if progress_cb:
+            progress_cb("contexts", 0, len(events))
         resolved_context_batches = self._resolve_context_pairs_for_event_batch(
             events=events,
             record=None,
@@ -334,10 +347,13 @@ class DynamicEvolutionEngine:
         for event, resolved_contexts in zip(events, resolved_context_batches):
             report["context_links"] += self.attach_contexts_to_event(event, resolved_contexts)
         if self.config.enable_event_relations:
+            if progress_cb:
+                progress_cb("relations", 0, len(events))
             relation_report = self._coerce_relation_report(
                 self.extract_event_event_relations(
                     events=events,
                     record=None,
+                    progress_cb=progress_cb,
                 )
             )
             report = self._merge_evolution_reports(report, relation_report)
@@ -392,6 +408,7 @@ class DynamicEvolutionEngine:
         self,
         events: list[Event],
         record: Optional[Any] = None,
+        progress_cb: Optional[Callable[[str, int, int], None]] = None,
     ) -> EvolutionReport:
         if not events:
             return self._empty_evolution_report()
@@ -399,20 +416,24 @@ class DynamicEvolutionEngine:
             return self._coerce_relation_report(
                 self._extract_event_event_relations_legacy(events=events, record=record)
             )
-        return self._run_relation_pipeline(events=events, record=record)
+        return self._run_relation_pipeline(events=events, record=record, progress_cb=progress_cb)
 
     def _run_relation_pipeline(
         self,
         events: list[Event],
         record: Optional[Any] = None,
+        progress_cb: Optional[Callable[[str, int, int], None]] = None,
     ) -> EvolutionReport:
         report = self._empty_evolution_report()
         source_text = self._extract_relation_source_text(record=record, events=events)
         if not source_text:
             source_text = " ".join(event.summary for event in events if event.summary).strip()
-        for event in events:
+        total = len(events)
+        for idx, event in enumerate(events):
             if not event or event.status in {"merged", "archived"}:
                 continue
+            if progress_cb:
+                progress_cb("relations", idx + 1, total)
             candidate_set = self.recall_pipeline.recall(event=event)
             report["recall_candidates"] += len(candidate_set.candidates)
             result = self.relation_processor.process(

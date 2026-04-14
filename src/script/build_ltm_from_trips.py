@@ -355,8 +355,18 @@ def _run_phase(
 
     deferred_evolution_report: dict[str, Any] = {}
     if run_deferred_evolution and phase_events and hasattr(ltm, "evolve_events"):
+        _evolution_stage_printed: set[str] = set()
+
+        def _evolution_progress(stage: str, current: int, total: int) -> None:
+            if stage not in _evolution_stage_printed:
+                _evolution_stage_printed.add(stage)
+                print(f"[{phase_name}] Evolution: {stage} ({total} events) ...")
+            elif stage == "relations" and total > 0:
+                print(f"[{phase_name}] Evolution: {stage} {current}/{total}", flush=True)
+
+        print(f"[{phase_name}] Running deferred evolution for {len(phase_events)} events ...")
         evolve_started_at = time.perf_counter()
-        evolution_stats = ltm.evolve_events(phase_events)
+        evolution_stats = ltm.evolve_events(phase_events, progress_cb=_evolution_progress)
         duration_ms = round((time.perf_counter() - evolve_started_at) * 1000.0, 3)
         deferred_evolution_report = {
             "event_count": len(phase_events),
