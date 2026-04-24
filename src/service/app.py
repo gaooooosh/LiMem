@@ -5,16 +5,26 @@ from __future__ import annotations
 import os
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import jieba
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
 
 from limem.factory import create_ltm
 from limem.retrieval import BM25Index
 
 from .json_flattener import flatten_json
-from .models import EvolveResponse, IngestRequest, IngestResponse, QueryRequest, QueryResponse
+from .models import (
+    DeleteNodeRequest,
+    EvolveResponse,
+    IngestRequest,
+    IngestResponse,
+    QueryRequest,
+    QueryResponse,
+    UpdateNodeRequest,
+)
 
 
 DEFAULT_DB_PATH = "./DB/service.kz"
@@ -132,5 +142,71 @@ def create_app() -> FastAPI:
         with state.write_lock:
             state.rebuild_index()
             return {"index_size": state.bm25_index.size}
+
+    # ── Graph visualization endpoints ──
+
+    @app.get("/graph", response_class=HTMLResponse)
+    def graph_page() -> str:
+        html_path = Path(__file__).parent / "static" / "graph.html"
+        return html_path.read_text(encoding="utf-8")
+
+    @app.get("/api/graph/snapshot")
+    def graph_snapshot(
+        limit: int = Query(default=100, ge=1, le=500),
+        include_inactive: bool = Query(default=False),
+        text: str = Query(default=""),
+    ) -> dict[str, Any]:
+        return state.ltm.snapshot(
+            limit=limit,
+            include_inactive=include_inactive,
+            text=text,
+        )
+
+    @app.post("/api/graph/delete")
+    def graph_delete(request: DeleteNodeRequest) -> dict[str, Any]:
+        with state.write_lock:
+            result = state.ltm.remove(
+                memory_id=request.memory_id,
+                kind=request.kind,
+                hard_delete=request.hard_delete,
+            )
+            state.rebuild_index()
+        return result
+
+    @app.post("/api/graph/update")
+    def graph_update(request: UpdateNodeRequest) -> dict[str, Any]:
+        with state.write_lock:
+            if request.kind == "event":
+                existing = state.ltm.store.get_event(request.memory_id)
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Event not found")
+                item = state.ltm.ops._serialize_event(existing)
+                item.update(request.fields)
+            elif request.kind == "context":
+                existing = state.ltm.store.get_context(request.memory_id)
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Context not found")
+                item = state.ltm.ops._serialize_context(existing)
+                item.update(request.fields)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown kind: {request.kind}")
+            result = state.ltm.write(item=item, kind=request.kind, evolve=request.evolve)
+            state.rebuild_index()
+        return result
+
+    @app.get("/api/graph/node/{kind}/{node_id:path}")
+    def graph_node_detail(kind: str, node_id: str) -> dict[str, Any]:
+        if kind == "event":
+            event = state.ltm.store.get_event(node_id)
+            if not event:
+                raise HTTPException(status_code=404, detail="Event not found")
+            return state.ltm.ops._serialize_event(event)
+        elif kind == "context":
+            context = state.ltm.store.get_context(node_id)
+            if not context:
+                raise HTTPException(status_code=404, detail="Context not found")
+            return state.ltm.ops._serialize_context(context)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown kind: {kind}")
 
     return app
