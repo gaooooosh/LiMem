@@ -1,0 +1,10 @@
+{
+  "name": "limem-service",
+  "scripts": {
+    "install:deps": "uv sync",
+    "dev": "PYTHONPATH=src uv run python -m service.main",
+    "start": "PYTHONPATH=src uv run python -m service.main",
+    "docker:build": "docker build -t limem-service .",
+    "docker:run": "docker run -p 8000:8000 --env-file .env -v \"$PWD/DB:/app/DB\" limem-service"
+  }
+}
