@@ -55,3 +55,17 @@ class UpdateNodeRequest(BaseModel):
     kind: str = "event"
     fields: dict[str, Any]
     evolve: bool = False
+
+
+class WriteNodeRequest(BaseModel):
+    kind: str = "event"
+    item: dict[str, Any]
+    entity_ids: list[Any] = Field(default_factory=list)
+    evolve: bool = True
+
+
+class WriteNodeResponse(BaseModel):
+    kind: str
+    action: str
+    item: dict[str, Any] = Field(default_factory=dict)
+    entity_links: int = 0

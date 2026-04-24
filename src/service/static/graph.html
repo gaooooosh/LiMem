@@ -451,6 +451,66 @@
         .edit-field textarea:focus, .edit-field input[type="text"]:focus { border-color: var(--accent); }
         .edit-field textarea { min-height: 60px; }
 
+        /* Write Data */
+        .write-mode-toggle {
+            display: flex;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+        .write-mode-toggle button {
+            flex: 1;
+            padding: 6px 0;
+            border: none;
+            background: var(--card-bg);
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+        }
+        .write-mode-toggle button.active {
+            background: var(--btn-bg);
+            color: var(--btn-text);
+        }
+        .write-mode-toggle button:not(.active):hover {
+            background: var(--accent-soft);
+        }
+        .write-textarea {
+            width: 100%;
+            min-height: 100px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--search-bg);
+            color: var(--text);
+            font-size: 12px;
+            font-family: inherit;
+            outline: none;
+            resize: vertical;
+            transition: border-color 0.2s;
+            margin-bottom: 8px;
+        }
+        .write-textarea:focus { border-color: var(--accent); }
+        .write-textarea.mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+        }
+        .write-error {
+            font-size: 11px;
+            color: var(--danger);
+            margin-bottom: 6px;
+            display: none;
+        }
+        .write-error.visible { display: block; }
+        .write-hint {
+            font-size: 10px;
+            color: var(--text-muted);
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+
         /* Toast */
         .toast-container {
             position: fixed;
@@ -615,6 +675,31 @@
                 <input type="checkbox" id="showInactive" onchange="onShowInactiveChange(this.checked)" style="accent-color:var(--accent);">
                 显示已归档节点
             </label>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">写入数据</div>
+            <div class="write-mode-toggle">
+                <button id="modeNL" class="active" onclick="setWriteMode('nl')">自然语言</button>
+                <button id="modeJSON" onclick="setWriteMode('json')">结构化JSON</button>
+            </div>
+            <div id="writeNLPanel">
+                <textarea class="write-textarea" id="writeNLInput"
+                          placeholder="输入自然语言文本，将通过LLM提取记忆..."></textarea>
+                <div class="write-hint">文本将经过LLM分析，自动提取事件、实体和上下文。处理可能需要几秒钟。</div>
+            </div>
+            <div id="writeJSONPanel" style="display:none;">
+                <textarea class="write-textarea mono" id="writeJSONInput"
+                          placeholder='{"kind":"event","item":{"summary":"...","action":"..."}}'></textarea>
+                <div class="write-error" id="writeJSONError"></div>
+                <div class="write-hint">
+                    kind: "event" 或 "context"<br>
+                    Event: summary, action, causality, participants<br>
+                    Context: subtype, summary, description, confidence<br>
+                    可选: entity_ids (数组), evolve (布尔)
+                </div>
+            </div>
+            <button class="btn btn-primary btn-block" id="writeSubmitBtn" onclick="submitWriteData()">写入</button>
         </div>
 
         <div class="sidebar-section">
@@ -1428,6 +1513,106 @@ async function triggerEvolve() {
     } catch (e) {
         hideLoading();
         showToast('进化失败: ' + e.message, 'error');
+    }
+}
+
+// ── Write Data ──
+let writeMode = 'nl';
+
+function setWriteMode(mode) {
+    writeMode = mode;
+    document.getElementById('modeNL').classList.toggle('active', mode === 'nl');
+    document.getElementById('modeJSON').classList.toggle('active', mode === 'json');
+    document.getElementById('writeNLPanel').style.display = mode === 'nl' ? 'block' : 'none';
+    document.getElementById('writeJSONPanel').style.display = mode === 'json' ? 'block' : 'none';
+    document.getElementById('writeJSONError').classList.remove('visible');
+}
+
+async function submitWriteData() {
+    if (writeMode === 'nl') {
+        await submitNaturalLanguage();
+    } else {
+        await submitStructuredJSON();
+    }
+}
+
+async function submitNaturalLanguage() {
+    const input = document.getElementById('writeNLInput');
+    const text = input.value.trim();
+    if (!text) {
+        showToast('请输入文本内容', 'error');
+        return;
+    }
+    try {
+        showLoading('正在通过LLM提取记忆...');
+        const result = await api('/ingest', {
+            method: 'POST',
+            body: JSON.stringify({ data: text }),
+        });
+        hideLoading();
+        input.value = '';
+        const msg = result.is_new
+            ? '已创建新事件，提取了 ' + result.entities_created + ' 个实体'
+            : '事件已合并（共 ' + result.event_count + ' 个事件）';
+        showToast(msg, 'success');
+        await pollSnapshot();
+    } catch (e) {
+        hideLoading();
+        showToast('写入失败: ' + e.message, 'error');
+    }
+}
+
+async function submitStructuredJSON() {
+    const input = document.getElementById('writeJSONInput');
+    const errorEl = document.getElementById('writeJSONError');
+    const text = input.value.trim();
+    if (!text) {
+        showToast('请输入JSON数据', 'error');
+        return;
+    }
+    let payload;
+    try {
+        payload = JSON.parse(text);
+    } catch (e) {
+        errorEl.textContent = 'JSON格式错误: ' + e.message;
+        errorEl.classList.add('visible');
+        return;
+    }
+    errorEl.classList.remove('visible');
+
+    if (!payload.item || typeof payload.item !== 'object') {
+        errorEl.textContent = '缺少 "item" 字段（应为对象）';
+        errorEl.classList.add('visible');
+        return;
+    }
+    if (!payload.item.summary) {
+        errorEl.textContent = 'item 中缺少 "summary" 字段';
+        errorEl.classList.add('visible');
+        return;
+    }
+    if (!payload.kind) {
+        payload.kind = 'event';
+    }
+
+    try {
+        showLoading('写入结构化数据...');
+        const result = await api('/api/graph/write', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+        hideLoading();
+        input.value = '';
+        const kindLabel = result.kind === 'event' ? '事件' : '上下文';
+        const actionLabel = result.action === 'created' ? '创建' : '更新';
+        let msg = '已' + actionLabel + kindLabel;
+        if (result.entity_links > 0) {
+            msg += '，关联了 ' + result.entity_links + ' 个实体';
+        }
+        showToast(msg, 'success');
+        await pollSnapshot();
+    } catch (e) {
+        hideLoading();
+        showToast('写入失败: ' + e.message, 'error');
     }
 }
 
