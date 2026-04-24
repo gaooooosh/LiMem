@@ -24,6 +24,8 @@ from .models import (
     QueryRequest,
     QueryResponse,
     UpdateNodeRequest,
+    WriteNodeRequest,
+    WriteNodeResponse,
 )
 
 
@@ -193,6 +195,23 @@ def create_app() -> FastAPI:
             result = state.ltm.write(item=item, kind=request.kind, evolve=request.evolve)
             state.rebuild_index()
         return result
+
+    @app.post("/api/graph/write", response_model=WriteNodeResponse)
+    def graph_write(request: WriteNodeRequest) -> WriteNodeResponse:
+        with state.write_lock:
+            result = state.ltm.write(
+                item=request.item,
+                kind=request.kind,
+                evolve=request.evolve,
+                entity_ids=request.entity_ids or None,
+            )
+            state.rebuild_index()
+        return WriteNodeResponse(
+            kind=result["kind"],
+            action=result["action"],
+            item=result.get("item", {}),
+            entity_links=result.get("entity_links", 0),
+        )
 
     @app.get("/api/graph/node/{kind}/{node_id:path}")
     def graph_node_detail(kind: str, node_id: str) -> dict[str, Any]:
