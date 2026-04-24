@@ -16,9 +16,12 @@ class _RecallStore:
         self._semantic_events = list(semantic_events)
         self._entity_map = dict(entity_map)
         self.embedding_client = None
+        self.recent_calls = 0
+        self.semantic_calls = 0
 
     def get_recent_events(self, current_time, window_seconds, limit=100):
         del current_time, window_seconds, limit
+        self.recent_calls += 1
         return list(self._recent_events)
 
     def get_events_by_entities(self, entities):
@@ -27,6 +30,7 @@ class _RecallStore:
 
     def get_active_events_with_embeddings(self, limit=200):
         del limit
+        self.semantic_calls += 1
         return list(self._semantic_events)
 
     def get_event_entities(self, event_id):
@@ -255,6 +259,61 @@ class TestRelationPipeline(unittest.TestCase):
         result = pipeline.recall(new_event)
         ids = [c.event.id for c in result.candidates]
         self.assertNotIn("evt_weak", ids)
+
+    def test_batch_recall_reuses_temporal_and_semantic_queries(self):
+        cached_candidate = Event(
+            id="evt_cached",
+            summary="缓存候选",
+            timestamp=118,
+            last_active=118,
+            embedding=[1.0, 0.0],
+        )
+        first_event = Event(
+            id="evt_first",
+            summary="第一条事件",
+            timestamp=120,
+            last_active=120,
+            embedding=[1.0, 0.0],
+        )
+        second_event = Event(
+            id="evt_second",
+            summary="第二条事件",
+            timestamp=122,
+            last_active=122,
+            embedding=[1.0, 0.0],
+        )
+        store = _RecallStore(
+            recent_events=[cached_candidate],
+            entity_events=[],
+            semantic_events=[cached_candidate],
+            entity_map={},
+        )
+        pipeline = RecallPipeline(
+            store=store,
+            config=_make_config(
+                recall_min_aggregate_score=0.0,
+                recall_semantic_threshold=0.0,
+            ),
+        )
+
+        pipeline.begin_batch()
+        try:
+            pipeline.recall(first_event)
+            pipeline.recall(second_event)
+        finally:
+            pipeline.end_batch()
+
+        self.assertEqual(store.recent_calls, 1)
+        self.assertEqual(store.semantic_calls, 1)
+
+        pipeline.begin_batch()
+        try:
+            pipeline.recall(first_event)
+        finally:
+            pipeline.end_batch()
+
+        self.assertEqual(store.recent_calls, 2)
+        self.assertEqual(store.semantic_calls, 2)
 
     def test_relation_processor_legacy_compat_creates_link_edge(self):
         new_event = Event(id="evt_new", summary="用户发起导航", timestamp=100, last_active=100)

@@ -65,7 +65,7 @@ class LTMemoryImpl(LTMemory):
         """
         return self.builder.build(episode)
 
-    def evolve_events(self, events: list[Event]) -> EvolutionReport:
+    def evolve_events(self, events: list[Event], progress_cb=None) -> EvolutionReport:
         """Run dynamic evolution for already-persisted events."""
         if not self.dynamic_engine or not events:
             return {
@@ -80,7 +80,7 @@ class LTMemoryImpl(LTMemory):
                 "skipped": 0,
                 "recall_candidates": 0,
             }
-        return self.dynamic_engine.evolve_existing_events(events)
+        return self.dynamic_engine.evolve_existing_events(events, progress_cb=progress_cb)
 
     def ingest_batch(
         self,

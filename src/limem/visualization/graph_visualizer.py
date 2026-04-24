@@ -56,6 +56,21 @@ class VisualizationConfig:
     theme: str = "light"
 
 
+def _normalize_display_value(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    mapped = {
+        "unknown": "未知",
+        "context": "上下文",
+        "event": "事件",
+        "entity": "实体",
+        "active": "活跃",
+        "merged": "已合并",
+    }
+    return mapped.get(text.lower(), text)
+
+
 class GraphVisualizer:
     """图拓扑可视化器
 
@@ -123,13 +138,13 @@ class GraphVisualizer:
                 "id": nid,
                 "full_id": row[0],
                 "type": "event",
-                "label": summary[:30] + "..." if len(summary) > 30 else summary or row[2] or "Event",
+                "label": summary[:30] + "..." if len(summary) > 30 else summary or row[2] or "事件",
                 "summary": summary,
                 "support": row[3] or 1,
                 "action": row[2] or "",
                 "timestamp": row[4],
                 "last_active": row[5],
-                "status": row[6] or "active",
+                "status": _normalize_display_value(row[6], fallback="活跃"),
                 "participants": row[7] or "",
                 "causality": row[8] or "",
                 "payload": row[9] or "",
@@ -152,7 +167,7 @@ class GraphVisualizer:
                 "full_id": row[0],
                 "type": "entity",
                 "label": nid[:20],
-                "entity_type": row[1] or "UNKNOWN",
+                "entity_type": _normalize_display_value(row[1], fallback="未知"),
             })
 
         # 3. 提取上下文节点 (含完整字段)
@@ -173,16 +188,16 @@ class GraphVisualizer:
                 "id": nid,
                 "full_id": row[0],
                 "type": "context",
-                "label": summary[:25] + "..." if len(summary) > 25 else summary or "Context",
+                "label": summary[:25] + "..." if len(summary) > 25 else summary or "上下文",
                 "summary": summary,
-                "context_type": row[2] or "context",
+                "context_type": _normalize_display_value(row[2], fallback="上下文"),
                 "subtype": row[3] or "",
                 "description": row[4] or "",
                 "confidence": row[5],
                 "support_count": row[6],
                 "created_at": row[7],
                 "last_seen_at": row[8],
-                "status": row[9] or "active",
+                "status": _normalize_display_value(row[9], fallback="活跃"),
             })
 
         # 4. 提取 INVOLVES 边
@@ -738,19 +753,19 @@ class GraphVisualizer:
             <label>
                 <input type="checkbox" checked onchange="toggleFilter('event', this.checked)">
                 <div class="legend-dot" style="background:var(--event-color)"></div>
-                Event
+                事件
                 <span class="badge" id="badge-event">{stats['events']}</span>
             </label>
             <label>
                 <input type="checkbox" checked onchange="toggleFilter('entity', this.checked)">
                 <div class="legend-dot" style="background:var(--entity-color)"></div>
-                Entity
+                实体
                 <span class="badge" id="badge-entity">{stats['entities']}</span>
             </label>
             <label>
                 <input type="checkbox" checked onchange="toggleFilter('context', this.checked)">
                 <div class="legend-dot" style="background:var(--context-color)"></div>
-                Context
+                上下文
                 <span class="badge" id="badge-context">{stats['contexts']}</span>
             </label>
         </div>
@@ -760,15 +775,15 @@ class GraphVisualizer:
         <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">边类型</div>
         <div class="legend-item">
             <svg class="legend-line" viewBox="0 0 20 2"><line x1="0" y1="1" x2="20" y2="1" stroke="{cfg.involves_edge_color}" stroke-width="1.5"/></svg>
-            INVOLVES
+            实体关联（INVOLVES）
         </div>
         <div class="legend-item">
             <svg class="legend-line" viewBox="0 0 20 2"><line x1="0" y1="1" x2="20" y2="1" stroke="{cfg.relation_edge_color}" stroke-width="2"/></svg>
-            RELATION
+            事件关系（EVENT_RELATION）
         </div>
         <div class="legend-item">
             <svg class="legend-line" viewBox="0 0 20 2"><line x1="0" y1="1" x2="20" y2="1" stroke="{cfg.in_rel_edge_color}" stroke-width="1.5" stroke-dasharray="4,2"/></svg>
-            IN_REL
+            上下文关联（IN_REL）
         </div>
 
         <div class="separator"></div>
@@ -850,6 +865,20 @@ class GraphVisualizer:
             contextStroke: cs.getPropertyValue('--context-stroke').trim(),
             nodeLabel: cs.getPropertyValue('--node-label').trim(),
         }};
+    }}
+
+    function nodeTypeLabel(type) {{
+        const labels = {{ event: '事件', entity: '实体', context: '上下文' }};
+        return labels[type] || type;
+    }}
+
+    function edgeTypeLabel(type) {{
+        const labels = {{
+            involves: '实体关联（INVOLVES）',
+            relation: '事件关系（EVENT_RELATION）',
+            in_rel: '上下文关联（IN_REL）'
+        }};
+        return labels[type] || type;
     }}
 
     const simulation = d3.forceSimulation(graphData.nodes)
@@ -937,12 +966,12 @@ class GraphVisualizer:
         const conn = connCount[d.id] || 0;
         const tip = document.getElementById('tooltip');
         let rows = '<div class="tip-title">' + esc(d.label || d.id) + '</div>';
-        rows += '<div class="tip-row">Type: <span>' + d.type + '</span></div>';
-        if (d.support) rows += '<div class="tip-row">Support: <span>' + d.support + '</span></div>';
-        if (d.action) rows += '<div class="tip-row">Action: <span>' + d.action + '</span></div>';
-        if (d.entity_type) rows += '<div class="tip-row">Entity Type: <span>' + d.entity_type + '</span></div>';
-        if (d.context_type) rows += '<div class="tip-row">Context Type: <span>' + d.context_type + '</span></div>';
-        rows += '<div class="tip-row">Connections: <span>' + conn + '</span></div>';
+        rows += '<div class="tip-row">类型: <span>' + nodeTypeLabel(d.type) + '</span></div>';
+        if (d.support) rows += '<div class="tip-row">支撑次数: <span>' + d.support + '</span></div>';
+        if (d.action) rows += '<div class="tip-row">动作: <span>' + d.action + '</span></div>';
+        if (d.entity_type) rows += '<div class="tip-row">实体类型: <span>' + d.entity_type + '</span></div>';
+        if (d.context_type) rows += '<div class="tip-row">上下文类型: <span>' + d.context_type + '</span></div>';
+        rows += '<div class="tip-row">连接数: <span>' + conn + '</span></div>';
         rows += '<div class="tip-row" style="color:var(--accent);margin-top:4px;">点击查看详情</div>';
         tip.innerHTML = rows;
         tip.style.display = 'block';
@@ -1149,7 +1178,7 @@ class GraphVisualizer:
         if (!n) return;
         const badge = document.getElementById('detailBadge');
         badge.className = 'detail-badge ' + n.type;
-        badge.textContent = n.type.charAt(0).toUpperCase() + n.type.slice(1);
+        badge.textContent = nodeTypeLabel(n.type);
 
         const body = document.getElementById('detailBody');
         let h = '';
@@ -1174,7 +1203,7 @@ class GraphVisualizer:
             if (n.causality) h += kvHtml('因果关系', n.causality);
             if (n.time_range) h += kvHtml('时间范围', n.time_range);
         }} else if (n.type === 'entity') {{
-            h += kvHtml('实体类型', n.entity_type || 'UNKNOWN');
+            h += kvHtml('实体类型', n.entity_type || '未知');
         }} else if (n.type === 'context') {{
             if (n.context_type) h += kvHtml('类型', n.context_type);
             if (n.subtype) h += kvHtml('子类型', n.subtype);
@@ -1205,7 +1234,7 @@ class GraphVisualizer:
         if (n.type === 'event' && n.payload) {{
             const parsed = tryParseJson(n.payload);
             if (parsed) {{
-                h += '<div class="detail-section"><div class="detail-section-title">Payload</div>';
+                h += '<div class="detail-section"><div class="detail-section-title">结构化事件数据</div>';
                 h += '<div class="detail-json">' + esc(JSON.stringify(parsed, null, 2)) + '</div></div>';
             }}
         }}
@@ -1222,9 +1251,9 @@ class GraphVisualizer:
                 const nb = nodeMap[a.neighbor];
                 if (!nb) return;
                 const meta = [];
-                if (a.link.type) meta.push(a.link.type);
+                if (a.link.type) meta.push(edgeTypeLabel(a.link.type));
                 if (a.link.rel) meta.push(a.link.rel);
-                if (a.link.confidence != null) meta.push('conf=' + Number(a.link.confidence).toFixed(2));
+                if (a.link.confidence != null) meta.push('置信度=' + Number(a.link.confidence).toFixed(2));
                 h += '<div class="detail-conn-item" onclick="selectNode(\\''+esc(a.neighbor)+'\\')"><div class="detail-conn-dot '+nb.type+'"></div><div class="detail-conn-info"><div class="detail-conn-label">' + esc(truncate(nb.summary || nb.label || nb.id, 30)) + '</div><div class="detail-conn-meta">' + esc(meta.join(' · ')) + '</div></div></div>';
             }});
             h += '</div></div>';
@@ -1244,8 +1273,7 @@ class GraphVisualizer:
 
         const badge = document.getElementById('detailBadge');
         badge.className = 'detail-badge edge-' + l.type;
-        const typeLabels = {{ involves: 'INVOLVES', relation: 'EVENT_RELATION', in_rel: 'IN_REL' }};
-        badge.textContent = typeLabels[l.type] || l.type;
+        badge.textContent = edgeTypeLabel(l.type);
 
         const body = document.getElementById('detailBody');
         let h = '';
@@ -1293,7 +1321,7 @@ class GraphVisualizer:
         if (!n) {{
             return '<div class="detail-endpoint"><div class="detail-conn-dot event"></div><div class="detail-conn-info"><div class="detail-endpoint-label">' + esc(roleLabel) + '</div><div class="detail-endpoint-text" style="color:var(--text-muted)">' + esc(nId) + '</div></div></div>';
         }}
-        return '<div class="detail-endpoint" onclick="selectNode(\\''+esc(n.id)+'\\')"><div class="detail-conn-dot '+n.type+'"></div><div class="detail-conn-info"><div class="detail-endpoint-label">' + esc(roleLabel) + ' · ' + n.type + '</div><div class="detail-endpoint-text">' + esc(truncate(n.summary || n.label || n.id, 32)) + '</div><div class="detail-conn-meta">' + esc(truncate(n.full_id || n.id, 36)) + '</div></div></div>';
+        return '<div class="detail-endpoint" onclick="selectNode(\\''+esc(n.id)+'\\')"><div class="detail-conn-dot '+n.type+'"></div><div class="detail-conn-info"><div class="detail-endpoint-label">' + esc(roleLabel) + ' · ' + nodeTypeLabel(n.type) + '</div><div class="detail-endpoint-text">' + esc(truncate(n.summary || n.label || n.id, 32)) + '</div><div class="detail-conn-meta">' + esc(truncate(n.full_id || n.id, 36)) + '</div></div></div>';
     }}
 
     // Init colors

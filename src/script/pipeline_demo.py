@@ -52,6 +52,7 @@ def create_pipeline_demo_app(
                 CONTEXT_EXTRACTION_BATCH_SIZE,
                 CONTEXT_REUSE_THRESHOLD,
                 DECAY_RATE,
+                DEFERRED_EVOLUTION,
                 EMBEDDING_DIM,
                 EMBEDDING_MODEL,
                 ENABLE_AUTO_CONSOLIDATION,
@@ -59,6 +60,17 @@ def create_pipeline_demo_app(
                 ENABLE_EVENT_RELATIONS,
                 EVENT_CONSOLIDATION_THRESHOLD,
                 GENERATION_MODEL,
+                LLM_CONCURRENCY,
+                RECALL_MAX_CANDIDATES,
+                RECALL_MIN_AGGREGATE_SCORE,
+                RECALL_SEMANTIC_THRESHOLD,
+                RECALL_WEIGHT_ENTITY,
+                RECALL_WEIGHT_SEMANTIC,
+                RECALL_WEIGHT_STATE,
+                RECALL_WEIGHT_TEMPORAL,
+                RECALL_WEIGHT_REFERENCE,
+                RELATION_MIN_CONFIDENCE,
+                RELATION_MAX_LINKS_PER_EVENT,
             )
 
             return {
@@ -66,6 +78,8 @@ def create_pipeline_demo_app(
                 "embedding_model": EMBEDDING_MODEL,
                 "embedding_dim": EMBEDDING_DIM,
                 "append_first_mode": APPEND_FIRST_MODE,
+                "deferred_evolution": DEFERRED_EVOLUTION,
+                "llm_concurrency": LLM_CONCURRENCY,
                 "enable_dynamic_evolution": ENABLE_DYNAMIC_EVOLUTION,
                 "enable_event_relations": ENABLE_EVENT_RELATIONS,
                 "enable_auto_consolidation": ENABLE_AUTO_CONSOLIDATION,
@@ -73,6 +87,18 @@ def create_pipeline_demo_app(
                 "event_consolidation_threshold": EVENT_CONSOLIDATION_THRESHOLD,
                 "context_reuse_threshold": CONTEXT_REUSE_THRESHOLD,
                 "context_extraction_batch_size": CONTEXT_EXTRACTION_BATCH_SIZE,
+                "recall_max_candidates": RECALL_MAX_CANDIDATES,
+                "recall_min_aggregate_score": RECALL_MIN_AGGREGATE_SCORE,
+                "recall_semantic_threshold": RECALL_SEMANTIC_THRESHOLD,
+                "recall_weights": {
+                    "temporal": RECALL_WEIGHT_TEMPORAL,
+                    "entity": RECALL_WEIGHT_ENTITY,
+                    "semantic": RECALL_WEIGHT_SEMANTIC,
+                    "state": RECALL_WEIGHT_STATE,
+                    "reference": RECALL_WEIGHT_REFERENCE,
+                },
+                "relation_min_confidence": RELATION_MIN_CONFIDENCE,
+                "relation_max_links_per_event": RELATION_MAX_LINKS_PER_EVENT,
             }
         except Exception as exc:
             return {"error": str(exc)}
