@@ -1,0 +1,1496 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiMem 记忆图谱</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        :root {
+            --sidebar-w: 280px;
+            --detail-w: 380px;
+        }
+        [data-theme="light"] {
+            --bg: #f2eadb;
+            --panel: rgba(255,252,247,0.90);
+            --text: #241d16;
+            --text-muted: #756757;
+            --accent: #b95d2d;
+            --accent-soft: #f5dfca;
+            --border: #ded2bc;
+            --node-label: #241d16;
+            --tooltip-bg: rgba(255,252,247,0.96);
+            --tooltip-border: #b95d2d;
+            --btn-bg: #b95d2d;
+            --btn-text: #fff;
+            --btn-hover: #a04e24;
+            --search-bg: rgba(255,255,255,0.7);
+            --search-border: #ded2bc;
+            --event-color: #e05a4f;
+            --event-stroke: #b83a30;
+            --entity-color: #3ab0a0;
+            --entity-stroke: #267a6e;
+            --context-color: #6dbfaa;
+            --context-stroke: #3e8a6e;
+            --card-bg: rgba(255,255,255,0.72);
+            --danger: #9d3e30;
+            --danger-hover: #852e22;
+            --success: #4e8a3e;
+            --involves-edge: #888;
+            --relation-edge: #FF9F1C;
+            --in-rel-edge: #2f7975;
+        }
+        [data-theme="dark"] {
+            --bg: #1a1a2e;
+            --panel: rgba(30,30,50,0.95);
+            --text: #eee;
+            --text-muted: #999;
+            --accent: #4ECDC4;
+            --accent-soft: rgba(78,205,196,0.15);
+            --border: #333;
+            --node-label: #fff;
+            --tooltip-bg: rgba(20,20,40,0.95);
+            --tooltip-border: #4ECDC4;
+            --btn-bg: #4ECDC4;
+            --btn-text: #1a1a2e;
+            --btn-hover: #3dbdb5;
+            --search-bg: rgba(255,255,255,0.08);
+            --search-border: #444;
+            --event-color: #FF6B6B;
+            --event-stroke: #DC143C;
+            --entity-color: #4ECDC4;
+            --entity-stroke: #2E8B57;
+            --context-color: #95E1D3;
+            --context-stroke: #228B22;
+            --card-bg: rgba(255,255,255,0.06);
+            --danger: #e05050;
+            --danger-hover: #c43030;
+            --success: #4ECDC4;
+            --involves-edge: #666;
+            --relation-edge: #FF9F1C;
+            --in-rel-edge: #4ECDC4;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+            transition: background 0.3s, color 0.3s;
+        }
+
+        /* ── Layout ── */
+        .app { display: flex; width: 100vw; height: 100vh; }
+
+        .sidebar {
+            width: var(--sidebar-w);
+            min-width: var(--sidebar-w);
+            background: var(--panel);
+            backdrop-filter: blur(8px);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            z-index: 10;
+        }
+        .sidebar-header {
+            padding: 20px 18px 14px;
+            border-bottom: 1px solid var(--border);
+        }
+        .sidebar-header h1 {
+            font-size: 18px;
+            color: var(--accent);
+            letter-spacing: 0.03em;
+        }
+        .sidebar-header .sub {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+        .sidebar-section {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .sidebar-section-title {
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+        }
+
+        /* Stats */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .stat-card {
+            padding: 10px;
+            border-radius: 12px;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+        }
+        .stat-card .label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .stat-card .value {
+            font-size: 22px;
+            font-weight: 800;
+            color: var(--accent);
+            margin-top: 2px;
+        }
+
+        /* Search */
+        .search-box {
+            width: 100%;
+            padding: 8px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--search-border);
+            background: var(--search-bg);
+            color: var(--text);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .search-box:focus { border-color: var(--accent); }
+        .search-box::placeholder { color: var(--text-muted); }
+
+        /* Filters */
+        .filter-group label {
+            display: flex;
+            align-items: center;
+            margin: 6px 0;
+            font-size: 12px;
+            cursor: pointer;
+            gap: 8px;
+        }
+        .filter-group input[type="checkbox"] {
+            accent-color: var(--accent);
+            width: 14px;
+            height: 14px;
+        }
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .badge {
+            margin-left: auto;
+            min-width: 20px;
+            height: 18px;
+            padding: 0 6px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 10px;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Legend lines */
+        .legend-item { display: flex; align-items: center; margin: 5px 0; font-size: 11px; color: var(--text-muted); }
+        .legend-line { width: 22px; height: 2px; margin-right: 8px; flex-shrink: 0; border-radius: 1px; }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border-radius: 10px;
+            border: none;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s, opacity 0.15s;
+        }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background: var(--btn-bg); color: var(--btn-text); }
+        .btn-primary:hover:not(:disabled) { background: var(--btn-hover); }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-danger:hover:not(:disabled) { background: var(--danger-hover); }
+        .btn-ghost {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-ghost:hover:not(:disabled) { background: var(--card-bg); border-color: var(--accent); }
+        .btn-sm { padding: 5px 10px; font-size: 11px; border-radius: 8px; }
+        .btn-block { width: 100%; }
+        .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
+
+        /* Polling controls */
+        .poll-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .poll-select {
+            padding: 5px 8px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--search-bg);
+            color: var(--text);
+            font-size: 11px;
+            outline: none;
+        }
+        .poll-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            animation: pulse 2s infinite;
+        }
+        .poll-indicator.paused { background: var(--text-muted); animation: none; }
+        @keyframes pulse {
+            0%,100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* ── Graph area ── */
+        .graph-area {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+        .graph-area svg { display: block; }
+
+        .node { cursor: pointer; }
+        .node circle {
+            stroke-width: 2px;
+            transition: opacity 0.3s, stroke-width 0.2s;
+        }
+        .node:hover circle { stroke-width: 4px; filter: brightness(1.2); }
+        .node text {
+            font-size: 9px;
+            fill: var(--node-label);
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+        [data-theme="dark"] .node text { text-shadow: 0 0 3px #000; }
+
+        .link { stroke-opacity: 0.4; transition: opacity 0.3s, stroke-width 0.2s; }
+        .link-in-rel { stroke-dasharray: 5,3; }
+
+        .node.dimmed circle { opacity: 0.12; }
+        .node.dimmed text { opacity: 0; }
+        .link.dimmed { opacity: 0.04; }
+        .node.highlighted circle { stroke-width: 4px; filter: brightness(1.3) drop-shadow(0 0 6px var(--accent)); }
+        .node.selected circle { stroke-width: 5px; filter: brightness(1.3) drop-shadow(0 0 8px var(--accent)); }
+        .node.neighbor circle { stroke-width: 3.5px; filter: brightness(1.15) drop-shadow(0 0 4px var(--accent)); }
+        .link.link-selected { stroke-opacity: 1; }
+        .link.link-neighbor { stroke-opacity: 0.85; }
+
+        /* Tooltip */
+        .tooltip {
+            position: fixed;
+            background: var(--tooltip-bg);
+            border: 1px solid var(--tooltip-border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 11px;
+            max-width: 260px;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            backdrop-filter: blur(4px);
+        }
+        .tooltip .tip-title { color: var(--accent); font-weight: bold; margin-bottom: 4px; font-size: 12px; }
+        .tooltip .tip-row { margin: 2px 0; color: var(--text-muted); }
+        .tooltip .tip-row span { color: var(--text); font-weight: 500; }
+
+        /* ── Detail panel ── */
+        .detail-panel {
+            width: var(--detail-w);
+            min-width: var(--detail-w);
+            background: var(--panel);
+            backdrop-filter: blur(8px);
+            border-left: 1px solid var(--border);
+            overflow-y: auto;
+            transform: translateX(var(--detail-w));
+            opacity: 0;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            z-index: 10;
+        }
+        .detail-panel.visible { transform: translateX(0); opacity: 1; }
+
+        .detail-header {
+            padding: 16px 18px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .detail-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .detail-badge.event { background: var(--event-color); }
+        .detail-badge.entity { background: var(--entity-color); }
+        .detail-badge.context { background: var(--context-color); }
+        .detail-close {
+            width: 28px; height: 28px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: var(--card-bg);
+            color: var(--text-muted);
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .detail-close:hover { background: var(--accent-soft); color: var(--accent); }
+
+        .detail-body { padding: 14px 18px 18px; }
+        .detail-summary { font-size: 15px; font-weight: 800; line-height: 1.5; margin-bottom: 10px; }
+        .detail-id {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 10px;
+            color: var(--text-muted);
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 4px 8px;
+            word-break: break-all;
+            margin-bottom: 12px;
+        }
+        .detail-section { margin-bottom: 14px; }
+        .detail-section-title {
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid var(--border);
+        }
+        .detail-kv {
+            display: grid;
+            grid-template-columns: 80px 1fr;
+            gap: 4px;
+            font-size: 12px;
+            line-height: 1.5;
+            padding: 5px 0;
+            border-bottom: 1px dashed var(--border);
+        }
+        .detail-kv:last-child { border-bottom: none; }
+        .detail-kv-key { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+        .detail-bar { height: 5px; border-radius: 3px; background: var(--card-bg); overflow: hidden; margin-top: 3px; }
+        .detail-bar-fill { height: 100%; border-radius: 3px; }
+        .detail-conn { display: grid; gap: 6px; }
+        .detail-conn-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 12px;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            cursor: pointer;
+            transition: background 0.15s;
+            font-size: 12px;
+        }
+        .detail-conn-item:hover { background: var(--accent-soft); border-color: var(--accent); }
+        .detail-conn-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+        .detail-conn-dot.event { background: var(--event-color); }
+        .detail-conn-dot.entity { background: var(--entity-color); }
+        .detail-conn-dot.context { background: var(--context-color); }
+        .detail-conn-label { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .detail-conn-meta { font-size: 10px; color: var(--text-muted); }
+
+        /* Actions bar in detail */
+        .detail-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        /* Edit form */
+        .edit-field { margin-bottom: 12px; }
+        .edit-field label {
+            display: block;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 4px;
+        }
+        .edit-field textarea, .edit-field input[type="text"] {
+            width: 100%;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--search-bg);
+            color: var(--text);
+            font-size: 13px;
+            font-family: inherit;
+            outline: none;
+            resize: vertical;
+            transition: border-color 0.2s;
+        }
+        .edit-field textarea:focus, .edit-field input[type="text"]:focus { border-color: var(--accent); }
+        .edit-field textarea { min-height: 60px; }
+
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: center;
+        }
+        .toast {
+            padding: 10px 20px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            animation: toastIn 0.3s ease, toastOut 0.3s ease 2.7s forwards;
+            pointer-events: none;
+        }
+        .toast.success { background: var(--success); color: #fff; }
+        .toast.error { background: var(--danger); color: #fff; }
+        .toast.info { background: var(--accent); color: var(--btn-text); }
+        @keyframes toastIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes toastOut { from { opacity: 1; } to { opacity: 0; } }
+
+        /* Loading overlay */
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.3);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9998;
+        }
+        .loading-overlay.active { display: flex; }
+        .loading-box {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 28px 36px;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+        }
+        .loading-box .spinner {
+            width: 36px; height: 36px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 12px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Confirm dialog */
+        .confirm-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.35);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9998;
+        }
+        .confirm-overlay.active { display: flex; }
+        .confirm-box {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 24px;
+            max-width: 380px;
+            width: 90%;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        }
+        .confirm-box h3 { font-size: 16px; margin-bottom: 10px; }
+        .confirm-box p { font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-bottom: 18px; }
+        .confirm-box .btn-group { justify-content: flex-end; }
+    </style>
+</head>
+<body>
+<div class="app">
+    <!-- Left sidebar -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>LiMem 记忆图谱</h1>
+            <div class="sub">实时交互式记忆网络可视化</div>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">统计</div>
+            <div class="stats-grid">
+                <div class="stat-card"><div class="label">事件</div><div class="value" id="stat-events">0</div></div>
+                <div class="stat-card"><div class="label">上下文</div><div class="value" id="stat-contexts">0</div></div>
+                <div class="stat-card"><div class="label">实体</div><div class="value" id="stat-entities">0</div></div>
+                <div class="stat-card"><div class="label">边</div><div class="value" id="stat-edges">0</div></div>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">搜索</div>
+            <input type="text" class="search-box" id="searchInput" placeholder="搜索节点..." oninput="onSearch(this.value)">
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">节点类型</div>
+            <div class="filter-group">
+                <label>
+                    <input type="checkbox" checked onchange="toggleFilter('event', this.checked)">
+                    <div class="legend-dot" style="background:var(--event-color)"></div>
+                    事件
+                    <span class="badge" id="badge-event">0</span>
+                </label>
+                <label>
+                    <input type="checkbox" checked onchange="toggleFilter('entity', this.checked)">
+                    <div class="legend-dot" style="background:var(--entity-color)"></div>
+                    实体
+                    <span class="badge" id="badge-entity">0</span>
+                </label>
+                <label>
+                    <input type="checkbox" checked onchange="toggleFilter('context', this.checked)">
+                    <div class="legend-dot" style="background:var(--context-color)"></div>
+                    上下文
+                    <span class="badge" id="badge-context">0</span>
+                </label>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">边类型</div>
+            <div class="legend-item">
+                <div class="legend-line" style="background:var(--involves-edge)"></div>
+                实体关联 (INVOLVES)
+            </div>
+            <div class="legend-item">
+                <div class="legend-line" style="background:var(--relation-edge)"></div>
+                事件关系 (EVENT_REL)
+            </div>
+            <div class="legend-item">
+                <div class="legend-line" style="background:var(--in-rel-edge);opacity:0.7;border-top:2px dashed var(--in-rel-edge);height:0;"></div>
+                上下文关联 (IN_REL)
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">实时轮询</div>
+            <div class="poll-row">
+                <div class="poll-indicator" id="pollIndicator"></div>
+                <span style="font-size:12px;" id="pollStatus">运行中</span>
+                <select class="poll-select" id="pollInterval" onchange="changePollInterval(this.value)">
+                    <option value="1000">1s</option>
+                    <option value="3000" selected>3s</option>
+                    <option value="5000">5s</option>
+                    <option value="10000">10s</option>
+                </select>
+                <button class="btn btn-ghost btn-sm" id="pollToggle" onclick="togglePolling()">暂停</button>
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:8px;cursor:pointer;">
+                <input type="checkbox" id="showInactive" onchange="onShowInactiveChange(this.checked)" style="accent-color:var(--accent);">
+                显示已归档节点
+            </label>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">操作</div>
+            <div class="btn-group" style="flex-direction:column;">
+                <button class="btn btn-primary btn-block" onclick="triggerEvolve()">触发进化</button>
+                <button class="btn btn-ghost btn-block" onclick="resetZoom()">重置视图</button>
+                <button class="btn btn-ghost btn-block" onclick="toggleTheme()">切换主题</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Center graph -->
+    <div class="graph-area" id="graphArea"></div>
+
+    <!-- Right detail panel -->
+    <div class="detail-panel" id="detailPanel">
+        <div class="detail-header">
+            <div id="detailBadge" class="detail-badge"></div>
+            <button class="detail-close" onclick="clearSelection()">&times;</button>
+        </div>
+        <div class="detail-body" id="detailBody"></div>
+    </div>
+</div>
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip"></div>
+
+<!-- Loading overlay -->
+<div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-box">
+        <div class="spinner"></div>
+        <div id="loadingText" style="font-size:14px;font-weight:600;">处理中...</div>
+    </div>
+</div>
+
+<!-- Confirm dialog -->
+<div class="confirm-overlay" id="confirmOverlay">
+    <div class="confirm-box">
+        <h3 id="confirmTitle">确认操作</h3>
+        <p id="confirmMessage"></p>
+        <div class="btn-group">
+            <button class="btn btn-ghost" onclick="closeConfirm()">取消</button>
+            <button class="btn btn-danger" id="confirmBtn" onclick="confirmAction()">确认</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ── State ──
+let graphData = { nodes: [], links: [] };
+let nodeMap = {};
+let adjacency = {};
+let selectedNodeId = null;
+let selectedNodeData = null; // full data from snapshot
+let editMode = false;
+let searchActive = false;
+let pollTimer = null;
+let pollIntervalMs = 3000;
+let isPaused = false;
+let showInactive = false;
+let snapshotLimit = 100;
+let confirmCallback = null;
+
+// Snapshot cache for node detail lookups
+let lastSnapshot = null;
+
+const filterState = { event: true, entity: true, context: true };
+
+const width = () => document.getElementById('graphArea').clientWidth;
+const height = () => document.getElementById('graphArea').clientHeight;
+
+// ── Helpers ──
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = String(s ?? '');
+    return d.innerHTML;
+}
+function truncate(s, n) { s = String(s||''); return s.length > n ? s.slice(0,n-1)+'\u2026' : s; }
+function fmtTs(ts) {
+    if (!ts) return '-';
+    try {
+        const d = new Date(typeof ts === 'number' ? ts * 1000 : ts);
+        if (isNaN(d.getTime())) return String(ts);
+        return d.toLocaleString('zh-CN');
+    } catch(e) { return String(ts); }
+}
+function nodeTypeLabel(type) { return {event:'事件',entity:'实体',context:'上下文'}[type]||type; }
+
+// ── Toast ──
+function showToast(msg, type='info') {
+    const c = document.getElementById('toastContainer');
+    const t = document.createElement('div');
+    t.className = 'toast ' + type;
+    t.textContent = msg;
+    c.appendChild(t);
+    setTimeout(() => t.remove(), 3000);
+}
+
+// ── Loading ──
+function showLoading(text) {
+    document.getElementById('loadingText').textContent = text || '处理中...';
+    document.getElementById('loadingOverlay').classList.add('active');
+}
+function hideLoading() { document.getElementById('loadingOverlay').classList.remove('active'); }
+
+// ── Confirm ──
+function showConfirm(title, message, callback) {
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMessage').textContent = message;
+    confirmCallback = callback;
+    document.getElementById('confirmOverlay').classList.add('active');
+}
+function closeConfirm() {
+    document.getElementById('confirmOverlay').classList.remove('active');
+    confirmCallback = null;
+}
+function confirmAction() {
+    const cb = confirmCallback;
+    closeConfirm();
+    if (cb) cb();
+}
+
+// ── API ──
+async function api(url, options = {}) {
+    const resp = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+    });
+    if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    return resp.json();
+}
+
+// ── Data transformation ──
+function snapshotToGraph(snapshot) {
+    const nodes = [];
+    const links = [];
+    const nids = new Set();
+    const entitySet = new Set();
+
+    // Events
+    (snapshot.events || []).forEach(ev => {
+        const nid = ev.id;
+        nids.add(nid);
+        nodes.push({
+            id: nid,
+            type: 'event',
+            label: truncate(ev.summary || ev.action || '事件', 30),
+            summary: ev.summary || '',
+            action: ev.action || '',
+            causality: ev.causality || '',
+            status: ev.status || 'active',
+            support: ev.support_count || 1,
+            timestamp: ev.timestamp,
+            last_active: ev.last_active,
+            participants: ev.participants,
+            payload: ev.payload,
+            entity_ids: ev.entity_ids || [],
+            context_ids: ev.context_ids || [],
+        });
+        // Collect entity IDs
+        (ev.entity_ids || []).forEach(eid => entitySet.add(eid));
+    });
+
+    // Contexts
+    (snapshot.contexts || []).forEach(ctx => {
+        const nid = ctx.id;
+        nids.add(nid);
+        nodes.push({
+            id: nid,
+            type: 'context',
+            label: truncate(ctx.summary || '上下文', 25),
+            summary: ctx.summary || '',
+            description: ctx.description || '',
+            subtype: ctx.subtype || '',
+            confidence: ctx.confidence,
+            support_count: ctx.support_count || 1,
+            status: ctx.status || 'active',
+            created_at: ctx.created_at,
+            last_seen_at: ctx.last_seen_at,
+        });
+    });
+
+    // Entities (from event entity_ids)
+    entitySet.forEach(eid => {
+        nids.add(eid);
+        nodes.push({
+            id: eid,
+            type: 'entity',
+            label: truncate(eid, 20),
+        });
+    });
+
+    // INVOLVES edges (event -> entity)
+    (snapshot.events || []).forEach(ev => {
+        (ev.entity_ids || []).forEach(eid => {
+            if (nids.has(ev.id) && nids.has(eid)) {
+                links.push({ source: ev.id, target: eid, type: 'involves' });
+            }
+        });
+    });
+
+    // Event-event edges
+    const edges = snapshot.edges || {};
+    (edges.event_event || []).forEach(e => {
+        const src = e.from_event_id;
+        const dst = e.to_event_id;
+        if (src && dst && nids.has(src) && nids.has(dst)) {
+            links.push({
+                source: src, target: dst, type: 'relation',
+                rel: e.relation_type || '',
+                description: e.description || '',
+                confidence: e.confidence,
+            });
+        }
+    });
+
+    // Event-context edges (IN_REL)
+    (edges.event_context || []).forEach(e => {
+        const src = e.event_id;
+        const dst = e.context_id;
+        if (src && dst && nids.has(src) && nids.has(dst)) {
+            links.push({
+                source: src, target: dst, type: 'in_rel',
+                confidence: e.confidence,
+                weight: e.weight,
+            });
+        }
+    });
+
+    return { nodes, links };
+}
+
+// ── D3 Graph ──
+let svg, g, simulation, linkG, nodeG, zoomBehavior;
+let linkSel, linkHitSel, nodeSel;
+
+function initGraph() {
+    const w = width(), h = height();
+    svg = d3.select('#graphArea').append('svg')
+        .attr('width', w).attr('height', h);
+    g = svg.append('g');
+
+    zoomBehavior = d3.zoom()
+        .scaleExtent([0.1, 4])
+        .on('zoom', (event) => g.attr('transform', event.transform));
+    svg.call(zoomBehavior);
+    svg.on('click', function(event) {
+        if (event.target.tagName === 'svg') clearSelection();
+    });
+
+    linkG = g.append('g').attr('class', 'links-layer');
+    nodeG = g.append('g').attr('class', 'nodes-layer');
+
+    simulation = d3.forceSimulation()
+        .force('link', d3.forceLink().id(d => d.id).distance(120))
+        .force('charge', d3.forceManyBody().strength(-300))
+        .force('center', d3.forceCenter(w / 2, h / 2))
+        .force('collision', d3.forceCollide().radius(35));
+
+    simulation.on('tick', () => {
+        if (linkSel) {
+            linkSel.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                   .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+        }
+        if (linkHitSel) {
+            linkHitSel.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+        }
+        if (nodeSel) {
+            nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+        }
+    });
+
+    window.addEventListener('resize', () => {
+        const w2 = width(), h2 = height();
+        svg.attr('width', w2).attr('height', h2);
+        simulation.force('center', d3.forceCenter(w2 / 2, h2 / 2));
+    });
+}
+
+function getThemeColors() {
+    const cs = getComputedStyle(document.documentElement);
+    return {
+        event: cs.getPropertyValue('--event-color').trim(),
+        entity: cs.getPropertyValue('--entity-color').trim(),
+        context: cs.getPropertyValue('--context-color').trim(),
+        eventStroke: cs.getPropertyValue('--event-stroke').trim(),
+        entityStroke: cs.getPropertyValue('--entity-stroke').trim(),
+        contextStroke: cs.getPropertyValue('--context-stroke').trim(),
+        nodeLabel: cs.getPropertyValue('--node-label').trim(),
+        involves: cs.getPropertyValue('--involves-edge').trim(),
+        relation: cs.getPropertyValue('--relation-edge').trim(),
+        inRel: cs.getPropertyValue('--in-rel-edge').trim(),
+    };
+}
+
+function nodeRadius(d) {
+    if (d.type === 'event') return 8 + (d.support || 1) * 2;
+    if (d.type === 'entity') return 10;
+    return 8;
+}
+
+function updateGraph(newData) {
+    const oldMap = {};
+    graphData.nodes.forEach(n => { oldMap[n.id] = n; });
+
+    // Preserve positions for existing nodes
+    newData.nodes.forEach(n => {
+        if (oldMap[n.id]) {
+            n.x = oldMap[n.id].x;
+            n.y = oldMap[n.id].y;
+            n.vx = oldMap[n.id].vx;
+            n.vy = oldMap[n.id].vy;
+            if (oldMap[n.id].fx != null) n.fx = oldMap[n.id].fx;
+            if (oldMap[n.id].fy != null) n.fy = oldMap[n.id].fy;
+        }
+    });
+
+    const hadChanges = graphData.nodes.length !== newData.nodes.length ||
+        newData.nodes.some(n => !oldMap[n.id]);
+
+    graphData = newData;
+    nodeMap = {};
+    adjacency = {};
+    graphData.nodes.forEach(n => { nodeMap[n.id] = n; });
+    graphData.links.forEach((l, idx) => {
+        const s = typeof l.source === 'object' ? l.source.id : l.source;
+        const t = typeof l.target === 'object' ? l.target.id : l.target;
+        if (!adjacency[s]) adjacency[s] = [];
+        if (!adjacency[t]) adjacency[t] = [];
+        adjacency[s].push({ neighbor: t, linkIdx: idx, link: l });
+        adjacency[t].push({ neighbor: s, linkIdx: idx, link: l });
+    });
+
+    // Update simulation
+    simulation.nodes(graphData.nodes);
+    simulation.force('link').links(graphData.links);
+
+    // Rebind links
+    const tc = getThemeColors();
+
+    linkHitSel = linkG.selectAll('line.link-hit')
+        .data(graphData.links, (d,i) => {
+            const s = typeof d.source === 'object' ? d.source.id : d.source;
+            const t = typeof d.target === 'object' ? d.target.id : d.target;
+            return s+'->'+t+'_'+d.type;
+        });
+    linkHitSel.exit().remove();
+    linkHitSel = linkHitSel.enter().append('line')
+        .attr('class', 'link-hit')
+        .attr('stroke', 'transparent')
+        .attr('stroke-width', 12)
+        .style('cursor', 'pointer')
+        .merge(linkHitSel);
+
+    linkSel = linkG.selectAll('line.link')
+        .data(graphData.links, (d,i) => {
+            const s = typeof d.source === 'object' ? d.source.id : d.source;
+            const t = typeof d.target === 'object' ? d.target.id : d.target;
+            return s+'->'+t+'_'+d.type;
+        });
+    linkSel.exit().remove();
+    linkSel = linkSel.enter().append('line')
+        .attr('class', d => 'link' + (d.type === 'in_rel' ? ' link-in-rel' : ''))
+        .merge(linkSel)
+        .attr('stroke', d => {
+            if (d.type === 'relation') return tc.relation;
+            if (d.type === 'in_rel') return tc.inRel;
+            return tc.involves;
+        })
+        .attr('stroke-width', d => d.type === 'relation' ? 2 : 1.5);
+
+    // Rebind nodes
+    nodeSel = nodeG.selectAll('g.node')
+        .data(graphData.nodes, d => d.id);
+    nodeSel.exit().remove();
+
+    const enter = nodeSel.enter().append('g')
+        .attr('class', 'node')
+        .call(d3.drag()
+            .on('start', dragstarted)
+            .on('drag', dragged)
+            .on('end', dragended));
+
+    enter.append('circle');
+    enter.append('text')
+        .attr('dy', -12)
+        .attr('text-anchor', 'middle');
+
+    nodeSel = enter.merge(nodeSel);
+
+    // Update all node visuals
+    const colorMap = { event: tc.event, entity: tc.entity, context: tc.context };
+    const strokeMap = { event: tc.eventStroke, entity: tc.entityStroke, context: tc.contextStroke };
+
+    nodeSel.select('circle')
+        .attr('r', d => nodeRadius(d))
+        .attr('fill', d => colorMap[d.type] || '#999')
+        .attr('stroke', d => strokeMap[d.type] || '#666')
+        .attr('opacity', d => (d.status === 'archived' || d.status === 'merged') ? 0.4 : 1);
+
+    nodeSel.select('text')
+        .text(d => d.label || d.id)
+        .attr('fill', tc.nodeLabel)
+        .style('display', d => {
+            if (d.type === 'event' && (d.support || 1) >= 2) return 'block';
+            if (d.type === 'entity') return 'block';
+            return 'none';
+        });
+
+    // Re-attach event handlers
+    nodeSel.on('click', function(event, d) {
+        event.stopPropagation();
+        selectNode(d.id);
+    });
+
+    nodeSel.on('mouseover', function(event, d) {
+        d3.select(this).select('text').style('display', 'block');
+        if (selectedNodeId) return;
+        const tip = document.getElementById('tooltip');
+        let rows = '<div class="tip-title">' + esc(d.label || d.id) + '</div>';
+        rows += '<div class="tip-row">类型: <span>' + nodeTypeLabel(d.type) + '</span></div>';
+        if (d.support) rows += '<div class="tip-row">支撑: <span>' + d.support + '</span></div>';
+        if (d.action) rows += '<div class="tip-row">动作: <span>' + truncate(d.action, 40) + '</span></div>';
+        tip.innerHTML = rows;
+        tip.style.display = 'block';
+        tip.style.left = (event.pageX + 15) + 'px';
+        tip.style.top = (event.pageY - 10) + 'px';
+    }).on('mousemove', function(event) {
+        if (selectedNodeId) return;
+        const tip = document.getElementById('tooltip');
+        tip.style.left = (event.pageX + 15) + 'px';
+        tip.style.top = (event.pageY - 10) + 'px';
+    }).on('mouseout', function(event, d) {
+        const show = (d.type === 'event' && (d.support || 1) >= 2) || d.type === 'entity';
+        if (!searchActive && !selectedNodeId) d3.select(this).select('text').style('display', show ? 'block' : 'none');
+        document.getElementById('tooltip').style.display = 'none';
+    });
+
+    // Apply current filters
+    applyFilters();
+    if (selectedNodeId) applySelectionHighlight();
+
+    if (hadChanges) {
+        simulation.alpha(0.3).restart();
+    }
+}
+
+function dragstarted(event) {
+    if (!event.active) simulation.alphaTarget(0.3).restart();
+    event.subject.fx = event.subject.x;
+    event.subject.fy = event.subject.y;
+}
+function dragged(event) {
+    event.subject.fx = event.x;
+    event.subject.fy = event.y;
+}
+function dragended(event) {
+    if (!event.active) simulation.alphaTarget(0);
+    event.subject.fx = null;
+    event.subject.fy = null;
+}
+
+function resetZoom() {
+    svg.transition().duration(500).call(zoomBehavior.transform, d3.zoomIdentity);
+}
+
+// ── Theme ──
+function toggleTheme() {
+    const html = document.documentElement;
+    const cur = html.getAttribute('data-theme');
+    html.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+    // Re-apply colors
+    if (graphData.nodes.length) updateGraph(graphData);
+}
+
+// ── Filters ──
+function toggleFilter(type, checked) {
+    filterState[type] = checked;
+    applyFilters();
+}
+function applyFilters() {
+    if (!nodeSel) return;
+    nodeSel.style('display', d => filterState[d.type] ? null : 'none');
+    if (!linkSel) return;
+    linkSel.style('display', d => {
+        const src = typeof d.source === 'object' ? d.source : nodeMap[d.source];
+        const tgt = typeof d.target === 'object' ? d.target : nodeMap[d.target];
+        if (!src || !tgt) return 'none';
+        const st = src.type || (nodeMap[src.id]||{}).type;
+        const tt = tgt.type || (nodeMap[tgt.id]||{}).type;
+        return (filterState[st] && filterState[tt]) ? null : 'none';
+    });
+    if (linkHitSel) {
+        linkHitSel.style('display', (d, i) => {
+            const vis = linkSel.filter((dd, ii) => ii === i);
+            return vis.empty() ? 'none' : vis.style('display');
+        });
+    }
+}
+
+// ── Search ──
+function onSearch(query) {
+    query = query.trim().toLowerCase();
+    if (!query) {
+        searchActive = false;
+        nodeSel.classed('dimmed', false).classed('highlighted', false);
+        linkSel.classed('dimmed', false);
+        nodeSel.select('text').style('display', d => {
+            if (d.type === 'event' && (d.support || 1) >= 2) return 'block';
+            if (d.type === 'entity') return 'block';
+            return 'none';
+        });
+        return;
+    }
+    searchActive = true;
+    const matchIds = new Set();
+    graphData.nodes.forEach(n => {
+        const text = [n.label, n.id, n.action, n.summary, n.description || ''].join(' ').toLowerCase();
+        if (text.includes(query)) matchIds.add(n.id);
+    });
+    nodeSel.classed('highlighted', d => matchIds.has(d.id));
+    nodeSel.classed('dimmed', d => !matchIds.has(d.id));
+    nodeSel.select('text').style('display', d => matchIds.has(d.id) ? 'block' : 'none');
+    linkSel.classed('dimmed', d => {
+        const sId = typeof d.source === 'object' ? d.source.id : d.source;
+        const tId = typeof d.target === 'object' ? d.target.id : d.target;
+        return !matchIds.has(sId) && !matchIds.has(tId);
+    });
+}
+
+// ── Selection & Detail ──
+function selectNode(nodeId) {
+    selectedNodeId = nodeId;
+    editMode = false;
+    document.getElementById('tooltip').style.display = 'none';
+    applySelectionHighlight();
+    renderNodeDetail(nodeId);
+}
+
+function clearSelection() {
+    selectedNodeId = null;
+    selectedNodeData = null;
+    editMode = false;
+    applySelectionHighlight();
+    hideDetailPanel();
+}
+
+function applySelectionHighlight() {
+    if (!nodeSel || !linkSel) return;
+    if (!selectedNodeId) {
+        nodeSel.classed('selected', false).classed('neighbor', false).classed('dimmed', false);
+        linkSel.classed('link-selected', false).classed('link-neighbor', false).classed('dimmed', false);
+        linkSel.attr('stroke-width', d => d.type === 'relation' ? 2 : 1.5);
+        return;
+    }
+    const neighborIds = new Set();
+    const neighborLinkIdxs = new Set();
+    (adjacency[selectedNodeId] || []).forEach(a => {
+        neighborIds.add(a.neighbor);
+        neighborLinkIdxs.add(a.linkIdx);
+    });
+    nodeSel.classed('selected', d => d.id === selectedNodeId);
+    nodeSel.classed('neighbor', d => d.id !== selectedNodeId && neighborIds.has(d.id));
+    nodeSel.classed('dimmed', d => d.id !== selectedNodeId && !neighborIds.has(d.id));
+    nodeSel.select('text').style('display', d =>
+        d.id === selectedNodeId || neighborIds.has(d.id) ? 'block' : 'none');
+    linkSel.classed('link-neighbor', (d, i) => neighborLinkIdxs.has(i));
+    linkSel.classed('dimmed', (d, i) => !neighborLinkIdxs.has(i));
+    linkSel.attr('stroke-width', (d, i) => neighborLinkIdxs.has(i) ? 3 : (d.type === 'relation' ? 2 : 1.5));
+}
+
+function showDetailPanel() { document.getElementById('detailPanel').classList.add('visible'); }
+function hideDetailPanel() { document.getElementById('detailPanel').classList.remove('visible'); }
+
+function kvHtml(key, value) {
+    return '<div class="detail-kv"><div class="detail-kv-key">' + esc(key) + '</div><div>' + esc(String(value)) + '</div></div>';
+}
+
+function renderBarHtml(value, color) {
+    if (value == null || isNaN(value)) return '';
+    const pct = Math.min(100, Math.max(0, Number(value) * 100));
+    return '<div class="detail-bar"><div class="detail-bar-fill" style="width:'+pct+'%;background:'+color+'"></div></div>';
+}
+
+function renderNodeDetail(nodeId) {
+    const n = nodeMap[nodeId];
+    if (!n) return;
+
+    const badge = document.getElementById('detailBadge');
+    badge.className = 'detail-badge ' + n.type;
+    badge.textContent = nodeTypeLabel(n.type);
+
+    const body = document.getElementById('detailBody');
+    let h = '';
+    h += '<div class="detail-summary">' + esc(n.summary || n.label || n.id) + '</div>';
+    h += '<div class="detail-id">' + esc(n.id) + '</div>';
+
+    // Properties
+    h += '<div class="detail-section"><div class="detail-section-title">属性</div>';
+    if (n.type === 'event') {
+        if (n.action) h += kvHtml('动作', n.action);
+        if (n.causality) h += kvHtml('因果', n.causality);
+        h += kvHtml('支撑', n.support || 1);
+        h += kvHtml('状态', n.status || 'active');
+        if (n.participants) {
+            const parts = Array.isArray(n.participants) ? n.participants : [];
+            if (parts.length) {
+                const pText = parts.map(p => p.name || p.role || JSON.stringify(p)).join(', ');
+                h += kvHtml('参与者', pText);
+            }
+        }
+    } else if (n.type === 'entity') {
+        h += kvHtml('类型', 'entity');
+    } else if (n.type === 'context') {
+        if (n.subtype) h += kvHtml('子类型', n.subtype);
+        h += kvHtml('状态', n.status || 'active');
+        if (n.confidence != null) {
+            h += '<div class="detail-kv"><div class="detail-kv-key">置信度</div><div>' +
+                Number(n.confidence).toFixed(3) + renderBarHtml(n.confidence, 'var(--context-color)') + '</div></div>';
+        }
+        h += kvHtml('支撑', n.support_count || 1);
+        if (n.description) h += kvHtml('描述', truncate(n.description, 100));
+    }
+    h += '</div>';
+
+    // Timestamps
+    const timeFields = [];
+    if (n.type === 'event') {
+        if (n.timestamp) timeFields.push(['创建', fmtTs(n.timestamp)]);
+        if (n.last_active) timeFields.push(['活跃', fmtTs(n.last_active)]);
+    } else if (n.type === 'context') {
+        if (n.created_at) timeFields.push(['创建', fmtTs(n.created_at)]);
+        if (n.last_seen_at) timeFields.push(['出现', fmtTs(n.last_seen_at)]);
+    }
+    if (timeFields.length) {
+        h += '<div class="detail-section"><div class="detail-section-title">时间</div>';
+        timeFields.forEach(([k, v]) => { h += kvHtml(k, v); });
+        h += '</div>';
+    }
+
+    // Connections
+    const adj = adjacency[nodeId] || [];
+    if (adj.length) {
+        h += '<div class="detail-section"><div class="detail-section-title">关联 (' + adj.length + ')</div><div class="detail-conn">';
+        adj.slice(0, 20).forEach(a => {
+            const nb = nodeMap[a.neighbor];
+            if (!nb) return;
+            const meta = [];
+            const edgeLabels = { involves: 'INVOLVES', relation: 'EVENT_REL', in_rel: 'IN_REL' };
+            meta.push(edgeLabels[a.link.type] || a.link.type);
+            if (a.link.rel) meta.push(a.link.rel);
+            h += '<div class="detail-conn-item" onclick="selectNode(\'' + esc(a.neighbor) + '\')">' +
+                '<div class="detail-conn-dot ' + nb.type + '"></div>' +
+                '<div><div class="detail-conn-label">' + esc(truncate(nb.summary || nb.label || nb.id, 28)) + '</div>' +
+                '<div class="detail-conn-meta">' + esc(meta.join(' · ')) + '</div></div></div>';
+        });
+        if (adj.length > 20) {
+            h += '<div style="font-size:11px;color:var(--text-muted);text-align:center;padding:6px;">... 还有 ' + (adj.length - 20) + ' 个</div>';
+        }
+        h += '</div></div>';
+    }
+
+    // Action buttons (only for event and context)
+    if (n.type === 'event' || n.type === 'context') {
+        h += '<div class="detail-actions">';
+        h += '<button class="btn btn-primary btn-sm" onclick="enterEditMode(\'' + esc(n.id) + '\',\'' + n.type + '\')">编辑</button>';
+        h += '<button class="btn btn-ghost btn-sm" onclick="archiveNode(\'' + esc(n.id) + '\',\'' + n.type + '\')">归档</button>';
+        h += '<button class="btn btn-danger btn-sm" onclick="deleteNode(\'' + esc(n.id) + '\',\'' + n.type + '\')">删除</button>';
+        h += '</div>';
+    }
+
+    body.innerHTML = h;
+    showDetailPanel();
+}
+
+// ── Edit Mode ──
+function enterEditMode(nodeId, kind) {
+    editMode = true;
+    const n = nodeMap[nodeId];
+    if (!n) return;
+
+    const badge = document.getElementById('detailBadge');
+    badge.className = 'detail-badge ' + n.type;
+    badge.textContent = '编辑' + nodeTypeLabel(n.type);
+
+    const body = document.getElementById('detailBody');
+    let h = '<div class="detail-id">' + esc(n.id) + '</div>';
+
+    if (kind === 'event') {
+        h += '<div class="edit-field"><label>摘要 (Summary)</label><textarea id="edit-summary">' + esc(n.summary || '') + '</textarea></div>';
+        h += '<div class="edit-field"><label>动作 (Action)</label><textarea id="edit-action">' + esc(n.action || '') + '</textarea></div>';
+        h += '<div class="edit-field"><label>因果 (Causality)</label><textarea id="edit-causality">' + esc(n.causality || '') + '</textarea></div>';
+    } else if (kind === 'context') {
+        h += '<div class="edit-field"><label>摘要 (Summary)</label><textarea id="edit-summary">' + esc(n.summary || '') + '</textarea></div>';
+        h += '<div class="edit-field"><label>描述 (Description)</label><textarea id="edit-description" style="min-height:100px;">' + esc(n.description || '') + '</textarea></div>';
+    }
+
+    h += '<div class="detail-actions">';
+    h += '<button class="btn btn-primary btn-sm" onclick="saveEdit(\'' + esc(nodeId) + '\',\'' + kind + '\')">保存</button>';
+    h += '<button class="btn btn-ghost btn-sm" onclick="cancelEdit()">取消</button>';
+    h += '</div>';
+
+    body.innerHTML = h;
+}
+
+async function saveEdit(nodeId, kind) {
+    const fields = {};
+    if (kind === 'event') {
+        const s = document.getElementById('edit-summary');
+        const a = document.getElementById('edit-action');
+        const c = document.getElementById('edit-causality');
+        if (s) fields.summary = s.value;
+        if (a) fields.action = a.value;
+        if (c) fields.causality = c.value;
+    } else if (kind === 'context') {
+        const s = document.getElementById('edit-summary');
+        const d = document.getElementById('edit-description');
+        if (s) fields.summary = s.value;
+        if (d) fields.description = d.value;
+    }
+
+    try {
+        showLoading('保存中...');
+        await api('/api/graph/update', {
+            method: 'POST',
+            body: JSON.stringify({ memory_id: nodeId, kind, fields, evolve: false }),
+        });
+        hideLoading();
+        showToast('保存成功', 'success');
+        editMode = false;
+        await pollSnapshot();
+        if (selectedNodeId === nodeId) renderNodeDetail(nodeId);
+    } catch (e) {
+        hideLoading();
+        showToast('保存失败: ' + e.message, 'error');
+    }
+}
+
+function cancelEdit() {
+    editMode = false;
+    if (selectedNodeId) renderNodeDetail(selectedNodeId);
+}
+
+// ── Delete / Archive ──
+function deleteNode(nodeId, kind) {
+    const label = kind === 'event' ? '事件' : '上下文';
+    showConfirm(
+        '永久删除' + label,
+        '确认永久删除此' + label + '？此操作不可撤销。节点 ID: ' + nodeId,
+        async () => {
+            try {
+                showLoading('删除中...');
+                await api('/api/graph/delete', {
+                    method: 'POST',
+                    body: JSON.stringify({ memory_id: nodeId, kind, hard_delete: true }),
+                });
+                hideLoading();
+                showToast('已删除', 'success');
+                clearSelection();
+                await pollSnapshot();
+            } catch (e) {
+                hideLoading();
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+    );
+}
+
+function archiveNode(nodeId, kind) {
+    const label = kind === 'event' ? '事件' : '上下文';
+    showConfirm(
+        '归档' + label,
+        '确认归档此' + label + '？归档后节点将标记为非活跃状态。',
+        async () => {
+            try {
+                showLoading('归档中...');
+                await api('/api/graph/delete', {
+                    method: 'POST',
+                    body: JSON.stringify({ memory_id: nodeId, kind, hard_delete: false }),
+                });
+                hideLoading();
+                showToast('已归档', 'success');
+                clearSelection();
+                await pollSnapshot();
+            } catch (e) {
+                hideLoading();
+                showToast('归档失败: ' + e.message, 'error');
+            }
+        }
+    );
+}
+
+// ── Evolve ──
+async function triggerEvolve() {
+    try {
+        showLoading('正在执行记忆进化...');
+        const result = await api('/evolve', { method: 'POST' });
+        hideLoading();
+        const details = result.details || {};
+        const summary = Object.entries(details).map(([k, v]) => k + ': ' + v).join(', ') || '完成';
+        showToast('进化完成 - ' + summary, 'success');
+        await pollSnapshot();
+    } catch (e) {
+        hideLoading();
+        showToast('进化失败: ' + e.message, 'error');
+    }
+}
+
+// ── Polling ──
+async function pollSnapshot() {
+    try {
+        const params = new URLSearchParams({
+            limit: snapshotLimit,
+            include_inactive: showInactive,
+        });
+        const snapshot = await api('/api/graph/snapshot?' + params.toString());
+        lastSnapshot = snapshot;
+
+        // Update stats
+        const stats = snapshot.stats || {};
+        document.getElementById('stat-events').textContent = stats.event_count || 0;
+        document.getElementById('stat-contexts').textContent = stats.context_count || 0;
+        document.getElementById('stat-entities').textContent = stats.entity_count || 0;
+
+        // Transform and update graph
+        const data = snapshotToGraph(snapshot);
+
+        document.getElementById('stat-edges').textContent = data.links.length;
+        document.getElementById('badge-event').textContent = data.nodes.filter(n => n.type === 'event').length;
+        document.getElementById('badge-entity').textContent = data.nodes.filter(n => n.type === 'entity').length;
+        document.getElementById('badge-context').textContent = data.nodes.filter(n => n.type === 'context').length;
+
+        updateGraph(data);
+    } catch (e) {
+        console.error('Poll failed:', e);
+    }
+}
+
+function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+        if (!isPaused) pollSnapshot();
+    }, pollIntervalMs);
+}
+
+function togglePolling() {
+    isPaused = !isPaused;
+    document.getElementById('pollToggle').textContent = isPaused ? '继续' : '暂停';
+    document.getElementById('pollStatus').textContent = isPaused ? '已暂停' : '运行中';
+    document.getElementById('pollIndicator').classList.toggle('paused', isPaused);
+}
+
+function changePollInterval(val) {
+    pollIntervalMs = parseInt(val, 10);
+    startPolling();
+}
+
+function onShowInactiveChange(checked) {
+    showInactive = checked;
+    pollSnapshot();
+}
+
+// ── Init ──
+document.addEventListener('DOMContentLoaded', async () => {
+    initGraph();
+    await pollSnapshot();
+    startPolling();
+});
+</script>
+</body>
+</html>

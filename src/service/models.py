@@ -42,3 +42,16 @@ class QueryResponse(BaseModel):
 class EvolveResponse(BaseModel):
     message: str
     details: dict[str, int] = Field(default_factory=dict)
+
+
+class DeleteNodeRequest(BaseModel):
+    memory_id: str
+    kind: str = "event"
+    hard_delete: bool = False
+
+
+class UpdateNodeRequest(BaseModel):
+    memory_id: str
+    kind: str = "event"
+    fields: dict[str, Any]
+    evolve: bool = False
