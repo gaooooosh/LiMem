@@ -39,12 +39,6 @@ class TestUnifiedExtractor(unittest.TestCase):
                                 "evidence_span": "导航去公司",
                                 "confidence": 0.88,
                             },
-                            {
-                                "subtype": "goal",
-                                "summary": "前往公司",
-                                "evidence_span": "去公司",
-                                "confidence": 0.83,
-                            },
                         ],
                     }
                 ]
@@ -57,7 +51,7 @@ class TestUnifiedExtractor(unittest.TestCase):
         self.assertEqual(len(result.events_data), 1)
         self.assertEqual(result.events_data[0]["summary"], "用户请求导航去公司，系统开始导航")
         self.assertEqual(result.events_data[0]["participants"], [{"role": "用户", "seat": ""}])
-        self.assertEqual(len(result.events_data[0]["contexts"]), 2)
+        self.assertEqual(len(result.events_data[0]["contexts"]), 1)
         self.assertEqual(result.events_data[0]["contexts"][0]["summary"], "通勤出行场景")
 
     def test_same_intent_multi_actions_are_merged_into_one_event(self):
@@ -155,7 +149,7 @@ class TestUnifiedExtractor(unittest.TestCase):
                     "confidence": 0.82,
                 },
                 {
-                    "subtype": "state",
+                    "subtype": "situation",
                     "summary": "",
                     "evidence_span": "噪音34dB",
                     "confidence": 0.6,
@@ -195,19 +189,19 @@ class TestUnifiedExtractor(unittest.TestCase):
             ],
             "orphan_contexts": [
                 {
-                    "subtype": "situation",
-                    "summary": "出行规划场景",
-                    "evidence_span": "帮我查一下明天的天气",
+                    "subtype": "environment",
+                    "summary": "用户户外出行环境",
+                    "evidence_span": "明天要去户外徒步",
                     "confidence": 0.9,
                 }
             ],
         }
 
-        result = extractor.extract("用户说：帮我查一下明天的天气。")
+        result = extractor.extract("用户说：明天要去户外徒步，帮我查一下明天的天气。")
 
         self.assertEqual(len(result.events_data), 1)
         self.assertEqual(result.events_data[0]["action"], "查询天气")
-        self.assertEqual(result.orphan_contexts[0]["summary"], "出行规划场景")
+        self.assertEqual(result.orphan_contexts[0]["summary"], "用户户外出行环境")
 
     def test_llm_failure_returns_empty_result(self):
         extractor = _make_extractor()

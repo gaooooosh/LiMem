@@ -22,8 +22,8 @@ class _FakeExtractor:
                 "participants": [{"role": "用户", "seat": ""}],
                 "time_range": {"start": 100, "end": 100, "display_time_bucket": ""},
                 "contexts": [
-                    {"subtype": "goal", "summary": "前往目的地"},
-                    {"subtype": "state", "summary": "正在出行"},
+                    {"subtype": "situation", "summary": "前往目的地"},
+                    {"subtype": "situation", "summary": "正在出行"},
                 ],
             },
             {
@@ -44,7 +44,7 @@ class _FakeExtractor:
             confidence=1.0,
             orphan_contexts=[
                 {
-                    "subtype": "state",
+                    "subtype": "situation",
                     "summary": "路况未知",
                     "evidence_span": "detail",
                     "confidence": 0.9,
@@ -203,7 +203,7 @@ class TestMemoryBuilderPerformance(unittest.TestCase):
                     events_data=[],
                     entities=[],
                     orphan_contexts=[
-                        {"subtype": "state", "summary": "低电量", "evidence_span": "电量12%"},
+                        {"subtype": "situation", "summary": "低电量", "evidence_span": "电量12%"},
                         {"subtype": "environment", "summary": "车内安静", "evidence_span": "噪音34dB"},
                     ],
                 )

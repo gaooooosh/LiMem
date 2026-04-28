@@ -46,7 +46,7 @@ class TestContextExtractorBatch(unittest.TestCase):
                         "item_index": 0,
                         "contexts": [
                             {
-                                "subtype": "state",
+                                "subtype": "constraint",
                                 "summary": "电量低",
                                 "description": "设备当前电量仅剩12%，用户正在寻找附近充电桩",
                                 "confidence": 0.91,
@@ -139,7 +139,7 @@ class TestContextExtractorBatch(unittest.TestCase):
             payload = {"items": []} if call_count == 1 else {
                 "contexts": [
                     {
-                        "subtype": "goal",
+                        "subtype": "situation",
                         "summary": "单条补救",
                         "description": "单条回退路径返回的测试描述",
                         "confidence": 0.9,
@@ -188,7 +188,7 @@ class TestContextExtractorBatch(unittest.TestCase):
             payload={"episode_text": "快迟到了，系统建议立即出发"},
         )
         draft = ContextDraft(
-            subtype="state",
+            subtype="situation",
             summary="当前状态",
             description="事件当前所处的状态描述",
             evidence_span="当前状态",

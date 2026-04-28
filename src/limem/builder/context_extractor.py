@@ -372,6 +372,8 @@ class ContextExtractionPipeline:
                 continue
             if not self.is_valid_context_draft(draft):
                 continue
+            if self._looks_like_current_intent(draft):
+                continue
 
             # Use full evidence text for matching — don't truncate before validation.
             raw_evidence = self._normalize_whitespace(draft.evidence_span or draft.summary)
@@ -413,6 +415,26 @@ class ContextExtractionPipeline:
         if len(str(draft.description or "").strip()) > 512:
             return False
         return True
+
+    def _looks_like_current_intent(self, draft: ContextDraft) -> bool:
+        text = " ".join(
+            str(part or "")
+            for part in (draft.summary, draft.evidence_span)
+        ).lower()
+        intent_markers = (
+            "想", "希望", "打算", "计划", "准备", "请求", "要求", "需要",
+            "我要", "我想", "帮我", "请", "为了", "目标", "意图",
+            "want", "wants", "hope", "hopes", "plan", "plans", "intend",
+            "intends", "request", "requests", "need", "needs", "goal",
+        )
+        stable_markers = (
+            "长期", "稳定", "习惯", "偏好", "经常", "通常", "常常", "画像",
+            "身份", "角色", "能力", "关系", "long-term", "stable", "habit",
+            "usually",
+        )
+        return any(marker in text for marker in intent_markers) and not any(
+            marker in text for marker in stable_markers
+        )
 
     def canonicalize_context(self, context_draft: ContextDraft) -> ContextDraft:
         subtype = normalize_context_subtype(context_draft.subtype)

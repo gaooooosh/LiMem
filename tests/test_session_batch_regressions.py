@@ -273,7 +273,7 @@ class TestSessionBatchRegressions(unittest.TestCase):
                             "episodes_with_orphan_contexts": 1,
                             "eventless_orphan_episode_count": 0,
                             "orphan_contexts": [
-                                {"subtype": "state", "summary": "时间紧张", "evidence_span": "马上开会"}
+                                {"subtype": "situation", "summary": "时间紧张", "evidence_span": "马上开会"}
                             ],
                         },
                     )
@@ -305,7 +305,7 @@ class TestSessionBatchRegressions(unittest.TestCase):
                         "episodes_with_orphan_contexts": 1,
                         "eventless_orphan_episode_count": 1,
                         "orphan_contexts": [
-                            {"subtype": "state", "summary": "低电量", "evidence_span": "电量12%"},
+                            {"subtype": "situation", "summary": "低电量", "evidence_span": "电量12%"},
                             {"subtype": "environment", "summary": "车内安静", "evidence_span": "噪音34dB"},
                         ],
                     },

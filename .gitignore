@@ -34,3 +34,4 @@ docker-compose.yml
 Dockerfile
 .dockerignore
 .learnings/ERRORS.md
+tests/fixtures/context_reuse_benchmark.jsonl
