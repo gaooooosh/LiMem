@@ -31,20 +31,13 @@ from .models import (
 
 
 DEFAULT_DB_PATH = "./DB/service.kz"
-DEFAULT_EVOLVE_INTERVAL_SECONDS = 3600
-
-
 class ServiceState:
     def __init__(self) -> None:
         self.db_path = os.getenv("SERVICE_DB_PATH", DEFAULT_DB_PATH)
-        self.evolve_interval_seconds = int(
-            os.getenv("EVOLVE_INTERVAL_SECONDS", str(DEFAULT_EVOLVE_INTERVAL_SECONDS))
-        )
         self.write_lock = threading.Lock()
         self.ltm: Any | None = None
         self.bm25_index = BM25Index()
         self.audit = ServiceAuditLogger()
-        self.evolve_timer: threading.Timer | None = None
         self.shutting_down = False
 
     def startup(self) -> None:
@@ -61,28 +54,12 @@ class ServiceState:
                 "db_path": self.db_path,
                 "audit_log_path": self.audit.path,
                 "index_size": self.bm25_index.size,
+                "scheduled_evolution_enabled": False,
             },
         )
-        self.schedule_evolution()
 
     def shutdown(self) -> None:
         self.shutting_down = True
-        if self.evolve_timer is not None:
-            self.evolve_timer.cancel()
-            self.evolve_timer = None
-
-    def schedule_evolution(self) -> None:
-        if self.shutting_down or self.evolve_interval_seconds <= 0:
-            return
-        self.evolve_timer = threading.Timer(self.evolve_interval_seconds, self.run_scheduled_evolution)
-        self.evolve_timer.daemon = True
-        self.evolve_timer.start()
-
-    def run_scheduled_evolution(self) -> None:
-        try:
-            self.evolve_and_rebuild(trigger="scheduled")
-        finally:
-            self.schedule_evolution()
 
     def active_events(self):
         return self.ltm.store.list_events(limit=100000, statuses=["active"])

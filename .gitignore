@@ -33,3 +33,4 @@ API_DOC.md
 docker-compose.yml
 Dockerfile
 .dockerignore
+.learnings/ERRORS.md

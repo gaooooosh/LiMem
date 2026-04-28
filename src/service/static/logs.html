@@ -220,6 +220,63 @@
             overflow: auto;
             padding: 8px;
         }
+        .trace-group {
+            margin-bottom: 8px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+            overflow: hidden;
+        }
+        .trace-group.selected {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px var(--accent-soft);
+        }
+        .group-row {
+            display: grid;
+            grid-template-columns: 22px 86px minmax(0, 1fr) auto;
+            gap: 10px;
+            align-items: center;
+            padding: 10px;
+            cursor: pointer;
+        }
+        .group-row:hover { background: var(--panel-soft); }
+        .chevron {
+            color: var(--muted);
+            font-size: 14px;
+            font-weight: 900;
+            text-align: center;
+        }
+        .group-title {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 13px;
+            font-weight: 900;
+        }
+        .group-summary {
+            margin-top: 5px;
+            color: var(--muted);
+            font-size: 11px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .group-count {
+            align-self: start;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: var(--panel-soft);
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        .group-items {
+            border-top: 1px solid var(--border);
+            background: #fbfcfd;
+            padding: 5px;
+        }
         .log-item {
             display: grid;
             grid-template-columns: 92px minmax(0, 1fr);
@@ -228,6 +285,10 @@
             border: 1px solid transparent;
             border-radius: 8px;
             cursor: pointer;
+        }
+        .group-items .log-item {
+            grid-template-columns: 78px minmax(0, 1fr);
+            background: transparent;
         }
         .log-item:hover { background: var(--panel-soft); }
         .log-item.selected {
@@ -263,6 +324,8 @@
         .pill.graph_delta { background: #2f7975; }
         .pill.algorithm_call { background: #6a5ca8; }
         .pill.index { background: #327a49; }
+        .pill.service { background: #50627a; }
+        .pill.graph_operation { background: #3f6f91; }
         .pill.failed { background: var(--danger); }
         .action {
             min-width: 0;
@@ -378,9 +441,9 @@
         <div class="section">
             <div class="section-title">概览</div>
             <div class="stats">
-                <div class="stat"><div class="label">当前显示</div><div class="value" id="statShown">0</div></div>
-                <div class="stat"><div class="label">Trace</div><div class="value" id="statTrace">0</div></div>
-                <div class="stat"><div class="label">写库</div><div class="value" id="statStore">0</div></div>
+                <div class="stat"><div class="label">日志条数</div><div class="value" id="statShown">0</div></div>
+                <div class="stat"><div class="label">操作组</div><div class="value" id="statTrace">0</div></div>
+                <div class="stat"><div class="label">写库步骤</div><div class="value" id="statStore">0</div></div>
                 <div class="stat"><div class="label">失败</div><div class="value" id="statFailed">0</div></div>
             </div>
         </div>
@@ -401,8 +464,8 @@
                 <label for="statusFilter">状态</label>
                 <select class="control" id="statusFilter">
                     <option value="">全部状态</option>
-                    <option value="ok">ok</option>
-                    <option value="failed">failed</option>
+                    <option value="ok">成功</option>
+                    <option value="failed">失败</option>
                 </select>
             </div>
             <div class="field">
@@ -433,7 +496,7 @@
         <div class="content">
             <section class="panel">
                 <div class="panel-header">
-                    <div class="panel-title">日志条目</div>
+                    <div class="panel-title">操作分组</div>
                     <div class="toolbar-meta" id="resultMeta">0 条</div>
                 </div>
                 <div class="list" id="logList">
@@ -457,9 +520,95 @@
 <script>
 let allLogs = [];
 let filteredLogs = [];
+let groupedLogs = [];
 let selectedIndex = -1;
+let selectedTraceId = '';
 let autoRefresh = false;
 let autoTimer = null;
+const expandedTraces = new Set();
+
+const STAGE_LABELS = {
+    request: '请求',
+    store_write: '写库',
+    graph_delta: '图变化',
+    algorithm_call: '算法调用',
+    index: '索引',
+    service: '服务',
+    graph_operation: '图操作',
+};
+
+const STATUS_LABELS = {
+    ok: '成功',
+    failed: '失败',
+};
+
+const OPERATION_LABELS = {
+    ingest: '采集写入',
+    evolve: '手动演化',
+    rebuild_index: '重建索引',
+    graph_delete: '删除图节点',
+    graph_update: '更新图节点',
+    graph_write: '新增图节点',
+    startup: '服务启动',
+};
+
+const ACTION_LABELS = {
+    received: '接收请求',
+    completed: '完成请求',
+    failed: '请求失败',
+    flattened: '解析请求文本',
+    started: '服务启动',
+    ingest_completed: '完成采集写入',
+    run_consolidation_completed: '完成演化整理',
+    bm25_event_added: '添加 BM25 事件索引',
+    bm25_rebuilt: '重建 BM25 索引',
+    summary: '图变化汇总',
+    node_created: '新增节点',
+    node_updated: '更新节点',
+    node_merged: '合并节点',
+    node_archived: '归档事件',
+    node_deprecated: '停用上下文',
+    node_removed: '移除节点',
+    edge_created: '新增关系边',
+    edge_updated: '更新关系边',
+    edge_removed: '移除关系边',
+    delete_completed: '完成删除图节点',
+    update_completed: '完成更新图节点',
+    write_completed: '完成新增图节点',
+};
+
+const STORE_METHOD_LABELS = {
+    save_episode: '保存感知流',
+    save_event: '保存事件',
+    save_events_batch: '批量保存事件',
+    update_event: '更新事件',
+    delete_event: '删除事件',
+    archive_event: '归档事件',
+    save_context: '保存上下文',
+    update_context: '更新上下文',
+    delete_context: '删除上下文',
+    archive_context: '归档上下文',
+    link_event_to_episode: '链接事件-感知流',
+    link_events_to_episode_batch: '批量链接事件-感知流',
+    link_event_to_context: '链接事件-上下文',
+    upsert_event_relation: '写入事件关系',
+    ensure_entity: '确保实体存在',
+    create_involves_relation: '创建事件-实体关系',
+    update_involves_relation: '更新事件-实体关系',
+    relink_event_references: '重连事件引用',
+    relink_context_edges: '重连上下文边',
+    save_event_merge_trace: '保存事件合并轨迹',
+};
+
+const ENTITY_LABELS = {
+    event: '事件',
+    context: '上下文',
+    next: '顺序关系',
+    event_event: '事件关系',
+    event_context: '事件-上下文关系',
+};
+
+const STORE_METHODS = Object.keys(STORE_METHOD_LABELS).sort((a, b) => b.length - a.length);
 
 function esc(value) {
     const d = document.createElement('div');
@@ -485,6 +634,41 @@ function stable(value) {
     return JSON.stringify(value ?? {}, null, 2);
 }
 
+function stageLabel(stage) {
+    return STAGE_LABELS[stage] || stage || '-';
+}
+
+function statusLabel(status) {
+    return STATUS_LABELS[status] || status || '成功';
+}
+
+function entityLabel(type) {
+    return ENTITY_LABELS[type] || type || '';
+}
+
+function operationLabel(operation, trigger) {
+    if (operation === 'evolve' && trigger === 'scheduled') return '定时演化';
+    if (operation === 'evolve' && trigger === 'manual') return '手动演化';
+    return OPERATION_LABELS[operation] || operation || '未命名操作';
+}
+
+function actionLabel(item) {
+    const action = String(item.action || '');
+    if (ACTION_LABELS[action]) return ACTION_LABELS[action];
+    for (const method of STORE_METHODS) {
+        const label = STORE_METHOD_LABELS[method];
+        if (action === method + '_started') return '开始' + label;
+        if (action === method + '_failed') return label + '失败';
+        if (action === method) return label;
+    }
+    return action || '-';
+}
+
+function rawWithLabel(raw, label) {
+    if (!raw) return label || '-';
+    return raw === label ? raw : label + ' (' + raw + ')';
+}
+
 async function loadLogs() {
     const limit = Math.max(1, Math.min(2000, Number(document.getElementById('limitInput').value || 300)));
     const response = await fetch('/api/audit/recent?limit=' + encodeURIComponent(limit));
@@ -505,7 +689,7 @@ function updateStageOptions() {
     const current = select.value;
     const stages = [...new Set(allLogs.map(item => item.stage).filter(Boolean))].sort();
     select.innerHTML = '<option value="">全部阶段</option>' + stages.map(stage => (
-        '<option value="' + esc(stage) + '">' + esc(stage) + '</option>'
+        '<option value="' + esc(stage) + '">' + esc(stageLabel(stage)) + '</option>'
     )).join('');
     select.value = stages.includes(current) ? current : '';
 }
@@ -521,27 +705,56 @@ function applyFilters() {
         const haystack = [
             item.trace_id,
             item.stage,
+            stageLabel(item.stage),
             item.action,
+            actionLabel(item),
             item.status,
+            statusLabel(item.status),
             item.entity_type,
+            entityLabel(item.entity_type),
             item.entity_id,
             stable(item.details),
         ].join(' ').toLowerCase();
         return haystack.includes(query);
     });
-    selectedIndex = filteredLogs.length ? Math.min(Math.max(selectedIndex, 0), filteredLogs.length - 1) : -1;
+    groupedLogs = buildGroups(filteredLogs);
+    selectedIndex = selectedIndex >= 0 && selectedIndex < filteredLogs.length ? selectedIndex : -1;
+    if (selectedTraceId && !groupedLogs.some(group => group.traceId === selectedTraceId)) {
+        selectedTraceId = '';
+    }
     renderStats();
     renderList();
     renderDetail();
 }
 
+function buildGroups(items) {
+    const groups = [];
+    const byTrace = new Map();
+    items.forEach((item, index) => {
+        const traceId = item.trace_id || '无 trace';
+        let group = byTrace.get(traceId);
+        if (!group) {
+            group = {
+                traceId,
+                items: [],
+                latest: item,
+                hasFailed: false,
+            };
+            byTrace.set(traceId, group);
+            groups.push(group);
+        }
+        group.items.push({ item, index });
+        group.hasFailed = group.hasFailed || item.status === 'failed';
+    });
+    return groups;
+}
+
 function renderStats() {
-    const traces = new Set(filteredLogs.map(item => item.trace_id).filter(Boolean));
     document.getElementById('statShown').textContent = filteredLogs.length;
-    document.getElementById('statTrace').textContent = traces.size;
+    document.getElementById('statTrace').textContent = groupedLogs.length;
     document.getElementById('statStore').textContent = filteredLogs.filter(item => item.stage === 'store_write').length;
     document.getElementById('statFailed').textContent = filteredLogs.filter(item => item.status === 'failed').length;
-    document.getElementById('resultMeta').textContent = filteredLogs.length + ' 条';
+    document.getElementById('resultMeta').textContent = groupedLogs.length + ' 个操作 / ' + filteredLogs.length + ' 条日志';
 }
 
 function renderList() {
@@ -550,27 +763,100 @@ function renderList() {
         list.innerHTML = '<div class="empty">没有匹配的日志。</div>';
         return;
     }
-    list.innerHTML = filteredLogs.map((item, index) => {
+    list.innerHTML = groupedLogs.map(group => renderGroup(group)).join('');
+}
+
+function renderGroup(group) {
+    const expanded = expandedTraces.has(group.traceId);
+    const selectedInGroup = group.items.some(({ index }) => index === selectedIndex);
+    const selected = selectedTraceId === group.traceId || selectedInGroup;
+    const latest = group.latest || group.items[0]?.item || {};
+    const operation = traceOperationLabel(group);
+    const summary = traceSummary(group);
+    const status = group.hasFailed ? '失败' : '成功';
+    const children = expanded ? '<div class="group-items">' + group.items.map(({ item, index }) => renderLogItem(item, index)).join('') + '</div>' : '';
+    return '<div class="trace-group ' + (selected ? 'selected' : '') + '">' +
+        '<div class="group-row" data-trace-id="' + esc(group.traceId) + '">' +
+            '<div class="chevron">' + (expanded ? 'v' : '>') + '</div>' +
+            '<div class="time">' + esc(shortTime(latest.logged_at)) + '<br>' + esc(status) + '</div>' +
+            '<div>' +
+                '<div class="group-title" title="' + esc(operation) + '">' + esc(operation) + '</div>' +
+                '<div class="group-summary">' + esc(summary) + '</div>' +
+            '</div>' +
+            '<div class="group-count">' + esc(group.items.length) + ' 步</div>' +
+        '</div>' +
+        children +
+    '</div>';
+}
+
+function renderLogItem(item, index) {
         const stageClass = esc(item.status === 'failed' ? 'failed' : item.stage || 'request');
         const entity = item.entity_id
-            ? esc((item.entity_type || 'node') + ': ' + item.entity_id)
-            : esc(item.entity_type || '');
-        return '<div class="log-item ' + (index === selectedIndex ? 'selected' : '') + '" onclick="selectLog(' + index + ')">' +
-            '<div class="time">' + esc(shortTime(item.logged_at)) + '<br>' + esc(item.status || 'ok') + '</div>' +
+            ? esc((entityLabel(item.entity_type) || '节点') + ': ' + item.entity_id)
+            : esc(entityLabel(item.entity_type));
+        return '<div class="log-item ' + (index === selectedIndex ? 'selected' : '') + '" data-log-index="' + esc(index) + '">' +
+            '<div class="time">' + esc(shortTime(item.logged_at)) + '<br>' + esc(statusLabel(item.status)) + '</div>' +
             '<div>' +
                 '<div class="item-head">' +
-                    '<span class="pill ' + stageClass + '">' + esc(item.stage || '-') + '</span>' +
-                    '<span class="action" title="' + esc(item.action || '') + '">' + esc(item.action || '-') + '</span>' +
+                    '<span class="pill ' + stageClass + '">' + esc(stageLabel(item.stage)) + '</span>' +
+                    '<span class="action" title="' + esc(item.action || '') + '">' + esc(actionLabel(item)) + '</span>' +
                 '</div>' +
                 '<div class="trace">' + esc(item.trace_id || '-') + '</div>' +
                 (entity ? '<div class="entity">' + entity + '</div>' : '') +
             '</div>' +
         '</div>';
-    }).join('');
+}
+
+function traceOperationLabel(group) {
+    const requestItem = group.items.find(({ item }) => item.stage === 'request' && item.details && item.details.operation);
+    const operationItem = requestItem || group.items.find(({ item }) => item.details && item.details.operation);
+    const operation = operationItem?.item?.details?.operation || operationFromTrace(group.traceId);
+    const trigger = group.items.find(({ item }) => item.details && item.details.request && item.details.request.trigger)?.item?.details?.request?.trigger;
+    return operationLabel(operation, trigger);
+}
+
+function operationFromTrace(traceId) {
+    if (!traceId || traceId === '无 trace') return '';
+    const known = Object.keys(OPERATION_LABELS).sort((a, b) => b.length - a.length);
+    const matched = known.find(operation => traceId === operation || traceId.startsWith(operation + '_'));
+    return matched || traceId;
+}
+
+function traceSummary(group) {
+    const first = group.items[0]?.item || {};
+    const trace = first.trace_id || group.traceId;
+    const countsItem = group.items.find(({ item }) => item.details && item.details.counts);
+    if (countsItem) {
+        const counts = countsItem.item.details.counts;
+        const total = ['events_created', 'events_updated', 'events_merged', 'events_archived', 'contexts_created', 'contexts_updated', 'contexts_merged', 'contexts_deprecated', 'edges_created', 'edges_removed', 'edges_updated']
+            .reduce((sum, key) => sum + Number(counts[key] || 0), 0);
+        return total + ' 项图变化 · ' + trace;
+    }
+    const storeWrites = group.items.filter(({ item }) => item.stage === 'store_write').length;
+    return storeWrites ? storeWrites + ' 个写库步骤 · ' + trace : trace;
+}
+
+function toggleTrace(traceId) {
+    if (expandedTraces.has(traceId)) {
+        expandedTraces.delete(traceId);
+    } else {
+        expandedTraces.add(traceId);
+    }
+    renderList();
+}
+
+function selectTrace(traceId) {
+    selectedTraceId = traceId;
+    selectedIndex = -1;
+    toggleTrace(traceId);
+    renderDetail();
 }
 
 function selectLog(index) {
     selectedIndex = index;
+    const item = filteredLogs[selectedIndex];
+    selectedTraceId = item && item.trace_id ? item.trace_id : '';
+    if (item && item.trace_id) expandedTraces.add(item.trace_id);
     renderList();
     renderDetail();
 }
@@ -580,24 +866,62 @@ function renderDetail() {
     const meta = document.getElementById('detailMeta');
     const item = filteredLogs[selectedIndex];
     if (!item) {
-        meta.textContent = '请选择一条日志';
-        panel.innerHTML = '<div class="empty">点击左侧任意条目查看完整 JSON、图变化计数与写库参数。</div>';
+        const group = groupedLogs.find(entry => entry.traceId === selectedTraceId);
+        if (group) {
+            renderGroupDetail(group);
+            return;
+        }
+        meta.textContent = '请选择一个操作';
+        panel.innerHTML = '<div class="empty">点击左侧操作组查看概览，展开后可点击单个步骤查看完整 JSON。</div>';
         return;
     }
     meta.textContent = formatTime(item.logged_at);
     const counts = item.details && item.details.counts ? item.details.counts : null;
     const summary = counts ? renderCounts(counts) : '';
+    const stageText = rawWithLabel(item.stage, stageLabel(item.stage));
+    const actionText = rawWithLabel(item.action, actionLabel(item));
+    const statusText = rawWithLabel(item.status, statusLabel(item.status));
+    const entityText = [entityLabel(item.entity_type), item.entity_id].filter(Boolean).join(' / ') || '-';
     panel.innerHTML =
         summary +
         '<div class="detail-grid">' +
             row('trace', item.trace_id) +
-            row('stage', item.stage) +
-            row('action', item.action) +
-            row('status', item.status) +
-            row('entity', [item.entity_type, item.entity_id].filter(Boolean).join(' / ') || '-') +
+            row('阶段', stageText) +
+            row('操作', actionText) +
+            row('状态', statusText) +
+            row('对象', entityText) +
             row('time', formatTime(item.logged_at)) +
         '</div>' +
         '<pre id="detailJson">' + esc(stable(item)) + '</pre>';
+}
+
+function renderGroupDetail(group) {
+    const panel = document.getElementById('detailPanel');
+    const meta = document.getElementById('detailMeta');
+    const latest = group.latest || group.items[0]?.item || {};
+    const countsItem = group.items.find(({ item }) => item.details && item.details.counts);
+    const counts = countsItem ? countsItem.item.details.counts : null;
+    const operation = traceOperationLabel(group);
+    const summary = counts ? renderCounts(counts) : '';
+    const steps = group.items.map(({ item }) => ({
+        time: item.logged_at,
+        stage: stageLabel(item.stage),
+        action: actionLabel(item),
+        status: statusLabel(item.status),
+        entity: [entityLabel(item.entity_type), item.entity_id].filter(Boolean).join(' / '),
+    }));
+    meta.textContent = operation;
+    panel.innerHTML =
+        summary +
+        '<div class="detail-grid">' +
+            row('操作', operation) +
+            row('trace', group.traceId) +
+            row('状态', group.hasFailed ? '失败' : '成功') +
+            row('步骤数', group.items.length + ' 步') +
+            row('最新时间', formatTime(latest.logged_at)) +
+            row('摘要', traceSummary(group)) +
+        '</div>' +
+        '<pre id="detailJson">' + esc(stable({ trace_id: group.traceId, operation, steps })) + '</pre>';
 }
 
 function row(key, value) {
@@ -627,8 +951,17 @@ function renderError(message) {
 
 async function copySelected() {
     const item = filteredLogs[selectedIndex];
-    if (!item) return;
-    await navigator.clipboard.writeText(stable(item));
+    if (item) {
+        await navigator.clipboard.writeText(stable(item));
+        return;
+    }
+    const group = groupedLogs.find(entry => entry.traceId === selectedTraceId);
+    if (!group) return;
+    await navigator.clipboard.writeText(stable({
+        trace_id: group.traceId,
+        operation: traceOperationLabel(group),
+        items: group.items.map(({ item }) => item),
+    }));
 }
 
 function toggleAutoRefresh() {
@@ -643,6 +976,17 @@ document.getElementById('stageFilter').addEventListener('change', applyFilters);
 document.getElementById('statusFilter').addEventListener('change', applyFilters);
 document.getElementById('searchInput').addEventListener('input', applyFilters);
 document.getElementById('limitInput').addEventListener('change', loadLogs);
+document.getElementById('logList').addEventListener('click', event => {
+    const logItem = event.target.closest('[data-log-index]');
+    if (logItem) {
+        selectLog(Number(logItem.dataset.logIndex));
+        return;
+    }
+    const groupRow = event.target.closest('[data-trace-id]');
+    if (groupRow) {
+        selectTrace(groupRow.dataset.traceId);
+    }
+});
 
 document.addEventListener('DOMContentLoaded', loadLogs);
 </script>

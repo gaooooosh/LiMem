@@ -288,7 +288,7 @@
         .node.highlighted circle { stroke-width: 4px; filter: brightness(1.3) drop-shadow(0 0 6px var(--accent)); }
         .node.selected circle { stroke-width: 5px; filter: brightness(1.3) drop-shadow(0 0 8px var(--accent)); }
         .node.neighbor circle { stroke-width: 3.5px; filter: brightness(1.15) drop-shadow(0 0 4px var(--accent)); }
-        .link.link-selected { stroke-opacity: 1; }
+        .link.link-selected { stroke-opacity: 1; filter: brightness(1.25) drop-shadow(0 0 5px var(--accent)); }
         .link.link-neighbor { stroke-opacity: 0.85; }
 
         /* Tooltip */
@@ -344,6 +344,9 @@
         .detail-badge.event { background: var(--event-color); }
         .detail-badge.entity { background: var(--entity-color); }
         .detail-badge.context { background: var(--context-color); }
+        .detail-badge.relation { background: var(--relation-edge); }
+        .detail-badge.involves { background: var(--involves-edge); }
+        .detail-badge.in_rel { background: var(--in-rel-edge); }
         .detail-close {
             width: 28px; height: 28px;
             border-radius: 50%;
@@ -758,6 +761,7 @@ let graphData = { nodes: [], links: [] };
 let nodeMap = {};
 let adjacency = {};
 let selectedNodeId = null;
+let selectedLinkId = null;
 let selectedNodeData = null; // full data from snapshot
 let editMode = false;
 let searchActive = false;
@@ -783,6 +787,7 @@ function esc(s) {
     return d.innerHTML;
 }
 function truncate(s, n) { s = String(s||''); return s.length > n ? s.slice(0,n-1)+'\u2026' : s; }
+function jsArg(value) { return JSON.stringify(String(value ?? '')); }
 function fmtTs(ts) {
     if (!ts) return '-';
     try {
@@ -792,6 +797,15 @@ function fmtTs(ts) {
     } catch(e) { return String(ts); }
 }
 function nodeTypeLabel(type) { return {event:'事件',entity:'实体',context:'上下文'}[type]||type; }
+function edgeTypeLabel(type) {
+    return {involves:'事件-实体',relation:'事件关系',in_rel:'事件-上下文'}[type] || type;
+}
+function edgeId(type, source, target, suffix='') {
+    return [type, source, target, suffix].filter(v => v !== '').map(v => String(v ?? '')).join('::');
+}
+function linkEndpointId(endpoint) {
+    return typeof endpoint === 'object' ? endpoint.id : endpoint;
+}
 
 // ── Toast ──
 function showToast(msg, type='info') {
@@ -904,35 +918,46 @@ function snapshotToGraph(snapshot) {
     (snapshot.events || []).forEach(ev => {
         (ev.entity_ids || []).forEach(eid => {
             if (nids.has(ev.id) && nids.has(eid)) {
-                links.push({ source: ev.id, target: eid, type: 'involves' });
+                links.push({
+                    id: edgeId('involves', ev.id, eid),
+                    source: ev.id,
+                    target: eid,
+                    type: 'involves',
+                    raw: { event_id: ev.id, entity_id: eid },
+                });
             }
         });
     });
 
     // Event-event edges
     const edges = snapshot.edges || {};
-    (edges.event_event || []).forEach(e => {
+    (edges.event_event || []).forEach((e, idx) => {
         const src = e.from_event_id;
         const dst = e.to_event_id;
         if (src && dst && nids.has(src) && nids.has(dst)) {
             links.push({
+                id: e.id || edgeId('relation', src, dst, e.relation_type || e.operation || idx),
                 source: src, target: dst, type: 'relation',
                 rel: e.relation_type || '',
                 description: e.description || '',
                 confidence: e.confidence,
+                operation: e.operation || '',
+                raw: e,
             });
         }
     });
 
     // Event-context edges (IN_REL)
-    (edges.event_context || []).forEach(e => {
+    (edges.event_context || []).forEach((e, idx) => {
         const src = e.event_id;
         const dst = e.context_id;
         if (src && dst && nids.has(src) && nids.has(dst)) {
             links.push({
+                id: e.id || edgeId('in_rel', src, dst, idx),
                 source: src, target: dst, type: 'in_rel',
                 confidence: e.confidence,
                 weight: e.weight,
+                raw: e,
             });
         }
     });
@@ -1034,13 +1059,17 @@ function updateGraph(newData) {
     adjacency = {};
     graphData.nodes.forEach(n => { nodeMap[n.id] = n; });
     graphData.links.forEach((l, idx) => {
-        const s = typeof l.source === 'object' ? l.source.id : l.source;
-        const t = typeof l.target === 'object' ? l.target.id : l.target;
+        const s = linkEndpointId(l.source);
+        const t = linkEndpointId(l.target);
+        if (!l.id) l.id = edgeId(l.type, s, t, l.rel || '');
         if (!adjacency[s]) adjacency[s] = [];
         if (!adjacency[t]) adjacency[t] = [];
         adjacency[s].push({ neighbor: t, linkIdx: idx, link: l });
         adjacency[t].push({ neighbor: s, linkIdx: idx, link: l });
     });
+    if (selectedLinkId && !graphData.links.some(l => l.id === selectedLinkId)) {
+        selectedLinkId = null;
+    }
 
     // Update simulation
     simulation.nodes(graphData.nodes);
@@ -1051,9 +1080,9 @@ function updateGraph(newData) {
 
     linkHitSel = linkG.selectAll('line.link-hit')
         .data(graphData.links, (d,i) => {
-            const s = typeof d.source === 'object' ? d.source.id : d.source;
-            const t = typeof d.target === 'object' ? d.target.id : d.target;
-            return s+'->'+t+'_'+d.type;
+            const s = linkEndpointId(d.source);
+            const t = linkEndpointId(d.target);
+            return d.id || edgeId(d.type, s, t, d.rel || i);
         });
     linkHitSel.exit().remove();
     linkHitSel = linkHitSel.enter().append('line')
@@ -1061,13 +1090,18 @@ function updateGraph(newData) {
         .attr('stroke', 'transparent')
         .attr('stroke-width', 12)
         .style('cursor', 'pointer')
+        .style('pointer-events', 'stroke')
         .merge(linkHitSel);
+    linkHitSel.on('click', function(event, d) {
+        event.stopPropagation();
+        selectLink(d.id);
+    });
 
     linkSel = linkG.selectAll('line.link')
         .data(graphData.links, (d,i) => {
-            const s = typeof d.source === 'object' ? d.source.id : d.source;
-            const t = typeof d.target === 'object' ? d.target.id : d.target;
-            return s+'->'+t+'_'+d.type;
+            const s = linkEndpointId(d.source);
+            const t = linkEndpointId(d.target);
+            return d.id || edgeId(d.type, s, t, d.rel || i);
         });
     linkSel.exit().remove();
     linkSel = linkSel.enter().append('line')
@@ -1078,7 +1112,13 @@ function updateGraph(newData) {
             if (d.type === 'in_rel') return tc.inRel;
             return tc.involves;
         })
-        .attr('stroke-width', d => d.type === 'relation' ? 2 : 1.5);
+        .attr('stroke-width', d => d.type === 'relation' ? 2 : 1.5)
+        .style('cursor', 'pointer');
+
+    linkSel.on('click', function(event, d) {
+        event.stopPropagation();
+        selectLink(d.id);
+    });
 
     // Rebind nodes
     nodeSel = nodeG.selectAll('g.node')
@@ -1149,7 +1189,7 @@ function updateGraph(newData) {
 
     // Apply current filters
     applyFilters();
-    if (selectedNodeId) applySelectionHighlight();
+    if (selectedNodeId || selectedLinkId) applySelectionHighlight();
 
     if (hadChanges) {
         simulation.alpha(0.3).restart();
@@ -1242,14 +1282,26 @@ function onSearch(query) {
 // ── Selection & Detail ──
 function selectNode(nodeId) {
     selectedNodeId = nodeId;
+    selectedLinkId = null;
     editMode = false;
     document.getElementById('tooltip').style.display = 'none';
     applySelectionHighlight();
     renderNodeDetail(nodeId);
 }
 
+function selectLink(linkId) {
+    selectedLinkId = linkId;
+    selectedNodeId = null;
+    selectedNodeData = null;
+    editMode = false;
+    document.getElementById('tooltip').style.display = 'none';
+    applySelectionHighlight();
+    renderLinkDetail(linkId);
+}
+
 function clearSelection() {
     selectedNodeId = null;
+    selectedLinkId = null;
     selectedNodeData = null;
     editMode = false;
     applySelectionHighlight();
@@ -1258,10 +1310,25 @@ function clearSelection() {
 
 function applySelectionHighlight() {
     if (!nodeSel || !linkSel) return;
-    if (!selectedNodeId) {
+    if (!selectedNodeId && !selectedLinkId) {
         nodeSel.classed('selected', false).classed('neighbor', false).classed('dimmed', false);
         linkSel.classed('link-selected', false).classed('link-neighbor', false).classed('dimmed', false);
         linkSel.attr('stroke-width', d => d.type === 'relation' ? 2 : 1.5);
+        return;
+    }
+    if (selectedLinkId) {
+        const selectedLink = graphData.links.find(l => l.id === selectedLinkId);
+        const sourceId = selectedLink ? linkEndpointId(selectedLink.source) : '';
+        const targetId = selectedLink ? linkEndpointId(selectedLink.target) : '';
+        nodeSel.classed('selected', d => d.id === sourceId || d.id === targetId);
+        nodeSel.classed('neighbor', false);
+        nodeSel.classed('dimmed', d => d.id !== sourceId && d.id !== targetId);
+        nodeSel.select('text').style('display', d =>
+            d.id === sourceId || d.id === targetId ? 'block' : 'none');
+        linkSel.classed('link-selected', d => d.id === selectedLinkId);
+        linkSel.classed('link-neighbor', false);
+        linkSel.classed('dimmed', d => d.id !== selectedLinkId);
+        linkSel.attr('stroke-width', d => d.id === selectedLinkId ? 4 : (d.type === 'relation' ? 2 : 1.5));
         return;
     }
     const neighborIds = new Set();
@@ -1360,7 +1427,7 @@ function renderNodeDetail(nodeId) {
             const edgeLabels = { involves: 'INVOLVES', relation: 'EVENT_REL', in_rel: 'IN_REL' };
             meta.push(edgeLabels[a.link.type] || a.link.type);
             if (a.link.rel) meta.push(a.link.rel);
-            h += '<div class="detail-conn-item" onclick="selectNode(\'' + esc(a.neighbor) + '\')">' +
+            h += '<div class="detail-conn-item" onclick="selectNode(' + esc(jsArg(a.neighbor)) + ')">' +
                 '<div class="detail-conn-dot ' + nb.type + '"></div>' +
                 '<div><div class="detail-conn-label">' + esc(truncate(nb.summary || nb.label || nb.id, 28)) + '</div>' +
                 '<div class="detail-conn-meta">' + esc(meta.join(' · ')) + '</div></div></div>';
@@ -1382,6 +1449,60 @@ function renderNodeDetail(nodeId) {
 
     body.innerHTML = h;
     showDetailPanel();
+}
+
+function renderLinkDetail(linkId) {
+    const link = graphData.links.find(l => l.id === linkId);
+    if (!link) return;
+
+    const sourceId = linkEndpointId(link.source);
+    const targetId = linkEndpointId(link.target);
+    const sourceNode = nodeMap[sourceId] || {};
+    const targetNode = nodeMap[targetId] || {};
+    const badge = document.getElementById('detailBadge');
+    badge.className = 'detail-badge ' + link.type;
+    badge.textContent = edgeTypeLabel(link.type);
+
+    const body = document.getElementById('detailBody');
+    let h = '';
+    h += '<div class="detail-summary">' + esc(link.rel || edgeTypeLabel(link.type)) + '</div>';
+    h += '<div class="detail-id">' + esc(link.id) + '</div>';
+
+    h += '<div class="detail-section"><div class="detail-section-title">端点</div><div class="detail-conn">';
+    h += renderEndpointItem(sourceId, sourceNode, '起点');
+    h += renderEndpointItem(targetId, targetNode, '终点');
+    h += '</div></div>';
+
+    h += '<div class="detail-section"><div class="detail-section-title">关系属性</div>';
+    h += kvHtml('类型', edgeTypeLabel(link.type));
+    if (link.rel) h += kvHtml('关系', link.rel);
+    if (link.operation) h += kvHtml('操作', link.operation);
+    if (link.description) h += kvHtml('描述', link.description);
+    if (link.confidence != null) {
+        h += '<div class="detail-kv"><div class="detail-kv-key">置信度</div><div>' +
+            Number(link.confidence).toFixed(3) + renderBarHtml(link.confidence, 'var(--relation-edge)') + '</div></div>';
+    }
+    if (link.weight != null) h += kvHtml('权重', link.weight);
+    h += '</div>';
+
+    if (link.raw) {
+        h += '<div class="detail-section"><div class="detail-section-title">原始数据</div>';
+        h += '<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.45;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:10px;">' +
+            esc(JSON.stringify(link.raw, null, 2)) + '</pre>';
+        h += '</div>';
+    }
+
+    body.innerHTML = h;
+    showDetailPanel();
+}
+
+function renderEndpointItem(nodeId, node, role) {
+    const nodeType = node.type || 'entity';
+    const title = truncate(node.summary || node.label || nodeId, 32);
+    return '<div class="detail-conn-item" onclick="selectNode(' + esc(jsArg(nodeId)) + ')">' +
+        '<div class="detail-conn-dot ' + esc(nodeType) + '"></div>' +
+        '<div><div class="detail-conn-label">' + esc(title) + '</div>' +
+        '<div class="detail-conn-meta">' + esc(role + ' · ' + nodeTypeLabel(nodeType) + ' · ' + nodeId) + '</div></div></div>';
 }
 
 // ── Edit Mode ──
