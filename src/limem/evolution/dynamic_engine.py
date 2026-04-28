@@ -24,8 +24,20 @@ from ..config import (
     CONTEXT_CANDIDATE_LIMIT,
     CONTEXT_CONFLICT_THRESHOLD,
     CONTEXT_EXTRACTION_BATCH_SIZE,
+    CONTEXT_REUSE_ALLOW_CROSS_SUBTYPE,
+    CONTEXT_REUSE_CANDIDATE_LIMIT,
+    CONTEXT_REUSE_GATING_ENABLED,
+    CONTEXT_REUSE_MIN_EVIDENCE_OVERLAP,
+    CONTEXT_REUSE_MIN_SUMMARY_OVERLAP,
+    CONTEXT_REUSE_REQUIRE_EVIDENCE,
+    CONTEXT_REUSE_SCORE_THRESHOLD,
     CONTEXT_QUERY_CANDIDATE_LIMIT,
     CONTEXT_REUSE_THRESHOLD,
+    CONTEXT_REUSE_WEIGHT_ENTITY,
+    CONTEXT_REUSE_WEIGHT_EVIDENCE,
+    CONTEXT_REUSE_WEIGHT_SUBTYPE,
+    CONTEXT_REUSE_WEIGHT_SUMMARY,
+    CONTEXT_REUSE_WEIGHT_TEMPORAL,
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     DECAY_RATE,
@@ -97,6 +109,18 @@ class DynamicEvolutionConfig:
     context_query_candidate_limit: int = CONTEXT_QUERY_CANDIDATE_LIMIT
     context_extraction_batch_size: int = CONTEXT_EXTRACTION_BATCH_SIZE
     context_aware_extraction_limit: int = CONTEXT_AWARE_EXTRACTION_LIMIT
+    context_reuse_gating_enabled: bool = CONTEXT_REUSE_GATING_ENABLED
+    context_reuse_candidate_limit: int = CONTEXT_REUSE_CANDIDATE_LIMIT
+    context_reuse_score_threshold: float = CONTEXT_REUSE_SCORE_THRESHOLD
+    context_reuse_min_summary_overlap: float = CONTEXT_REUSE_MIN_SUMMARY_OVERLAP
+    context_reuse_min_evidence_overlap: float = CONTEXT_REUSE_MIN_EVIDENCE_OVERLAP
+    context_reuse_require_evidence: bool = CONTEXT_REUSE_REQUIRE_EVIDENCE
+    context_reuse_allow_cross_subtype: bool = CONTEXT_REUSE_ALLOW_CROSS_SUBTYPE
+    context_reuse_weight_summary: float = CONTEXT_REUSE_WEIGHT_SUMMARY
+    context_reuse_weight_evidence: float = CONTEXT_REUSE_WEIGHT_EVIDENCE
+    context_reuse_weight_entity: float = CONTEXT_REUSE_WEIGHT_ENTITY
+    context_reuse_weight_temporal: float = CONTEXT_REUSE_WEIGHT_TEMPORAL
+    context_reuse_weight_subtype: float = CONTEXT_REUSE_WEIGHT_SUBTYPE
 
     reinforcement_step: float = REINFORCEMENT_STEP
     decay_step: float = DECAY_STEP
@@ -144,6 +168,18 @@ class DynamicEvolutionConfig:
 
     def __post_init__(self) -> None:
         self.llm_base_url = normalize_dashscope_base_url(self.llm_base_url)
+        self.context_reuse_candidate_limit = max(1, int(self.context_reuse_candidate_limit or 1))
+        for field_name in (
+            "context_reuse_score_threshold",
+            "context_reuse_min_summary_overlap",
+            "context_reuse_min_evidence_overlap",
+            "context_reuse_weight_summary",
+            "context_reuse_weight_evidence",
+            "context_reuse_weight_entity",
+            "context_reuse_weight_temporal",
+            "context_reuse_weight_subtype",
+        ):
+            setattr(self, field_name, max(0.0, min(1.0, float(getattr(self, field_name, 0.0) or 0.0))))
 
 
 class EvolutionReport(TypedDict):
@@ -1056,7 +1092,7 @@ class DynamicEvolutionEngine:
         context_draft: ContextDraft,
         event: Optional[Event] = None,
     ) -> Context:
-        match = self.match_existing_context(context_draft)
+        match = self.match_existing_context(context_draft, event=event)
         if match is None:
             predicted_id = self._new_context_id(context_draft)
             existing = self.store.get_context(predicted_id)
@@ -1103,7 +1139,11 @@ class DynamicEvolutionEngine:
         self._context_candidates_cache.clear()
         self._context_summary_index_cache.clear()
 
-    def match_existing_context(self, context_draft: ContextDraft) -> Optional[Context]:
+    def match_existing_context(
+        self,
+        context_draft: ContextDraft,
+        event: Optional[Event] = None,
+    ) -> Optional[Context]:
         all_candidates = self._cached_find_context_candidates(
             context_type=context_draft.context_type, subtype="",
         )
@@ -1114,7 +1154,7 @@ class DynamicEvolutionEngine:
             if self._normalized_context_text(candidate.summary) == draft_summary_key
         ]
         if exact_matches:
-            return max(exact_matches, key=self._context_rank_key)
+            return self._pick_reusable_exact_context(exact_matches, context_draft, event)
 
         if draft_summary_key:
             global_exact_matches: list[Context] = []
@@ -1129,36 +1169,123 @@ class DynamicEvolutionEngine:
                 if context is not None:
                     global_exact_matches.append(context)
             if global_exact_matches:
-                return max(global_exact_matches, key=self._context_rank_key)
+                return self._pick_reusable_exact_context(global_exact_matches, context_draft, event)
 
         candidates = self._cached_find_context_candidates(
             context_type=context_draft.context_type, subtype=context_draft.subtype,
-        )
+        )[: self.config.context_reuse_candidate_limit]
         best: Optional[Context] = None
         best_score = -1.0
         for candidate in candidates:
-            score = self._context_similarity(candidate, context_draft)
+            score = self._context_reuse_score(candidate, context_draft, event)
             if score > best_score:
                 best = candidate
                 best_score = score
-        if best is not None and best_score >= self.config.context_reuse_threshold:
+        if best is not None and best_score >= self.config.context_reuse_score_threshold:
             return best
 
-        # Secondary pass: allow cross-subtype reuse for highly similar contexts.
+        if not self.config.context_reuse_allow_cross_subtype:
+            return None
+
+        # Secondary pass: optionally allow cross-subtype reuse for highly similar contexts.
         cross_candidates = self._cached_find_context_candidates(
             context_type=context_draft.context_type, subtype="",
-        )
+        )[: self.config.context_reuse_candidate_limit]
+        same_subtype_candidate_ids = {item.id for item in candidates}
         for candidate in cross_candidates:
-            score = self._context_similarity(candidate, context_draft)
+            if candidate.id in same_subtype_candidate_ids:
+                continue
+            score = self._context_reuse_score(candidate, context_draft, event)
             if score > best_score:
                 best = candidate
                 best_score = score
         if best is None:
             return None
-        # Cross-subtype reuse: same base threshold is sufficient because
-        # _context_similarity already penalises subtype mismatches via its
-        # subtype_sim component.
-        return best if best_score >= self.config.context_reuse_threshold else None
+        return best if best_score >= self.config.context_reuse_score_threshold else None
+
+    def _pick_reusable_exact_context(
+        self,
+        candidates: list[Context],
+        draft: ContextDraft,
+        event: Optional[Event],
+    ) -> Optional[Context]:
+        ranked = sorted(candidates, key=self._context_rank_key, reverse=True)
+        if not self.config.context_reuse_gating_enabled or event is None:
+            return ranked[0] if ranked else None
+        for candidate in ranked:
+            if not self._context_reuse_hard_reject(candidate, draft, event):
+                return candidate
+        return None
+
+    def _context_reuse_score(
+        self,
+        candidate: Context,
+        draft: ContextDraft,
+        event: Optional[Event],
+    ) -> float:
+        if not self.config.context_reuse_gating_enabled:
+            return self._context_similarity(candidate, draft)
+        if self._context_reuse_hard_reject(candidate, draft, event):
+            return 0.0
+
+        summary_overlap = self._context_text_overlap(
+            self._context_summary(candidate),
+            self._context_summary(draft),
+        )
+        evidence_overlap = self._context_evidence_overlap(candidate, draft)
+        entity_overlap = self._context_event_entity_overlap(candidate, event)
+        temporal_score = self._context_temporal_compatibility(candidate, draft)
+        subtype_score = 1.0 if self._context_subtype(candidate) == self._context_subtype(draft) else 0.0
+
+        score = (
+            self.config.context_reuse_weight_summary * summary_overlap
+            + self.config.context_reuse_weight_evidence * evidence_overlap
+            + self.config.context_reuse_weight_entity * entity_overlap
+            + self.config.context_reuse_weight_temporal * temporal_score
+            + self.config.context_reuse_weight_subtype * subtype_score
+        )
+        weight_sum = (
+            self.config.context_reuse_weight_summary
+            + self.config.context_reuse_weight_evidence
+            + self.config.context_reuse_weight_entity
+            + self.config.context_reuse_weight_temporal
+            + self.config.context_reuse_weight_subtype
+        )
+        if weight_sum <= 0.0:
+            return 0.0
+        return max(0.0, min(1.0, score / weight_sum))
+
+    def _context_reuse_hard_reject(
+        self,
+        candidate: Context,
+        draft: ContextDraft,
+        event: Optional[Event],
+    ) -> bool:
+        if self._context_status(candidate) != "active":
+            return True
+        if (
+            not self.config.context_reuse_allow_cross_subtype
+            and self._context_subtype(candidate) != self._context_subtype(draft)
+        ):
+            return True
+        summary_overlap = self._context_text_overlap(
+            self._context_summary(candidate),
+            self._context_summary(draft),
+        )
+        if summary_overlap < self.config.context_reuse_min_summary_overlap:
+            return True
+        if self._has_negation_conflict(candidate, draft):
+            return True
+        if self.config.context_reuse_require_evidence and event is not None:
+            evidence = str(draft.evidence_span or "").strip()
+            if not evidence:
+                return True
+            event_text = self._event_observation_text(event)
+            if event_text and not self._context_evidence_matches_event(evidence, event_text):
+                return True
+            if self._context_evidence_overlap(candidate, draft) < self.config.context_reuse_min_evidence_overlap:
+                return True
+        return False
 
     def update_context_with_evidence(
         self,
@@ -2346,6 +2473,91 @@ class DynamicEvolutionEngine:
         if not left_tokens or not right_tokens:
             return 0.0
         return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+    def _context_evidence_overlap(self, candidate: Context, draft: ContextDraft) -> float:
+        evidence = str(draft.evidence_span or "").strip()
+        if not evidence:
+            return 0.0
+        candidate_parts = [
+            self._context_summary(candidate),
+            self._context_description(candidate),
+        ]
+        for ref in candidate.source_refs or []:
+            if not isinstance(ref, dict):
+                continue
+            candidate_parts.append(str(ref.get("evidence_span", "") or ""))
+            candidate_parts.append(str(ref.get("source", "") or ""))
+        candidate_text = " ".join(part for part in candidate_parts if part).strip()
+        evidence_norm = self._normalized_context_text(evidence)
+        candidate_norm = self._normalized_context_text(candidate_text)
+        if evidence_norm and evidence_norm in candidate_norm:
+            return 1.0
+        return self._context_text_overlap(candidate_text, evidence)
+
+    def _event_observation_text(self, event: Optional[Event]) -> str:
+        if event is None:
+            return ""
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        parts = [
+            str(payload.get("episode_text", "") or ""),
+            str(payload.get("content", "") or ""),
+            str(payload.get("text", "") or ""),
+            str(event.summary or ""),
+            str(event.action or ""),
+            str(event.causality or ""),
+        ]
+        for evidence in event.evidence or []:
+            if isinstance(evidence, dict):
+                parts.append(str(evidence.get("text", "") or evidence.get("evidence_span", "") or ""))
+            else:
+                parts.append(str(evidence or ""))
+        return " ".join(part for part in parts if part).strip()
+
+    def _context_evidence_matches_event(self, evidence: str, event_text: str) -> bool:
+        evidence_norm = self._normalized_context_text(evidence)
+        event_norm = self._normalized_context_text(event_text)
+        if not evidence_norm:
+            return False
+        if evidence_norm in event_norm:
+            return True
+        return self._context_text_overlap(evidence, event_text) >= self.config.context_reuse_min_evidence_overlap
+
+    def _context_event_entity_overlap(self, candidate: Context, event: Optional[Event]) -> float:
+        if event is None:
+            return 1.0
+        event_entities = set(self._participant_labels(event.participants))
+        if not event_entities:
+            return 1.0
+        candidate_text = " ".join(
+            part for part in [self._context_summary(candidate), self._context_description(candidate)] if part
+        )
+        for ref in candidate.source_refs or []:
+            if not isinstance(ref, dict):
+                continue
+            candidate_text += " " + " ".join(str(value or "") for value in ref.values())
+        candidate_norm = self._normalized_context_text(candidate_text)
+        if not candidate_norm:
+            return 1.0
+        candidate_mentions_any_entity = any(
+            self._normalized_context_text(entity) in candidate_norm
+            for entity in event_entities
+        )
+        if not candidate_mentions_any_entity:
+            return 1.0
+        matched = [entity for entity in event_entities if self._normalized_context_text(entity) in candidate_norm]
+        return len(matched) / max(1, len(event_entities))
+
+    def _has_negation_conflict(self, candidate: Context, draft: ContextDraft) -> bool:
+        left = f"{self._context_summary(candidate)} {self._context_description(candidate)}"
+        right = f"{self._context_summary(draft)} {self._context_description(draft)} {draft.evidence_span}"
+        left_has_negation = self._contains_negation(left)
+        right_has_negation = self._contains_negation(right)
+        if left_has_negation == right_has_negation:
+            return False
+        return self._context_text_overlap(left, right) >= self.config.context_reuse_min_summary_overlap
+
+    def _contains_negation(self, text: str) -> bool:
+        return bool(re.search(r"不|没|无|非|否|停止|取消|避免|without|not|no|never", str(text or "").lower()))
 
     def _context_summary(self, node: Any) -> str:
         return str(getattr(node, "summary", "") or "").strip()
