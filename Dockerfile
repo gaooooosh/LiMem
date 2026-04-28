@@ -2,7 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install uv
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_DEFAULT_TIMEOUT=120 \
+    UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+
+RUN pip install --no-cache-dir --retries 10 uv
 
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen || uv sync
@@ -10,7 +14,6 @@ RUN uv sync --frozen || uv sync
 RUN mkdir -p DB
 
 COPY src/ src/
-COPY .env* ./
 
 ENV PYTHONPATH=src
 
