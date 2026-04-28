@@ -1,5 +1,8 @@
 .venv/
 DB/
+.env
+.env.*
+!.env.example
 __pycache__/
 .git/
 node_modules/

@@ -29,3 +29,7 @@ trips.json
 DB/demo_db.kz
 experiments/*
 session_v1.json
+API_DOC.md
+docker-compose.yml
+Dockerfile
+.dockerignore

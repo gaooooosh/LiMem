@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiMem 操作日志</title>
+    <style>
+        :root {
+            --bg: #f6f7f9;
+            --panel: #ffffff;
+            --panel-soft: #f0f3f6;
+            --text: #1d2733;
+            --muted: #667586;
+            --border: #d9e0e8;
+            --accent: #2f7975;
+            --accent-strong: #1f5f5c;
+            --accent-soft: #e3f3f1;
+            --danger: #b8423a;
+            --warning: #af6f1b;
+            --ok: #327a49;
+            --shadow: 0 10px 30px rgba(31, 45, 61, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--text);
+            font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        .app {
+            display: grid;
+            grid-template-columns: 320px minmax(0, 1fr);
+            min-height: 100vh;
+        }
+        .sidebar {
+            background: var(--panel);
+            border-right: 1px solid var(--border);
+            padding: 22px 18px;
+            overflow-y: auto;
+        }
+        .brand {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            margin: 0;
+            font-size: 20px;
+            color: var(--accent-strong);
+        }
+        .sub {
+            margin-top: 5px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .nav-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 34px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .nav-link:hover { border-color: var(--accent); color: var(--accent-strong); }
+        .section {
+            border-top: 1px solid var(--border);
+            padding: 16px 0;
+        }
+        .section:first-of-type { border-top: none; }
+        .section-title {
+            margin-bottom: 10px;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .stat {
+            min-height: 72px;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel-soft);
+        }
+        .stat .label {
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .stat .value {
+            margin-top: 6px;
+            color: var(--accent-strong);
+            font-size: 24px;
+            font-weight: 900;
+            line-height: 1;
+        }
+        .control {
+            width: 100%;
+            min-height: 38px;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+            color: var(--text);
+            font: inherit;
+            font-size: 13px;
+            outline: none;
+        }
+        .control:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .field { margin-bottom: 10px; }
+        .field label {
+            display: block;
+            margin-bottom: 5px;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .button-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        button {
+            min-height: 38px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+            color: var(--text);
+            font: inherit;
+            font-size: 13px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+        button:hover { border-color: var(--accent); color: var(--accent-strong); }
+        button.primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+        button.primary:hover { background: var(--accent-strong); color: #fff; }
+        .path {
+            padding: 9px 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel-soft);
+            color: var(--muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+            line-height: 1.4;
+            word-break: break-all;
+        }
+        main {
+            min-width: 0;
+            padding: 24px;
+            overflow: hidden;
+        }
+        .toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        .toolbar-title {
+            font-size: 16px;
+            font-weight: 900;
+        }
+        .toolbar-meta {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+        .content {
+            display: grid;
+            grid-template-columns: minmax(360px, 1fr) minmax(360px, 0.8fr);
+            gap: 16px;
+            height: calc(100vh - 86px);
+            min-height: 520px;
+        }
+        .panel {
+            min-width: 0;
+            min-height: 0;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border);
+            background: #fbfcfd;
+        }
+        .panel-title {
+            font-size: 13px;
+            font-weight: 900;
+        }
+        .list {
+            overflow: auto;
+            padding: 8px;
+        }
+        .log-item {
+            display: grid;
+            grid-template-columns: 92px minmax(0, 1fr);
+            gap: 10px;
+            padding: 10px;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .log-item:hover { background: var(--panel-soft); }
+        .log-item.selected {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+        }
+        .time {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        .item-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 22px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 900;
+            color: #fff;
+            background: var(--accent);
+            white-space: nowrap;
+        }
+        .pill.request { background: #50627a; }
+        .pill.store_write { background: #7c5a2d; }
+        .pill.graph_delta { background: #2f7975; }
+        .pill.algorithm_call { background: #6a5ca8; }
+        .pill.index { background: #327a49; }
+        .pill.failed { background: var(--danger); }
+        .action {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 13px;
+            font-weight: 850;
+        }
+        .trace {
+            margin-top: 5px;
+            color: var(--muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .entity {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 12px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .empty {
+            margin: auto;
+            max-width: 320px;
+            color: var(--muted);
+            text-align: center;
+            line-height: 1.6;
+            font-size: 13px;
+        }
+        .detail {
+            overflow: auto;
+            padding: 14px;
+        }
+        .detail-grid {
+            display: grid;
+            grid-template-columns: 110px minmax(0, 1fr);
+            gap: 8px 10px;
+            margin-bottom: 14px;
+            font-size: 13px;
+        }
+        .key {
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .value {
+            min-width: 0;
+            word-break: break-word;
+        }
+        pre {
+            margin: 0;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #111820;
+            color: #d9f2ef;
+            overflow: auto;
+            font-size: 12px;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        .summary-chip {
+            padding: 9px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel-soft);
+        }
+        .summary-chip b {
+            display: block;
+            margin-bottom: 4px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+        .summary-chip span {
+            color: var(--accent-strong);
+            font-size: 18px;
+            font-weight: 900;
+        }
+        @media (max-width: 900px) {
+            .app { grid-template-columns: 1fr; }
+            .sidebar { border-right: none; border-bottom: 1px solid var(--border); }
+            main { padding: 14px; }
+            .content { grid-template-columns: 1fr; height: auto; }
+            .panel { min-height: 420px; }
+        }
+    </style>
+</head>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="brand">
+            <div>
+                <h1>操作日志</h1>
+                <div class="sub">按 trace 追踪服务请求、写库步骤和图变化。</div>
+            </div>
+            <a class="nav-link" href="/graph">图谱</a>
+        </div>
+
+        <div class="section">
+            <div class="section-title">概览</div>
+            <div class="stats">
+                <div class="stat"><div class="label">当前显示</div><div class="value" id="statShown">0</div></div>
+                <div class="stat"><div class="label">Trace</div><div class="value" id="statTrace">0</div></div>
+                <div class="stat"><div class="label">写库</div><div class="value" id="statStore">0</div></div>
+                <div class="stat"><div class="label">失败</div><div class="value" id="statFailed">0</div></div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">筛选</div>
+            <div class="field">
+                <label for="limitInput">读取数量</label>
+                <input class="control" id="limitInput" type="number" min="1" max="2000" value="300">
+            </div>
+            <div class="field">
+                <label for="stageFilter">阶段</label>
+                <select class="control" id="stageFilter">
+                    <option value="">全部阶段</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="statusFilter">状态</label>
+                <select class="control" id="statusFilter">
+                    <option value="">全部状态</option>
+                    <option value="ok">ok</option>
+                    <option value="failed">failed</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="searchInput">搜索</label>
+                <input class="control" id="searchInput" type="search" placeholder="trace、action、节点 ID、详情...">
+            </div>
+            <div class="button-row">
+                <button class="primary" onclick="loadLogs()">刷新</button>
+                <button onclick="toggleAutoRefresh()" id="autoBtn">自动刷新</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">日志文件</div>
+            <div class="path" id="logPath">-</div>
+        </div>
+    </aside>
+
+    <main>
+        <div class="toolbar">
+            <div>
+                <div class="toolbar-title">审计时间线</div>
+                <div class="toolbar-meta" id="lastLoaded">尚未加载</div>
+            </div>
+            <button onclick="copySelected()">复制详情</button>
+        </div>
+
+        <div class="content">
+            <section class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">日志条目</div>
+                    <div class="toolbar-meta" id="resultMeta">0 条</div>
+                </div>
+                <div class="list" id="logList">
+                    <div class="empty">正在加载日志...</div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">详情</div>
+                    <div class="toolbar-meta" id="detailMeta">请选择一条日志</div>
+                </div>
+                <div class="detail" id="detailPanel">
+                    <div class="empty">点击左侧任意条目查看完整 JSON、图变化计数与写库参数。</div>
+                </div>
+            </section>
+        </div>
+    </main>
+</div>
+
+<script>
+let allLogs = [];
+let filteredLogs = [];
+let selectedIndex = -1;
+let autoRefresh = false;
+let autoTimer = null;
+
+function esc(value) {
+    const d = document.createElement('div');
+    d.textContent = String(value ?? '');
+    return d.innerHTML;
+}
+
+function formatTime(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function shortTime(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function stable(value) {
+    return JSON.stringify(value ?? {}, null, 2);
+}
+
+async function loadLogs() {
+    const limit = Math.max(1, Math.min(2000, Number(document.getElementById('limitInput').value || 300)));
+    const response = await fetch('/api/audit/recent?limit=' + encodeURIComponent(limit));
+    if (!response.ok) {
+        renderError('读取日志失败：HTTP ' + response.status);
+        return;
+    }
+    const payload = await response.json();
+    allLogs = Array.isArray(payload.items) ? payload.items.slice().reverse() : [];
+    document.getElementById('logPath').textContent = payload.path || '-';
+    document.getElementById('lastLoaded').textContent = '最后刷新：' + new Date().toLocaleString('zh-CN', { hour12: false });
+    updateStageOptions();
+    applyFilters();
+}
+
+function updateStageOptions() {
+    const select = document.getElementById('stageFilter');
+    const current = select.value;
+    const stages = [...new Set(allLogs.map(item => item.stage).filter(Boolean))].sort();
+    select.innerHTML = '<option value="">全部阶段</option>' + stages.map(stage => (
+        '<option value="' + esc(stage) + '">' + esc(stage) + '</option>'
+    )).join('');
+    select.value = stages.includes(current) ? current : '';
+}
+
+function applyFilters() {
+    const stage = document.getElementById('stageFilter').value;
+    const status = document.getElementById('statusFilter').value;
+    const query = document.getElementById('searchInput').value.trim().toLowerCase();
+    filteredLogs = allLogs.filter(item => {
+        if (stage && item.stage !== stage) return false;
+        if (status && item.status !== status) return false;
+        if (!query) return true;
+        const haystack = [
+            item.trace_id,
+            item.stage,
+            item.action,
+            item.status,
+            item.entity_type,
+            item.entity_id,
+            stable(item.details),
+        ].join(' ').toLowerCase();
+        return haystack.includes(query);
+    });
+    selectedIndex = filteredLogs.length ? Math.min(Math.max(selectedIndex, 0), filteredLogs.length - 1) : -1;
+    renderStats();
+    renderList();
+    renderDetail();
+}
+
+function renderStats() {
+    const traces = new Set(filteredLogs.map(item => item.trace_id).filter(Boolean));
+    document.getElementById('statShown').textContent = filteredLogs.length;
+    document.getElementById('statTrace').textContent = traces.size;
+    document.getElementById('statStore').textContent = filteredLogs.filter(item => item.stage === 'store_write').length;
+    document.getElementById('statFailed').textContent = filteredLogs.filter(item => item.status === 'failed').length;
+    document.getElementById('resultMeta').textContent = filteredLogs.length + ' 条';
+}
+
+function renderList() {
+    const list = document.getElementById('logList');
+    if (!filteredLogs.length) {
+        list.innerHTML = '<div class="empty">没有匹配的日志。</div>';
+        return;
+    }
+    list.innerHTML = filteredLogs.map((item, index) => {
+        const stageClass = esc(item.status === 'failed' ? 'failed' : item.stage || 'request');
+        const entity = item.entity_id
+            ? esc((item.entity_type || 'node') + ': ' + item.entity_id)
+            : esc(item.entity_type || '');
+        return '<div class="log-item ' + (index === selectedIndex ? 'selected' : '') + '" onclick="selectLog(' + index + ')">' +
+            '<div class="time">' + esc(shortTime(item.logged_at)) + '<br>' + esc(item.status || 'ok') + '</div>' +
+            '<div>' +
+                '<div class="item-head">' +
+                    '<span class="pill ' + stageClass + '">' + esc(item.stage || '-') + '</span>' +
+                    '<span class="action" title="' + esc(item.action || '') + '">' + esc(item.action || '-') + '</span>' +
+                '</div>' +
+                '<div class="trace">' + esc(item.trace_id || '-') + '</div>' +
+                (entity ? '<div class="entity">' + entity + '</div>' : '') +
+            '</div>' +
+        '</div>';
+    }).join('');
+}
+
+function selectLog(index) {
+    selectedIndex = index;
+    renderList();
+    renderDetail();
+}
+
+function renderDetail() {
+    const panel = document.getElementById('detailPanel');
+    const meta = document.getElementById('detailMeta');
+    const item = filteredLogs[selectedIndex];
+    if (!item) {
+        meta.textContent = '请选择一条日志';
+        panel.innerHTML = '<div class="empty">点击左侧任意条目查看完整 JSON、图变化计数与写库参数。</div>';
+        return;
+    }
+    meta.textContent = formatTime(item.logged_at);
+    const counts = item.details && item.details.counts ? item.details.counts : null;
+    const summary = counts ? renderCounts(counts) : '';
+    panel.innerHTML =
+        summary +
+        '<div class="detail-grid">' +
+            row('trace', item.trace_id) +
+            row('stage', item.stage) +
+            row('action', item.action) +
+            row('status', item.status) +
+            row('entity', [item.entity_type, item.entity_id].filter(Boolean).join(' / ') || '-') +
+            row('time', formatTime(item.logged_at)) +
+        '</div>' +
+        '<pre id="detailJson">' + esc(stable(item)) + '</pre>';
+}
+
+function row(key, value) {
+    return '<div class="key">' + esc(key) + '</div><div class="value">' + esc(value || '-') + '</div>';
+}
+
+function renderCounts(counts) {
+    const keys = [
+        ['events_created', '事件新增'],
+        ['events_updated', '事件更新'],
+        ['events_merged', '事件合并'],
+        ['events_archived', '事件归档'],
+        ['contexts_created', '上下文新增'],
+        ['contexts_updated', '上下文更新'],
+        ['contexts_merged', '上下文合并'],
+        ['edges_created', '边新增'],
+        ['edges_removed', '边移除'],
+    ];
+    return '<div class="summary-grid">' + keys.map(([key, label]) => (
+        '<div class="summary-chip"><b>' + esc(label) + '</b><span>' + esc(counts[key] ?? 0) + '</span></div>'
+    )).join('') + '</div>';
+}
+
+function renderError(message) {
+    document.getElementById('logList').innerHTML = '<div class="empty">' + esc(message) + '</div>';
+}
+
+async function copySelected() {
+    const item = filteredLogs[selectedIndex];
+    if (!item) return;
+    await navigator.clipboard.writeText(stable(item));
+}
+
+function toggleAutoRefresh() {
+    autoRefresh = !autoRefresh;
+    const btn = document.getElementById('autoBtn');
+    btn.textContent = autoRefresh ? '停止刷新' : '自动刷新';
+    if (autoTimer) clearInterval(autoTimer);
+    autoTimer = autoRefresh ? setInterval(loadLogs, 3000) : null;
+}
+
+document.getElementById('stageFilter').addEventListener('change', applyFilters);
+document.getElementById('statusFilter').addEventListener('change', applyFilters);
+document.getElementById('searchInput').addEventListener('input', applyFilters);
+document.getElementById('limitInput').addEventListener('change', loadLogs);
+
+document.addEventListener('DOMContentLoaded', loadLogs);
+</script>
+</body>
+</html>
