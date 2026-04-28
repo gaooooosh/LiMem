@@ -1566,6 +1566,10 @@ class TestDynamicEvolution(unittest.TestCase):
                     return [item for item in self._candidates if item.subtype == subtype]
                 return list(self._candidates)
 
+            def find_contexts_summary_index(self, context_type, only_active=True):
+                del context_type, only_active
+                return [(item.id, item.summary) for item in self._candidates]
+
         existing = Context(
             id="ctx_music_state",
             subtype="state",
@@ -1654,6 +1658,102 @@ class TestDynamicEvolution(unittest.TestCase):
 
         self.assertIsNotNone(match)
         self.assertEqual(match.id, exact_but_not_recent.id)
+
+    def test_match_existing_context_rejects_related_but_ungrounded_context(self):
+        class _Store:
+            def __init__(self, candidates):
+                self._candidates = candidates
+
+            def find_context_candidates(self, context_type, subtype="", limit=20, only_active=True):
+                del context_type, limit, only_active
+                if subtype:
+                    return [item for item in self._candidates if item.subtype == subtype]
+                return list(self._candidates)
+
+            def find_contexts_summary_index(self, context_type, only_active=True):
+                del context_type, only_active
+                return [(item.id, item.summary) for item in self._candidates]
+
+        existing = Context(
+            id="ctx_music",
+            subtype="situation",
+            summary="车内娱乐交互场景",
+            description="用户在车内播放音乐并进行娱乐交互",
+            source_refs=[{"evidence_span": "用户在车内播放音乐"}],
+            status="active",
+        )
+        event = Event(
+            id="evt_navigation",
+            summary="用户在车内发起导航",
+            action="导航去公司",
+            participants=[{"role": "用户"}],
+            timestamp=100,
+            last_active=100,
+            valid_from=100,
+            payload={"episode_text": "用户在车内导航去公司"},
+        )
+        draft = ContextDraft(
+            subtype="situation",
+            summary="车内出行场景",
+            description="用户正在车内进行出行相关操作",
+            evidence_span="用户在车内导航去公司",
+            valid_from=100,
+        )
+        engine = DynamicEvolutionEngine(
+            store=_Store([existing]),
+            config=DynamicEvolutionConfig(
+                context_reuse_score_threshold=0.72,
+                context_reuse_min_summary_overlap=0.30,
+                context_reuse_min_evidence_overlap=0.40,
+            ),
+        )
+
+        self.assertIsNone(engine.match_existing_context(draft, event=event))
+
+    def test_match_existing_context_reuses_grounded_same_subtype_context(self):
+        class _Store:
+            def __init__(self, candidates):
+                self._candidates = candidates
+
+            def find_context_candidates(self, context_type, subtype="", limit=20, only_active=True):
+                del context_type, limit, only_active
+                if subtype:
+                    return [item for item in self._candidates if item.subtype == subtype]
+                return list(self._candidates)
+
+        existing = Context(
+            id="ctx_low_battery",
+            subtype="state",
+            summary="电量低",
+            description="设备当前电量偏低，需要及时充电",
+            source_refs=[{"evidence_span": "电量只剩12%"}],
+            status="active",
+        )
+        event = Event(
+            id="evt_low_battery",
+            summary="系统提示电量低",
+            action="提示充电",
+            timestamp=100,
+            last_active=100,
+            valid_from=100,
+            payload={"episode_text": "电量只剩12%，系统提示尽快充电"},
+        )
+        draft = ContextDraft(
+            subtype="state",
+            summary="电量低",
+            description="设备当前电量只剩12%",
+            evidence_span="电量只剩12%",
+            valid_from=100,
+        )
+        engine = DynamicEvolutionEngine(
+            store=_Store([existing]),
+            config=DynamicEvolutionConfig(),
+        )
+
+        match = engine.match_existing_context(draft, event=event)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.id, existing.id)
 
     def test_context_conflict_ratio_returns_zero_when_description_missing(self):
         engine = DynamicEvolutionEngine(
