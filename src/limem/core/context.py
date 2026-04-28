@@ -2,7 +2,7 @@
 """Context - Agent 从感知流中观察并归纳出的背景框架。
 
 Context 来自 Agent 对任意来源感知流的观察，不等同于事件动作或用户意图。
-它描述明确主体在某段时间内可复用的处境、约束、环境或画像背景。
+它描述明确主体在某段时间内可复用的处境、约束或环境背景。
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ ALLOWED_CONTEXT_SUBTYPES = {
     "situation",
     "constraint",
     "environment",
-    "profile",
 }
 ALLOWED_CONTEXT_STATUSES = {"active", "weakened", "deprecated", "merged"}
 
@@ -41,19 +40,20 @@ _SUBTYPE_ALIASES = {
     "objective": "situation",
     "intent": "situation",
     "target": "situation",
-    "preference": "profile",
-    "like": "profile",
-    "dislike": "profile",
-    "relationship": "profile",
-    "social": "profile",
-    "role": "profile",
-    "emotion": "profile",
-    "feeling": "profile",
-    "mood": "profile",
-    "affective": "profile",
-    "capability": "profile",
-    "ability": "profile",
-    "profile_context": "profile",
+    "preference": "situation",
+    "like": "situation",
+    "dislike": "situation",
+    "relationship": "situation",
+    "social": "situation",
+    "role": "situation",
+    "emotion": "situation",
+    "feeling": "situation",
+    "mood": "situation",
+    "affective": "situation",
+    "capability": "situation",
+    "ability": "situation",
+    "profile": "situation",
+    "profile_context": "situation",
 }
 _STATUS_ALIASES = {
     "inactive": "deprecated",

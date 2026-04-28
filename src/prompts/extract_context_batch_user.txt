@@ -32,7 +32,7 @@
 2. 每条结果只能使用对应 item 的 record_text 和 event，不要跨 item 混用信息。
 3. Context 是 Agent 对感知流观察后归纳出的背景框架；不是原始数据本身。
 4. 每个 Context 必须有明确主体；不同主体的背景必须分开。
-5. subtype 只能是 situation、constraint、environment、profile。
+5. subtype 只能是 situation、constraint、environment。
 6. 不抽取当前意图、请求、计划、目标、动作、结果或低复用碎片。
 7. 如果某个 item 没有高质量 Context，也必须返回对应 item_index，且 contexts 置为空数组。
 8. evidence_span 必须是对应 item 原始感知流中的原文片段，不要改写。

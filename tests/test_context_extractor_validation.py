@@ -25,7 +25,7 @@ class TestContextExtractorValidation(unittest.TestCase):
 
         self.assertEqual(validated, [])
 
-    def test_validate_context_drafts_maps_profile_alias_and_description(self):
+    def test_validate_context_drafts_maps_legacy_emotion_alias_to_situation(self):
         pipeline = ContextExtractionPipeline()
 
         validated = pipeline.validate_context_drafts(
@@ -42,7 +42,7 @@ class TestContextExtractorValidation(unittest.TestCase):
         )
 
         self.assertEqual(len(validated), 1)
-        self.assertEqual(validated[0].subtype, "profile")
+        self.assertEqual(validated[0].subtype, "situation")
         self.assertIn("轻松音乐", validated[0].description)
 
     def test_validate_context_drafts_rejects_current_intent(self):

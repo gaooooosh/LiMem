@@ -430,7 +430,7 @@ class ContextExtractionPipeline:
         stable_markers = (
             "长期", "稳定", "习惯", "偏好", "经常", "通常", "常常", "画像",
             "身份", "角色", "能力", "关系", "long-term", "stable", "habit",
-            "usually", "preference", "profile", "role", "capability",
+            "usually",
         )
         return any(marker in text for marker in intent_markers) and not any(
             marker in text for marker in stable_markers
