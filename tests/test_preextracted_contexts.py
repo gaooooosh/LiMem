@@ -59,7 +59,7 @@ class TestPreExtractedContexts(unittest.TestCase):
             evidence_span="快迟到了",
         )
         llm_draft_b = ContextDraft(
-            subtype="state",
+            subtype="situation",
             summary="电量低",
             description="设备当前电量仅剩12%，需要尽快充电",
             confidence=0.9,
@@ -155,7 +155,7 @@ class TestPreExtractedContexts(unittest.TestCase):
                         "evidence_span": "在车内播放音乐",
                     },
                     {
-                        "subtype": "state",
+                        "subtype": "situation",
                         "summary": "",
                         "evidence_span": "电量低",
                     },

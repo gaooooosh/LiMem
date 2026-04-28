@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Context - Agent 识别的情境条件。
+"""Context - Agent 从感知流中观察并归纳出的背景框架。
 
-独立于事件的背景状态，可复用于未来决策。
+Context 来自 Agent 对任意来源感知流的观察，不等同于事件动作或用户意图。
+它描述明确主体在某段时间内可复用的处境、约束、环境或画像背景。
 """
 
 from __future__ import annotations
@@ -15,15 +16,9 @@ from ..utils import safe_json_loads
 
 ALLOWED_CONTEXT_SUBTYPES = {
     "situation",
-    "state",
     "constraint",
-    "goal",
     "environment",
-    "phase",
-    "preference",
-    "relationship",
-    "emotion",
-    "capability",
+    "profile",
 }
 ALLOWED_CONTEXT_STATUSES = {"active", "weakened", "deprecated", "merged"}
 
@@ -32,25 +27,33 @@ _SUBTYPE_ALIASES = {
     "scene": "situation",
     "scenario": "situation",
     "context": "situation",
-    "status": "state",
-    "condition": "state",
+    "state": "situation",
+    "status": "situation",
+    "condition": "situation",
+    "phase": "situation",
+    "stage": "situation",
     "limit": "constraint",
     "restriction": "constraint",
-    "objective": "goal",
-    "intent": "goal",
-    "target": "goal",
+    "resource": "constraint",
     "external_environment": "environment",
     "env": "environment",
-    "stage": "phase",
-    "feeling": "emotion",
-    "mood": "emotion",
-    "affective": "emotion",
-    "like": "preference",
-    "dislike": "preference",
-    "social": "relationship",
-    "role": "relationship",
-    "ability": "capability",
-    "resource": "capability",
+    "goal": "situation",
+    "objective": "situation",
+    "intent": "situation",
+    "target": "situation",
+    "preference": "profile",
+    "like": "profile",
+    "dislike": "profile",
+    "relationship": "profile",
+    "social": "profile",
+    "role": "profile",
+    "emotion": "profile",
+    "feeling": "profile",
+    "mood": "profile",
+    "affective": "profile",
+    "capability": "profile",
+    "ability": "profile",
+    "profile_context": "profile",
 }
 _STATUS_ALIASES = {
     "inactive": "deprecated",

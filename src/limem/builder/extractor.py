@@ -13,6 +13,7 @@ from ..config import (
     GENERATION_MODEL,
     normalize_dashscope_base_url,
 )
+from ..core.context import normalize_context_subtype
 from ..llm import DashScopeClient
 from ..utils import load_prompt, normalize_event_payload
 
@@ -122,6 +123,7 @@ class UnifiedExtractor(LLMExtractor):
             if not isinstance(item, dict):
                 continue
             normalized_item = normalize_event_payload({"event": item}, episode_text=episode_text)
+            self._normalize_inline_contexts(normalized_item)
             if self._has_event_semantics(normalized_item):
                 normalized.append(normalized_item)
         return self._dedupe_events(normalized), orphan_contexts
@@ -133,7 +135,57 @@ class UnifiedExtractor(LLMExtractor):
         raw = payload.get("orphan_contexts", [])
         if not isinstance(raw, list):
             return []
-        return [item for item in raw if isinstance(item, dict) and str(item.get("summary", "")).strip()]
+        return [
+            context
+            for item in raw
+            if isinstance(item, dict)
+            for context in [self._normalize_context_payload(item)]
+            if context is not None
+        ]
+
+    def _normalize_inline_contexts(self, event_payload: dict[str, Any]) -> None:
+        raw_contexts = event_payload.get("contexts")
+        if not isinstance(raw_contexts, list):
+            return
+        contexts = [
+            context
+            for item in raw_contexts
+            if isinstance(item, dict)
+            for context in [self._normalize_context_payload(item)]
+            if context is not None
+        ]
+        event_payload["contexts"] = contexts
+
+    def _normalize_context_payload(self, item: dict[str, Any]) -> Optional[dict[str, Any]]:
+        summary = str(item.get("summary", "") or "").strip()
+        if not summary:
+            return None
+        if self._looks_like_current_intent(item):
+            return None
+        normalized = dict(item)
+        normalized["subtype"] = normalize_context_subtype(item.get("subtype", "situation"))
+        normalized["summary"] = summary
+        return normalized
+
+    def _looks_like_current_intent(self, item: dict[str, Any]) -> bool:
+        text = " ".join(
+            str(item.get(field, "") or "")
+            for field in ("summary", "evidence_span", "evidence")
+        ).lower()
+        intent_markers = (
+            "想", "希望", "打算", "计划", "准备", "请求", "要求", "需要",
+            "我要", "我想", "帮我", "请", "为了", "目标", "意图",
+            "want", "wants", "hope", "hopes", "plan", "plans", "intend",
+            "intends", "request", "requests", "need", "needs", "goal",
+        )
+        stable_markers = (
+            "长期", "稳定", "习惯", "偏好", "经常", "通常", "常常", "画像",
+            "身份", "角色", "能力", "关系", "long-term", "stable", "habit",
+            "usually", "preference", "profile", "role", "capability",
+        )
+        return any(marker in text for marker in intent_markers) and not any(
+            marker in text for marker in stable_markers
+        )
 
     def _has_event_semantics(self, payload: dict[str, Any]) -> bool:
         if not isinstance(payload, dict):

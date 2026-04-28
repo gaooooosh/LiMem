@@ -13,7 +13,7 @@ class TestContextExtractorValidation(unittest.TestCase):
         validated = pipeline.validate_context_drafts(
             [
                 ContextDraft(
-                    subtype="state",
+                    subtype="situation",
                     summary=raw_summary,
                     description=raw_summary,
                     evidence_span=raw_summary,
@@ -25,7 +25,7 @@ class TestContextExtractorValidation(unittest.TestCase):
 
         self.assertEqual(validated, [])
 
-    def test_validate_context_drafts_accepts_new_subtype_alias_and_description(self):
+    def test_validate_context_drafts_maps_profile_alias_and_description(self):
         pipeline = ContextExtractionPipeline()
 
         validated = pipeline.validate_context_drafts(
@@ -42,8 +42,52 @@ class TestContextExtractorValidation(unittest.TestCase):
         )
 
         self.assertEqual(len(validated), 1)
-        self.assertEqual(validated[0].subtype, "emotion")
+        self.assertEqual(validated[0].subtype, "profile")
         self.assertIn("轻松音乐", validated[0].description)
+
+    def test_validate_context_drafts_rejects_current_intent(self):
+        pipeline = ContextExtractionPipeline()
+
+        validated = pipeline.validate_context_drafts(
+            [
+                ContextDraft(
+                    subtype="situation",
+                    summary="用户想找酒店",
+                    description="用户当前希望找一家机场附近酒店",
+                    evidence_span="想找个便宜点的机场附近酒店",
+                )
+            ],
+            record_text="预算不太够，所以想找个便宜点的机场附近酒店",
+            event=None,
+        )
+
+        self.assertEqual(validated, [])
+
+    def test_validate_context_drafts_accepts_subject_specific_backgrounds(self):
+        pipeline = ContextExtractionPipeline()
+
+        validated = pipeline.validate_context_drafts(
+            [
+                ContextDraft(
+                    subtype="constraint",
+                    summary="用户旅行预算受限",
+                    description="Agent 观察到用户在旅行住宿安排中受到预算限制",
+                    evidence_span="预算也不太够",
+                ),
+                ContextDraft(
+                    subtype="environment",
+                    summary="车机弱网环境",
+                    description="Agent 观察到车机系统处于网络不稳定的运行环境",
+                    evidence_span="车机网络信号弱",
+                ),
+            ],
+            record_text="用户说预算也不太够；车机网络信号弱。",
+            event=None,
+        )
+
+        self.assertEqual([item.subtype for item in validated], ["constraint", "environment"])
+        self.assertEqual(validated[0].summary, "用户旅行预算受限")
+        self.assertEqual(validated[1].summary, "车机弱网环境")
 
     def test_summary_and_description_length_limits_follow_new_schema(self):
         pipeline = ContextExtractionPipeline()

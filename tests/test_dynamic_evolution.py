@@ -1464,17 +1464,17 @@ class TestDynamicEvolution(unittest.TestCase):
                 {
                     "id": "ctx_nav_llm_gate",
                     "summary": "出行导航场景",
-                    "subtype": "state",
+                    "subtype": "situation",
                     "description": "用户处于出行导航场景，导航已经开始并处于进行中状态",
                 },
                 kind="context",
             )["item"]
             second_context = ltm.write(
                 {
-                    "id": "ctx_cinema_llm_gate",
-                    "summary": "坐在副驾的用户说:充电这会儿想看一集剧 -> 车机回答:已为你",
-                    "subtype": "situation",
-                    "description": "副驾乘客在充电等待期间希望看视频放松，当前为车内娱乐请求场景",
+                    "id": "ctx_backend_llm_gate",
+                    "summary": "后台服务磁盘容量告警",
+                    "subtype": "environment",
+                    "description": "监控系统观察到后台存储节点处于磁盘容量接近上限的运行环境",
                 },
                 kind="context",
             )["item"]
@@ -1525,7 +1525,7 @@ class TestDynamicEvolution(unittest.TestCase):
             description="用户在车内通过语音播放轻松音乐，当前处于娱乐交互环境",
         )
         right = ContextDraft(
-            subtype="state",
+            subtype="situation",
             summary="音乐播放场景",
             description="用户在车内请求播放轻音乐，希望放松心情，当前为语音交互",
         )
@@ -1572,7 +1572,7 @@ class TestDynamicEvolution(unittest.TestCase):
 
         existing = Context(
             id="ctx_music_state",
-            subtype="state",
+            subtype="situation",
             summary="音乐播放场景",
             description="用户在车内进行音乐播放，当前为娱乐交互环境",
             support_count=3,
@@ -1627,7 +1627,7 @@ class TestDynamicEvolution(unittest.TestCase):
 
         exact_but_not_recent = Context(
             id="ctx_global_exact",
-            subtype="state",
+            subtype="situation",
             summary="音乐播放场景",
             description="用户在车内进行音乐播放，当前为娱乐交互环境",
             support_count=5,
@@ -1723,7 +1723,7 @@ class TestDynamicEvolution(unittest.TestCase):
 
         existing = Context(
             id="ctx_low_battery",
-            subtype="state",
+            subtype="situation",
             summary="电量低",
             description="设备当前电量偏低，需要及时充电",
             source_refs=[{"evidence_span": "电量只剩12%"}],
@@ -1739,7 +1739,7 @@ class TestDynamicEvolution(unittest.TestCase):
             payload={"episode_text": "电量只剩12%，系统提示尽快充电"},
         )
         draft = ContextDraft(
-            subtype="state",
+            subtype="situation",
             summary="电量低",
             description="设备当前电量只剩12%",
             evidence_span="电量只剩12%",

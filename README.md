@@ -85,6 +85,13 @@ Context 复用门控可通过环境变量或 `create_ltm(..., config={...})` 调
 - `CONTEXT_REUSE_REQUIRE_EVIDENCE`
 - `CONTEXT_REUSE_ALLOW_CROSS_SUBTYPE`
 
+可用内置数据集评估 Context 复用门控的误连率、复用精度、召回和端侧耗时：
+
+```bash
+uv run python src/script/eval_context_reuse_gate.py \
+  --dataset tests/fixtures/context_reuse_benchmark.jsonl
+```
+
 ### 快速开始
 
 #### 1. 构建 trips 数据库
