@@ -275,11 +275,14 @@ class ContextExtractionPipeline:
         if not existing_contexts:
             return ""
         return (
-            "\n\n你记忆中的已有情境条件（仅在真正语义等价时，复用完全相同的 summary；"
+            "\n\n你记忆中的已有情境条件（仅用于 summary 对齐，不是当前输入证据；"
+            "仅在当前原始感知流本身明确支持且真正语义等价时，复用完全相同的 summary；"
             "否则正常抽取新的抽象 summary）：\n"
             + safe_json_dumps(existing_contexts)
             + "\n\n补充规则：\n"
-            "- 如果你记忆中的某个已有 Context 与当前输入等价，优先直接使用该 summary，保持字面完全一致。\n"
+            "- existing_contexts 不能作为 evidence_span，也不能凭它们输出当前 Context。\n"
+            "- evidence_span 必须是当前原始感知流中的连续原文片段。\n"
+            "- 如果你记忆中的某个已有 Context 被当前输入直接支持且语义等价，优先直接使用该 summary，保持字面完全一致。\n"
             "- 如果没有等价项，正常返回新的抽象 summary。\n"
             "- 不要因为主题相近或处于同一大类场景就强行复用。"
         )
@@ -289,7 +292,9 @@ class ContextExtractionPipeline:
             return ""
         return (
             "补充字段说明：item 中可能包含你记忆里的 existing_contexts。\n"
-            "只有在与其中某一项真正语义等价时，才复用该项的 summary，并保持字面完全一致；\n"
+            "existing_contexts 仅用于 summary 对齐，不能作为 evidence_span，也不能凭它们输出当前 Context。\n"
+            "每个 evidence_span 必须是对应 item 原始感知流中的连续原文片段。\n"
+            "只有在当前 item 本身直接支持且与其中某一项真正语义等价时，才复用该项的 summary，并保持字面完全一致；\n"
             "否则正常产出新的抽象 summary。不要因为主题相关就复用。"
         )
 
@@ -377,7 +382,7 @@ class ContextExtractionPipeline:
 
             # Use full evidence text for matching — don't truncate before validation.
             raw_evidence = self._normalize_whitespace(draft.evidence_span or draft.summary)
-            if raw_evidence and record_text and not self._evidence_matches_text(raw_evidence, record_text):
+            if record_text and not self._evidence_matches_text(raw_evidence, record_text):
                 continue
 
             evidence_span = self._normalize_description(raw_evidence) if raw_evidence else self._normalize_free_text(draft.summary)
@@ -525,14 +530,7 @@ class ContextExtractionPipeline:
             return True
         evidence_norm = self._normalize_text(evidence_span)
         record_norm = self._normalize_text(record_text)
-        if evidence_norm and evidence_norm in record_norm:
-            return True
-        evidence_tokens = self._tokenize_text(evidence_span)
-        record_tokens = self._tokenize_text(record_text)
-        if not evidence_tokens:
-            return False
-        overlap = len(evidence_tokens & record_tokens)
-        return overlap / max(1, len(evidence_tokens)) >= 0.5
+        return bool(evidence_norm and evidence_norm in record_norm)
 
     def _make_source_refs(
         self,

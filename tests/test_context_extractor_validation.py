@@ -117,6 +117,42 @@ class TestContextExtractorValidation(unittest.TestCase):
 
         self.assertEqual(drafts, [])
 
+    def test_validate_context_drafts_rejects_evidence_not_in_current_record(self):
+        pipeline = ContextExtractionPipeline()
+
+        validated = pipeline.validate_context_drafts(
+            [
+                ContextDraft(
+                    subtype="situation",
+                    summary="用户处于行程末端停车确认阶段",
+                    description="用户接近目的地并主动确认停车点位",
+                    evidence_span="用户在行程末端（接近目的地）表现出明确的行为意图",
+                )
+            ],
+            record_text="2026年4月29日 上午10:00，用户3001用户导航至北京野生动物园期间遭到后方车辆撞击。",
+            event=None,
+        )
+
+        self.assertEqual(validated, [])
+
+    def test_existing_contexts_are_only_summary_alignment_not_evidence(self):
+        pipeline = ContextExtractionPipeline()
+
+        user_message = pipeline._build_context_user_message(
+            record_text="用户导航至北京野生动物园期间遭到后方车辆撞击。",
+            event=None,
+            existing_contexts=[
+                {
+                    "summary": "用户处于行程末端停车确认阶段",
+                    "description": "用户接近目的地并主动确认停车点位",
+                }
+            ],
+        )
+
+        self.assertIn("仅用于 summary 对齐", user_message)
+        self.assertIn("不能作为 evidence_span", user_message)
+        self.assertIn("连续原文片段", user_message)
+
 
 if __name__ == "__main__":
     unittest.main()

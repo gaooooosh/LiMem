@@ -226,43 +226,11 @@ class TestContextExtractorBatch(unittest.TestCase):
         self.assertEqual(resolved[0][0][0]["event_id"], "evt_a")
         self.assertEqual(resolved[1][0][0]["event_id"], "evt_b")
 
-    def test_dynamic_engine_passes_ranked_existing_contexts_to_batch_extraction(self):
-        class _Store:
-            def __init__(self):
-                self._contexts = {
-                    "ctx_music": Context(
-                        id="ctx_music",
-                        subtype="environment",
-                        summary="音乐播放场景",
-                    ),
-                    "ctx_meeting": Context(
-                        id="ctx_meeting",
-                        subtype="situation",
-                        summary="会议场景",
-                    ),
-                    "ctx_nav": Context(
-                        id="ctx_nav",
-                        subtype="situation",
-                        summary="出行导航场景",
-                    ),
-                }
-
-            def find_contexts_summary_index(self, context_type, only_active=True):
-                del context_type, only_active
-                return [
-                    ("ctx_meeting", "会议场景"),
-                    ("ctx_music", "音乐播放场景"),
-                    ("ctx_nav", "出行导航场景"),
-                ]
-
-            def get_context(self, context_id):
-                return self._contexts.get(context_id)
-
+    def test_dynamic_engine_does_not_pass_existing_contexts_to_batch_extraction(self):
         engine = DynamicEvolutionEngine(
-            store=_Store(),
+            store=MagicMock(),
             config=DynamicEvolutionConfig(
                 context_extraction_batch_size=4,
-                context_aware_extraction_limit=2,
             ),
         )
         events = [
@@ -290,17 +258,6 @@ class TestContextExtractorBatch(unittest.TestCase):
             "event_id": event.id if event else "",
             "summary": draft.summary,
         }
-        def fake_embed(text):
-            text = str(text or "")
-            if any(token in text for token in ["周杰伦", "播放", "音乐"]):
-                return [1.0, 0.0, 0.0]
-            if "导航" in text:
-                return [0.4, 0.6, 0.0]
-            if "会议" in text:
-                return [0.0, 1.0, 0.0]
-            return [0.0, 0.0, 1.0]
-
-        engine._maybe_embed_context = fake_embed
 
         resolved = engine._resolve_context_pairs_for_event_batch(
             events=events,
@@ -308,10 +265,75 @@ class TestContextExtractorBatch(unittest.TestCase):
         )
 
         self.assertEqual(len(captured_existing_contexts), 1)
-        self.assertEqual(captured_existing_contexts[0][0][0]["summary"], "音乐播放场景")
-        self.assertEqual(captured_existing_contexts[0][0][0]["subtype"], "environment")
-        self.assertEqual(len(captured_existing_contexts[0][0]), 2)
+        self.assertIsNone(captured_existing_contexts[0])
         self.assertEqual(len(resolved), 2)
+
+    def test_dynamic_engine_reuses_existing_context_only_after_grounded_extraction(self):
+        class _Store:
+            def __init__(self):
+                self.updated = []
+                self.context = Context(
+                    id="ctx_low_battery",
+                    subtype="situation",
+                    summary="电量低",
+                    description="设备当前电量偏低，需要及时充电",
+                    source_refs=[{"evidence_span": "电量只剩12%"}],
+                    status="active",
+                    support_count=1,
+                    last_seen_at=1,
+                )
+
+            def find_context_candidates(self, context_type, subtype="", limit=20, only_active=True):
+                del context_type, subtype, limit, only_active
+                return [self.context]
+
+            def find_contexts_summary_index(self, context_type, only_active=True):
+                del context_type, only_active
+                return [(self.context.id, self.context.summary)]
+
+            def get_context(self, context_id):
+                return self.context if context_id == self.context.id else None
+
+            def update_context(self, context):
+                self.updated.append(context.id)
+
+            def save_context(self, context):
+                self.context = context
+
+        store = _Store()
+        engine = DynamicEvolutionEngine(store=store)
+        event = Event(
+            id="evt_low_battery",
+            summary="系统提示电量低",
+            action="提示充电",
+            timestamp=100,
+            last_active=100,
+            valid_from=100,
+            payload={"episode_text": "电量只剩12%，系统提示尽快充电"},
+        )
+        draft = ContextDraft(
+            subtype="situation",
+            summary="电量低",
+            description="设备当前电量只剩12%",
+            evidence_span="电量只剩12%",
+            valid_from=100,
+        )
+        captured_existing_contexts = []
+
+        def fake_extract(record, event=None, existing_contexts=None):
+            del record, event
+            captured_existing_contexts.append(existing_contexts)
+            return [draft]
+
+        engine.context_extractor.extract = fake_extract
+        engine._maybe_embed_context = lambda _text: []
+
+        resolved = engine.resolve_context_pairs(event)
+
+        self.assertEqual(captured_existing_contexts, [None])
+        self.assertEqual(len(resolved), 1)
+        self.assertEqual(resolved[0][0].id, "ctx_low_battery")
+        self.assertEqual(store.updated, ["ctx_low_battery"])
 
 
 if __name__ == "__main__":
