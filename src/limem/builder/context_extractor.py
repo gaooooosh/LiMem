@@ -56,9 +56,9 @@ class ContextExtractionPipeline:
                 api_key=self.api_key,
                 base_url=self.base_url,
             )
-        self._system_prompt = load_prompt("extract_context_system.txt")
-        self._user_prompt = load_prompt("extract_context_user.txt")
-        self._batch_user_prompt = load_prompt("extract_context_batch_user.txt")
+        self._system_prompt = load_prompt("context/extract_context_system.txt")
+        self._user_prompt = load_prompt("context/extract_context_user.txt")
+        self._batch_user_prompt = load_prompt("context/extract_context_batch_user.txt")
 
     def extract(
         self,

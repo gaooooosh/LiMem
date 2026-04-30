@@ -354,8 +354,44 @@ class TestRelationPipeline(unittest.TestCase):
 
         self.assertEqual(result.links, 1)
         self.assertEqual(result.total_links, 1)
-        self.assertEqual(store.event_relations[0]["relation_type"], "促成")
+        self.assertEqual(store.event_relations[0]["relation_type"], "导致")
         self.assertEqual(store.event_relations[0]["operation"], "link")
+
+    def test_relation_processor_normalizes_legacy_link_subtypes(self):
+        new_event = Event(id="evt_new", summary="用户发起导航", timestamp=100, last_active=100)
+        candidate_event = Event(id="evt_old", summary="系统开始规划路线", timestamp=101, last_active=101)
+        store = _RelationStore([new_event, candidate_event])
+        processor = RelationProcessor(
+            store=store,
+            llm_client=_NoopLLM(),
+            config=_make_processor_config(),
+        )
+        processor._classify_batch = lambda e_new, candidates, source_text: [
+            OperationDecision(
+                candidate=candidates.candidates[0],
+                operation="link",
+                confidence=0.9,
+                reason="旧分类词应收敛为导致",
+                link_subtype="促成",
+                direction="new_to_candidate",
+            )
+        ]
+        candidate_set = CandidateSet(
+            candidates=[
+                RecallCandidate(
+                    event=candidate_event,
+                    channel="semantic",
+                    channel_score=0.91,
+                    features={"aggregate_score": 0.91, "channels": {"semantic": 0.91}},
+                )
+            ],
+            channel_stats={"semantic": 1},
+        )
+
+        result = processor.process(new_event, candidate_set, "用户说导航去公司，系统开始规划路线。")
+
+        self.assertEqual(result.links, 1)
+        self.assertEqual(store.event_relations[0]["relation_type"], "导致")
 
     def test_relation_processor_update_creates_version_and_archives_old_event(self):
         old_event = Event(
@@ -448,8 +484,8 @@ class TestRelationPipeline(unittest.TestCase):
                 candidate=rc,
                 operation="link",
                 confidence=0.85,
-                reason="因果关系",
-                link_subtype="因果",
+                reason="导致关系",
+                link_subtype="导致",
                 direction="new_to_candidate",
             )
             for rc in candidates.candidates

@@ -237,9 +237,9 @@ class DynamicEvolutionEngine:
         self._context_embedding_cache: dict[str, list[float]] = {}
         self._context_candidates_cache: dict[tuple[str, str], list[Context]] = {}
         self._context_summary_index_cache: dict[str, list[tuple[str, str]]] = {}
-        self._extract_relation_system_prompt = load_prompt("extract_relation_system.txt")
-        self._rewrite_merged_event_system_prompt = load_prompt("rewrite_merged_event_system.txt")
-        self._rewrite_merged_event_user_prompt = load_prompt("rewrite_merged_event_user.txt")
+        self._extract_relation_system_prompt = load_prompt("evolution/extract_relation_system.txt")
+        self._rewrite_merged_event_system_prompt = load_prompt("evolution/rewrite_merged_event_system.txt")
+        self._rewrite_merged_event_user_prompt = load_prompt("evolution/rewrite_merged_event_user.txt")
 
     # -------------------------------------------------------------------------
     # Algorithm 1: Incremental Event Ingestion
@@ -627,7 +627,8 @@ class DynamicEvolutionEngine:
             ),
             "rules": [
                 "只有当原文明确支持两个事件之间的关系时，才创建关系边。",
-                "relation_type 只能使用：因果、时序相邻、前置条件、促成、后续。",
+                "relation_type 只能使用：导致、延续。",
+                "不要抽取 agent 自己的普通回复关系；只有承诺、操作结果、用户确认、外部状态变化才可能成为事件。",
                 "如果无法基于原文落地关系，返回 should_link=false。",
                 "只返回严格 JSON；key 保持英文，value 使用中文（布尔值和数字除外）。",
             ],
@@ -636,7 +637,7 @@ class DynamicEvolutionEngine:
             "right": self._event_prompt_payload(right),
             "output_schema": {
                 "should_link": True,
-                "relation_type": "因果",
+                "relation_type": "导致",
                 "from_id": left.id,
                 "to_id": right.id,
                 "reason": "两个事件之间的详细关系说明",
@@ -678,6 +679,7 @@ class DynamicEvolutionEngine:
         decision: dict[str, Any],
     ) -> Optional[dict[str, Any]]:
         relation_type = str(decision.get("relation_type", "") or "").strip()
+        relation_type = self._normalize_legacy_relation_type(relation_type)
         if not relation_type:
             return None
         allowed_ids = {left.id, right.id}
@@ -725,6 +727,21 @@ class DynamicEvolutionEngine:
             "source_session_id": source_session_id,
             "timestamp": timestamp,
         }
+
+    def _normalize_legacy_relation_type(self, relation_type: str) -> str:
+        aliases = {
+            "因果": "导致",
+            "触发": "导致",
+            "前置条件": "导致",
+            "促成": "导致",
+            "后续": "延续",
+            "演进": "延续",
+            "时序相邻": "",
+        }
+        normalized = aliases.get(str(relation_type or "").strip(), str(relation_type or "").strip())
+        if normalized not in {"导致", "延续"}:
+            return ""
+        return normalized
 
     def _llm_workers(self, task_count: int) -> int:
         concurrency = max(1, int(self.config.llm_concurrency or 1))

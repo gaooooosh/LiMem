@@ -80,8 +80,8 @@ class UnifiedExtractor(LLMExtractor):
                 api_key=self.api_key,
                 base_url=self.base_url,
             )
-        self._system_prompt = load_prompt("extract_unified_system.txt")
-        self._user_prompt = load_prompt("extract_unified_user.txt")
+        self._system_prompt = load_prompt("extraction/extract_unified_system.txt")
+        self._user_prompt = load_prompt("extraction/extract_unified_user.txt")
 
     def extract(
         self,

@@ -487,8 +487,8 @@ def _build_unified_extractor(tracker: LLMCallTracker) -> UnifiedExtractor:
     extractor.base_url = DASHSCOPE_BASE_URL
     extractor.generation_model = GENERATION_MODEL
     extractor.enable_thinking = ENABLE_THINKING
-    extractor._system_prompt = load_prompt("extract_unified_system.txt")
-    extractor._user_prompt = load_prompt("extract_unified_user.txt")
+    extractor._system_prompt = load_prompt("extraction/extract_unified_system.txt")
+    extractor._user_prompt = load_prompt("extraction/extract_unified_user.txt")
     extractor._call_generation_json = tracker.call
     tracker.prompt_aliases = {
         extractor._system_prompt: "unified",

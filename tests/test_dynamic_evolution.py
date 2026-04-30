@@ -407,7 +407,7 @@ class TestDynamicEvolution(unittest.TestCase):
                 any(
                     edge["from_event_id"] == "evt_rel_a"
                     and edge["to_event_id"] == "evt_rel_b"
-                    and edge["relation_type"] == "促成"
+                    and edge["relation_type"] == "导致"
                     and edge["description"] == "用户发起导航请求，促成系统开始规划路线"
                     for edge in snapshot["edges"]["event_event"]
                 )
@@ -434,8 +434,8 @@ class TestDynamicEvolution(unittest.TestCase):
         )
 
         self.assertIn("判断是否需要创建事件-事件关系边", payload["task"])
-        self.assertIn("relation_type 只能使用：因果、时序相邻、前置条件、促成、后续。", payload["rules"])
-        self.assertEqual(payload["output_schema"]["relation_type"], "因果")
+        self.assertIn("relation_type 只能使用：导致、延续。", payload["rules"])
+        self.assertEqual(payload["output_schema"]["relation_type"], "导致")
         self.assertEqual(payload["output_schema"]["reason"], "两个事件之间的详细关系说明")
 
     def test_auto_merge_events_uses_embedding_candidates_and_merges_fields(self):

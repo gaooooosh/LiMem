@@ -87,10 +87,9 @@ Consolidation:
 LLM prompt templates are in `src/prompts/` and loaded via `src/limem/utils.py:load_prompt()`.
 
 Key prompts:
-- `extract_event_*.txt` - event extraction (segments, struct, only variants)
-- `extract_context_*.txt` - context extraction
-- `entity_extraction_*.txt` - entity extraction
-- `generate_answer_*.txt` - answer generation
+- `extraction/` - Episode -> Event / inline Context extraction
+- `context/` - reusable Context extraction and batching
+- `evolution/` - event relation classification, version fusion, derivation, and merge rewriting
 
 ## Removed Legacy Modules
 

@@ -53,14 +53,14 @@ class RelationProcessor:
         self.store = store
         self.llm_client = llm_client
         self.config = config
-        self._classify_relations_system_prompt = load_prompt("classify_relations_system.txt")
-        self._classify_relations_user_prompt = load_prompt("classify_relations_user.txt")
-        self._fuse_event_system_prompt = load_prompt("fuse_event_system.txt")
-        self._fuse_event_user_prompt = load_prompt("fuse_event_user.txt")
-        self._derive_event_system_prompt = load_prompt("derive_event_system.txt")
-        self._derive_event_user_prompt = load_prompt("derive_event_user.txt")
-        self._rewrite_merged_event_system_prompt = load_prompt("rewrite_merged_event_system.txt")
-        self._rewrite_merged_event_user_prompt = load_prompt("rewrite_merged_event_user.txt")
+        self._classify_relations_system_prompt = load_prompt("evolution/classify_relations_system.txt")
+        self._classify_relations_user_prompt = load_prompt("evolution/classify_relations_user.txt")
+        self._fuse_event_system_prompt = load_prompt("evolution/fuse_event_system.txt")
+        self._fuse_event_user_prompt = load_prompt("evolution/fuse_event_user.txt")
+        self._derive_event_system_prompt = load_prompt("evolution/derive_event_system.txt")
+        self._derive_event_user_prompt = load_prompt("evolution/derive_event_user.txt")
+        self._rewrite_merged_event_system_prompt = load_prompt("evolution/rewrite_merged_event_system.txt")
+        self._rewrite_merged_event_user_prompt = load_prompt("evolution/rewrite_merged_event_user.txt")
 
         self._legacy_relation_call: Optional[Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = None
         self._legacy_relation_payload: Optional[
@@ -209,7 +209,7 @@ class RelationProcessor:
                         "index": 0,
                         "operation": "skip",
                         "confidence": 0.3,
-                        "reason": "两个事件主题相关但无明确因果链",
+                        "reason": "两个事件主题相关但无明确导致或延续关系",
                         "direction": "",
                         "link_subtype": "",
                         "value_before": "",
@@ -261,6 +261,9 @@ class RelationProcessor:
             operation = str(item.get("operation", "skip") or "skip").strip().lower()
             if operation not in {"update", "extend", "derive", "merge", "link", "skip"}:
                 operation = "skip"
+            link_subtype = self._normalize_link_subtype(item.get("link_subtype"))
+            if operation == "link" and not link_subtype:
+                operation = "skip"
             confidence = self._coerce_confidence(item.get("confidence"))
             if confidence < min_confidence:
                 operation = "skip"
@@ -271,7 +274,7 @@ class RelationProcessor:
                 operation=operation,
                 confidence=confidence,
                 reason=str(item.get("reason", "") or "").strip(),
-                link_subtype=str(item.get("link_subtype", "") or "").strip(),
+                link_subtype=link_subtype if operation == "link" else "",
                 direction=str(item.get("direction", "") or "").strip(),
                 value_before=str(item.get("value_before", "") or "").strip(),
                 value_after=str(item.get("value_after", "") or "").strip(),
@@ -405,7 +408,7 @@ class RelationProcessor:
             e_new=e_new,
             decision=decision,
             relation_type="更新",
-            source_relation_type="更新源",
+            source_relation_type="更新",
         )
 
     def _execute_extend(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
@@ -414,7 +417,7 @@ class RelationProcessor:
             e_new=e_new,
             decision=decision,
             relation_type="补充",
-            source_relation_type="补充源",
+            source_relation_type="补充",
         )
 
     def _execute_version_operation(
@@ -539,7 +542,7 @@ class RelationProcessor:
         created = self.store.upsert_event_relation(
             from_event_id=merged.id,
             to_event_id=canonical.id,
-            relation_type="合并",
+            relation_type="同一事件",
             operation="merge",
             description=decision.reason,
             confidence=decision.confidence,
@@ -570,7 +573,8 @@ class RelationProcessor:
         }
 
     def _execute_link(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
-        if not decision.link_subtype:
+        link_subtype = self._normalize_link_subtype(decision.link_subtype)
+        if not link_subtype:
             return {"executed": False, "skipped": 1, "status": "missing_link_subtype"}
         candidate = decision.candidate.event
         from_event, to_event = self._resolve_link_direction(
@@ -581,7 +585,7 @@ class RelationProcessor:
         created = self.store.upsert_event_relation(
             from_event_id=from_event.id,
             to_event_id=to_event.id,
-            relation_type=decision.link_subtype,
+            relation_type=link_subtype,
             operation="link",
             description=decision.reason,
             confidence=decision.confidence,
@@ -816,6 +820,22 @@ class RelationProcessor:
         except (TypeError, ValueError):
             confidence = 0.0
         return max(0.0, min(1.0, confidence))
+
+    def _normalize_link_subtype(self, value: Any) -> str:
+        relation_type = str(value or "").strip()
+        aliases = {
+            "因果": "导致",
+            "触发": "导致",
+            "前置条件": "导致",
+            "促成": "导致",
+            "后续": "延续",
+            "演进": "延续",
+            "时序相邻": "",
+        }
+        relation_type = aliases.get(relation_type, relation_type)
+        if relation_type not in {"导致", "延续"}:
+            return ""
+        return relation_type
 
     @staticmethod
     def _method_is_overridden(instance: Any, name: str, default: Any) -> bool:

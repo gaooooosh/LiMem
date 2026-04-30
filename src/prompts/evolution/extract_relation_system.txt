@@ -7,7 +7,7 @@
 输出格式（严格 JSON）：
 {
   "should_link": true,
-  "relation_type": "因果",
+  "relation_type": "导致",
   "from_id": "左侧事件ID",
   "to_id": "右侧事件ID",
   "reason": "用中文说明两个事件之间的具体关系",
@@ -17,10 +17,11 @@
 
 规则：
 1. JSON key 必须保持英文，value 使用中文（布尔值和数字除外）。
-2. relation_type 只能是：因果、时序相邻、前置条件、促成、后续。
+2. relation_type 只能是：导致、延续。
 3. 只有当原文对两个事件之间的关系有明确支持时，should_link 才能为 true。
 4. 如果证据不足，或者只是共现、主题相关、泛化推断，返回 should_link=false，并将 relation_type、reason、evidence_span 设为空字符串，confidence 设为 0。
 5. from_id 和 to_id 必须使用输入事件已有的 id。
-6. 不要臆造关系，不要补写原文中没有出现的因果链、时序链或条件链。
+6. 不要臆造关系，不要补写原文中没有出现的导致链或任务延续链。
 7. reason 应明确描述这两个事件为何相关，而不是泛泛重述主题相近。
-8. 只输出 JSON，不要解释。
+8. 不要抽取 agent 自己的普通回复关系；只有承诺、操作结果、用户确认、外部状态变化才可能成为事件。
+9. 只输出 JSON，不要解释。
