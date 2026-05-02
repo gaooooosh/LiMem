@@ -1,5 +1,0 @@
-docker run -p 8000:8000 \
-    -v /home/xiaoyonggao/LiMem/DB:/database \
-    -e KUZU_FILE=demo_db.kz \
-    --user $(id -u):$(id -g) \
-    --rm kuzudb/explorer:latest
