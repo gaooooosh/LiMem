@@ -1,37 +1,54 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 build/
 dist/
 wheels/
-*.egg-info
 
-# Virtual environments
-.venv
+# Virtual environments and local runtime
+.venv/
+venv/
+env/
+
+# Secrets and local environment files
 .env
+.env.*
+!.env.example
+
+# Local databases, generated outputs, and logs
+DB/
+outputs/
+memory/
+experiments/
+tuning_log/
+*.kz/
+*.kuzu/
+*.log
+test_results.json
+
+# Local datasets and private notes
 example.json
-记忆多模态事件数据说明(1).pdf
+trips.json
+session_v1.json
+test_cases.json
+API_DOC.md
+CLAUDE.md
+claude.md
+可视化指令.txt
+记忆多模态事件数据说明*.pdf
 数据分析报告.md
-outputs/*
-DB/*
+事件定义讨论.md
 tuning_log.md
 time_modeling_analysis.md
-DB/demo_db.kz
-tuning_log/*
-DB/*
-test_cases.json
-事件定义讨论.md
-.gitignore
-docs/*
-memory/*
-test_results.json
-trips.json
-DB/demo_db.kz
-experiments/*
-session_v1.json
-API_DOC.md
-docker-compose.yml
-Dockerfile
-.dockerignore
-.learnings/ERRORS.md
-tests/fixtures/context_reuse_benchmark.jsonl
+.learnings/
+
+# Frontend/tooling caches
+node_modules/
+.DS_Store

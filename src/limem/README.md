@@ -254,16 +254,14 @@ print(report)
 
 ## 相关文档
 
-- `docs/system_architecture.md`
-- `docs/dynamic_evolution_graph.md`
-- `docs/算法说明文档.md`
-- `docs/memory_structure_design.md`
+- `docs/architecture.md`
+- `docs/http-api.md`
+- `docs/development.md`
 
 ## 当前约束
 
-截至 2026-03-31，`limem` 仍然有一些持续演进中的部分：
+当前 `limem` 仍然有一些持续演进中的部分：
 
-- 部分旧文档仍然描述早期结构，和当前 append-first 主路径不完全一致
 - 一些脚本仍面向 trips/车载场景，但这些逻辑应继续留在 `src/script/`
 - Pattern 抽象在文档中出现过，但当前核心主路径更聚焦 `Event / Entity / Context / Event-Event`
 
