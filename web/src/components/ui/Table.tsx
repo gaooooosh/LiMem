@@ -1,4 +1,10 @@
-import type { HTMLAttributes, TableHTMLAttributes, ThHTMLAttributes, TdHTMLAttributes } from "react";
+import type {
+  HTMLAttributes,
+  ReactNode,
+  TableHTMLAttributes,
+  TdHTMLAttributes,
+  ThHTMLAttributes,
+} from "react";
 import { cn } from "@/lib/utils";
 
 export function Table({ className, ...rest }: TableHTMLAttributes<HTMLTableElement>) {
@@ -68,10 +74,12 @@ export function EmptyRow({
   colSpan,
   text = "暂无数据",
   icon,
+  action,
 }: {
   colSpan: number;
-  text?: string;
-  icon?: React.ReactNode;
+  text?: ReactNode;
+  icon?: ReactNode;
+  action?: ReactNode;
 }) {
   return (
     <tr>
@@ -82,7 +90,8 @@ export function EmptyRow({
               {icon}
             </div>
           )}
-          <span className="text-sm">{text}</span>
+          <span className="max-w-md text-sm leading-relaxed">{text}</span>
+          {action && <div className="mt-2">{action}</div>}
         </div>
       </td>
     </tr>

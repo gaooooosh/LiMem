@@ -14,6 +14,7 @@ export function AdminDashboardPage() {
   const [users, setUsers] = useState<UserView[] | null>(null);
   const [dbs, setDbs] = useState<DatabaseView[] | null>(null);
   const [health, setHealth] = useState<AdminHealth | null>(null);
+  const [showRawPool, setShowRawPool] = useState(false);
 
   useEffect(() => {
     Promise.allSettled([
@@ -66,9 +67,18 @@ export function AdminDashboardPage() {
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-semibold">连接池详情</div>
             {health && (
-              <Badge variant={health.status === "ok" ? "success" : "warning"} dot>
-                {health.status}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowRawPool((v) => !v)}
+                >
+                  {showRawPool ? "收起 JSON" : "查看 JSON"}
+                </Button>
+                <Badge variant={health.status === "ok" ? "success" : "warning"} dot>
+                  {health.status}
+                </Badge>
+              </div>
             )}
           </div>
           {!health ? (
@@ -78,7 +88,7 @@ export function AdminDashboardPage() {
               ))}
             </div>
           ) : (
-            <PoolGrid pool={health.pool} />
+            <PoolGrid pool={health.pool} showRaw={showRawPool} />
           )}
         </CardContent>
       </Card>
@@ -233,7 +243,7 @@ function StatCard({
 }
 
 /** 把 health.pool 渲染成结构化网格，避免裸 JSON */
-function PoolGrid({ pool }: { pool: unknown }) {
+function PoolGrid({ pool, showRaw }: { pool: unknown; showRaw: boolean }) {
   if (!pool || typeof pool !== "object") {
     return (
       <pre className="overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed">
@@ -243,20 +253,30 @@ function PoolGrid({ pool }: { pool: unknown }) {
   }
   const entries = Object.entries(pool as Record<string, unknown>);
   return (
-    <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
-      {entries.map(([k, v]) => (
-        <div
-          key={k}
-          className="rounded-lg border border-border/60 bg-bg-soft px-3 py-2.5"
-        >
-          <div className="text-[11px] font-medium uppercase tracking-wide text-subtle">
-            {k}
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
+        {entries.map(([k, v]) => (
+          <div
+            key={k}
+            className="rounded-lg border border-border/60 bg-bg-soft px-3 py-2.5"
+          >
+            <div className="text-[11px] font-medium uppercase tracking-wide text-subtle">
+              {k}
+            </div>
+            <div
+              className="mt-0.5 truncate text-sm font-semibold tabular-nums"
+              title={formatPoolValue(v)}
+            >
+              {formatPoolValue(v)}
+            </div>
           </div>
-          <div className="mt-0.5 truncate text-sm font-semibold tabular-nums">
-            {formatPoolValue(v)}
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
+      {showRaw && (
+        <pre className="max-h-80 overflow-auto rounded-lg border border-border/60 bg-bg-soft p-3 text-xs leading-relaxed">
+          {JSON.stringify(pool, null, 2)}
+        </pre>
+      )}
     </div>
   );
 }

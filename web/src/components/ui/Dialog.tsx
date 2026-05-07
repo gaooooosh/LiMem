@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 
@@ -23,20 +23,75 @@ export function Dialog({
   className,
 }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
+    const previousActive = document.activeElement as HTMLElement | null;
+
+    const getFocusableElements = () => {
+      const root = ref.current;
+      if (!root) return [];
+      return Array.from(
+        root.querySelectorAll<HTMLElement>(
+          [
+            "a[href]",
+            "button:not([disabled])",
+            "textarea:not([disabled])",
+            "input:not([disabled])",
+            "select:not([disabled])",
+            "[tabindex]:not([tabindex='-1'])",
+          ].join(","),
+        ),
+      ).filter((el) => !el.hasAttribute("disabled") && el.getAttribute("aria-hidden") !== "true");
+    };
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && dismissOnOverlay) onClose();
+      if (e.key === "Escape" && dismissOnOverlay) onCloseRef.current();
+      if (e.key !== "Tab") return;
+
+      const focusable = getFocusableElements();
+      if (focusable.length === 0) {
+        e.preventDefault();
+        ref.current?.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    const frame = window.requestAnimationFrame(() => {
+      const [first] = getFocusableElements();
+      (first ?? ref.current)?.focus();
+    });
+
     return () => {
+      window.cancelAnimationFrame(frame);
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
+      if (previousActive && document.contains(previousActive)) {
+        previousActive.focus();
+      }
     };
-  }, [open, onClose, dismissOnOverlay]);
+  }, [open, dismissOnOverlay]);
 
   if (!open) return null;
 
@@ -45,7 +100,7 @@ export function Dialog({
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       onMouseDown={(e) => {
         if (!dismissOnOverlay) return;
-        if (e.target === e.currentTarget) onClose();
+        if (ref.current && !ref.current.contains(e.target as Node)) onCloseRef.current();
       }}
     >
       <div
@@ -56,6 +111,9 @@ export function Dialog({
         ref={ref}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        aria-describedby={description ? descriptionId : undefined}
+        tabIndex={-1}
         className={cn(
           "lm-anim-scale relative z-10 max-h-[85vh] w-full max-w-lg overflow-auto",
           "rounded-2xl border border-border bg-panel shadow-lg",
@@ -65,10 +123,10 @@ export function Dialog({
         {(title || description) && (
           <div className="border-b border-border/70 px-6 py-4">
             {title && (
-              <div className="text-base font-semibold tracking-tight">{title}</div>
+              <div id={titleId} className="text-base font-semibold tracking-tight">{title}</div>
             )}
             {description && (
-              <div className="mt-1 text-sm leading-relaxed text-subtle">
+              <div id={descriptionId} className="mt-1 text-sm leading-relaxed text-subtle">
                 {description}
               </div>
             )}

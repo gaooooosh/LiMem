@@ -22,17 +22,28 @@ function useTheme(): [string, (next: string) => void] {
 interface NavItem {
   to: string;
   label: string;
+  shortLabel: string;
   icon: JSX.Element;
   needAdmin?: boolean;
 }
 
 const navItems: NavItem[] = [
-  { to: "/ui/console", label: "我的库", icon: <Database className="h-4 w-4" /> },
-  { to: "/ui/console/keys", label: "我的 Key", icon: <KeyRound className="h-4 w-4" /> },
-  { to: "/ui/admin", label: "管理后台", icon: <Shield className="h-4 w-4" />, needAdmin: true },
-  { to: "/ui/admin/users", label: "用户管理", icon: <Users className="h-4 w-4" />, needAdmin: true },
-  { to: "/ui/admin/databases", label: "全部库", icon: <Database className="h-4 w-4" />, needAdmin: true },
+  { to: "/ui/console", label: "我的库", shortLabel: "库", icon: <Database className="h-4 w-4" /> },
+  { to: "/ui/console/keys", label: "我的 Key", shortLabel: "Key", icon: <KeyRound className="h-4 w-4" /> },
+  { to: "/ui/admin", label: "管理后台", shortLabel: "后台", icon: <Shield className="h-4 w-4" />, needAdmin: true },
+  { to: "/ui/admin/users", label: "用户管理", shortLabel: "用户", icon: <Users className="h-4 w-4" />, needAdmin: true },
+  { to: "/ui/admin/databases", label: "全部库", shortLabel: "全部库", icon: <Database className="h-4 w-4" />, needAdmin: true },
 ];
+
+function isNavActive(pathname: string, item: NavItem): boolean {
+  if (item.to === "/ui/console") {
+    return pathname === item.to || pathname.startsWith("/ui/console/db/");
+  }
+  if (item.to === "/ui/admin/users") {
+    return pathname === item.to || pathname.startsWith("/ui/admin/users/");
+  }
+  return pathname === item.to;
+}
 
 export function TopBar() {
   const { me, logout } = useAuth();
@@ -84,24 +95,29 @@ export function TopBar() {
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
           {navItems.map((item) => {
             if (item.needAdmin && !isAdmin) return null;
-            const active =
-              location.pathname === item.to ||
-              location.pathname.startsWith(item.to + "/");
+            const active = isNavActive(location.pathname, item);
             return (
               <Link
                 key={item.to}
                 to={item.to}
+                aria-current={active ? "page" : undefined}
+                aria-label={item.label}
+                title={item.label}
                 className={cn(
-                  "group/nav relative inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm",
+                  "group/nav relative inline-flex items-center gap-1.5 rounded-lg px-2 py-2 text-sm sm:px-3",
                   "transition-colors duration-150 ease-out-soft",
                   active
                     ? "text-text"
                     : "text-subtle hover:bg-muted/60 hover:text-text",
                 )}
               >
-                <span className={cn("transition-transform", active && "text-accent")}>
+                <span
+                  className={cn("transition-transform", active && "text-accent")}
+                  aria-hidden
+                >
                   {item.icon}
                 </span>
+                <span className="text-xs md:hidden">{item.shortLabel}</span>
                 <span className="hidden md:inline">{item.label}</span>
                 {active && (
                   <span

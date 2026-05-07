@@ -67,7 +67,7 @@ export function TabsTrigger({
       onClick={() => ctx.onChange(value)}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium",
-        "transition-all duration-200 ease-out-soft",
+        "transition-[background,color,box-shadow,border-color,opacity] duration-200 ease-out-soft",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
         active
           ? "bg-panel text-text shadow-soft ring-1 ring-border-strong/40"

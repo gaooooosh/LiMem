@@ -36,6 +36,7 @@ export function ConsolePage() {
   const [archiveTarget, setArchiveTarget] = useState<DatabaseView | null>(null);
 
   const canWrite = hasScope(me, "w");
+  const canCreate = canWrite && !me?.is_root;
 
   const load = async () => {
     setDbs(null);
@@ -91,7 +92,7 @@ export function ConsolePage() {
         actions={
           <Button
             onClick={() => setCreating(true)}
-            disabled={!canWrite || me?.is_root}
+            disabled={!canCreate}
             title={
               me?.is_root
                 ? "ROOT 不能直接建库；请用 admin 创建用户后用其 Key 建库"
@@ -168,8 +169,15 @@ export function ConsolePage() {
           ) : dbs.length === 0 ? (
             <EmptyRow
               colSpan={6}
-              text="还没有数据库，点击右上角创建一个"
+              text={<DatabaseEmptyText isRoot={!!me?.is_root} canCreate={canCreate} />}
               icon={<Database className="h-5 w-5" />}
+              action={
+                <DatabaseEmptyAction
+                  isRoot={!!me?.is_root}
+                  canCreate={canCreate}
+                  onCreate={() => setCreating(true)}
+                />
+              }
             />
           ) : (
             dbs.map((d) => (
@@ -264,6 +272,56 @@ export function ConsolePage() {
         danger
       />
     </Layout>
+  );
+}
+
+function DatabaseEmptyText({
+  isRoot,
+  canCreate,
+}: {
+  isRoot: boolean;
+  canCreate: boolean;
+}) {
+  if (isRoot) {
+    return "ROOT 不能直接建库。请先创建具名 admin user，再使用该用户的 Key 建库。";
+  }
+  if (!canCreate) {
+    return "当前 Key 缺少 w scope，暂时不能创建数据库。";
+  }
+  return "还没有数据库，可以先创建一个独立记忆库。";
+}
+
+function DatabaseEmptyAction({
+  isRoot,
+  canCreate,
+  onCreate,
+}: {
+  isRoot: boolean;
+  canCreate: boolean;
+  onCreate: () => void;
+}) {
+  if (isRoot) {
+    return (
+      <Link to="/ui/admin/users">
+        <Button variant="outline" size="sm">
+          前往用户管理 <ArrowRight className="h-3.5 w-3.5" />
+        </Button>
+      </Link>
+    );
+  }
+  if (!canCreate) {
+    return (
+      <Link to="/ui/console/keys">
+        <Button variant="outline" size="sm">
+          管理我的 Key <ArrowRight className="h-3.5 w-3.5" />
+        </Button>
+      </Link>
+    );
+  }
+  return (
+    <Button size="sm" onClick={onCreate}>
+      <Plus className="h-3.5 w-3.5" /> 新建数据库
+    </Button>
   );
 }
 

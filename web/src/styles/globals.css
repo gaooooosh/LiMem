@@ -187,6 +187,27 @@ code:not(pre code) {
   border-radius: 8px;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .lm-anim-fade,
+  .lm-anim-fade-up,
+  .lm-anim-scale,
+  .lm-anim-slide-in-right,
+  .lm-skeleton {
+    animation: none !important;
+  }
+
+  .lm-skeleton {
+    background: hsl(var(--muted));
+  }
+}
+
 /* 玻璃质感 */
 .lm-glass {
   background: hsl(var(--panel) / 0.72);
