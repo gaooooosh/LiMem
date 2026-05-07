@@ -9,7 +9,13 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
-      SERVICE_DB_PATH: /app/DB/service.kz
+      # 多租户配置（必填 ROOT_API_KEY）
+      ROOT_API_KEY: ${ROOT_API_KEY:?ROOT_API_KEY required}
+      AUTH_DB_PATH: /app/DB/auth.sqlite
+      MULTI_DB_BASE_DIR: /app/DB
+      MULTI_AUDIT_BASE_DIR: /app/outputs/audit
+      LTM_POOL_MAX_SIZE: ${LTM_POOL_MAX_SIZE:-16}
+      LTM_POOL_IDLE_TIMEOUT_SEC: ${LTM_POOL_IDLE_TIMEOUT_SEC:-1800}
       CONSOLIDATION_LOG_PATH: /app/outputs/consolidation_log.jsonl
       EVENT_MERGE_TRACE_LOG_PATH: /app/outputs/event_merge_trace.jsonl
       GRAPH_OUTPUT_DIR: /app/outputs
@@ -24,7 +30,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+          "import os, urllib.request; req=urllib.request.Request('http://127.0.0.1:8000/admin/health', headers={'X-API-Key': os.environ['ROOT_API_KEY']}); urllib.request.urlopen(req, timeout=5).read()",
         ]
       interval: 30s
       timeout: 10s

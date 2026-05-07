@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
+
+# ---------- 业务请求 / 响应 ----------
 
 
 class IngestRequest(BaseModel):
@@ -69,3 +72,58 @@ class WriteNodeResponse(BaseModel):
     action: str
     item: dict[str, Any] = Field(default_factory=dict)
     entity_links: int = 0
+
+
+# ---------- 鉴权 / 管理 ----------
+
+
+class CreateUserRequest(BaseModel):
+    name: str
+
+
+class UserView(BaseModel):
+    id: str
+    name: str
+    created_at: str
+
+
+class IssueKeyRequest(BaseModel):
+    label: str = ""
+    scopes: str = "r,w"  # csv: r,w,admin
+
+
+class ApiKeyView(BaseModel):
+    id: str
+    user_id: str
+    label: str
+    scopes: str
+    created_at: str
+    last_used_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+
+
+class IssueKeyResponse(BaseModel):
+    key: ApiKeyView
+    token: str = Field(description="The plaintext token. Only returned once on issue; store it securely.")
+
+
+class UserDetailResponse(BaseModel):
+    user: UserView
+    keys: list[ApiKeyView] = Field(default_factory=list)
+    databases: list["DatabaseView"] = Field(default_factory=list)
+
+
+class DatabaseView(BaseModel):
+    db_id: str
+    owner_user_id: str
+    display_name: str
+    created_at: str
+    last_accessed_at: Optional[str] = None
+    status: str = "active"
+
+
+class CreateDatabaseRequest(BaseModel):
+    display_name: str
+
+
+UserDetailResponse.model_rebuild()

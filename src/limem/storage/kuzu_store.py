@@ -40,9 +40,41 @@ class KuzuStore(GraphStore):
         print(f"📁 Using Kuzu DB file: {self.db_path}")
         self.db = kuzu.Database(self.db_path)
         self.conn = kuzu.Connection(self.db)
+        self._closed = False
 
         # 初始化 Schema
         self._init_schema()
+
+    def close(self) -> None:
+        """释放 Kuzu 连接与数据库句柄
+
+        用于多库 LRU 池淘汰场景：归还文件句柄、避免长时间运行下耗尽 inode/FD。
+        幂等：重复调用安全。
+        """
+        if getattr(self, "_closed", False):
+            return
+        import gc
+
+        try:
+            conn = getattr(self, "conn", None)
+            if conn is not None and hasattr(conn, "close"):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        finally:
+            self.conn = None
+        try:
+            db = getattr(self, "db", None)
+            if db is not None and hasattr(db, "close"):
+                try:
+                    db.close()
+                except Exception:
+                    pass
+        finally:
+            self.db = None
+        self._closed = True
+        gc.collect()
 
     def _normalize_db_path(self, db_path: str) -> str:
         """标准化数据库路径"""

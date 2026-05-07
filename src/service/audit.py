@@ -31,10 +31,16 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 class ServiceAuditLogger:
-    """Append-only JSONL audit stream for deployed graph operations."""
+    """Append-only JSONL audit stream for deployed graph operations.
 
-    def __init__(self, path: str | None = None, enabled: bool | None = None) -> None:
-        self.path = path or os.getenv("SERVICE_AUDIT_LOG_PATH", "./outputs/service_graph_audit.jsonl")
+    多库版本：path 必须由调用方按库显式传入，不再从环境变量读取。
+    SERVICE_AUDIT_LOG_ENABLED / SERVICE_INSTANCE_ID 仍作全局开关与实例标识保留。
+    """
+
+    def __init__(self, path: str, enabled: bool | None = None) -> None:
+        if not path:
+            raise ValueError("ServiceAuditLogger requires an explicit path")
+        self.path = path
         self.enabled = _env_bool("SERVICE_AUDIT_LOG_ENABLED", True) if enabled is None else enabled
         self.instance_id = os.getenv("SERVICE_INSTANCE_ID", f"svc_{uuid.uuid4().hex[:10]}")
         self._lock = threading.Lock()

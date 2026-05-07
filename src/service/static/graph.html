@@ -841,12 +841,41 @@ function confirmAction() {
     if (cb) cb();
 }
 
+// ── Multi-tenant context ──
+// 通过 ?db=<id>&key=<token> 选库与鉴权。key 收下后立刻从 URL 抹掉，避免被记录。
+const __qs = new URLSearchParams(location.search);
+const DB_ID = __qs.get('db');
+let API_KEY = __qs.get('key') || sessionStorage.getItem('limem_key') || '';
+if (!DB_ID) {
+    document.body.innerHTML = '<div style="padding:24px;font:14px sans-serif;color:#c00">'
+        + '缺少 ?db=&lt;db_id&gt; 参数。请在 URL 中指定要打开的库 id。</div>';
+    throw new Error('missing db_id');
+}
+if (!API_KEY) API_KEY = window.prompt('请输入 API Key（X-API-Key）');
+if (!API_KEY) {
+    document.body.innerHTML = '<div style="padding:24px;font:14px sans-serif;color:#c00">未提供 API Key，无法访问。</div>';
+    throw new Error('missing api key');
+}
+sessionStorage.setItem('limem_key', API_KEY);
+// 抹掉 URL 中的 key，避免历史记录/截图泄露
+try {
+    const cleaned = new URLSearchParams(location.search);
+    cleaned.delete('key');
+    history.replaceState(null, '', location.pathname + (cleaned.toString() ? '?' + cleaned : ''));
+} catch (_) { /* noop */ }
+
+const API_BASE = '/db/' + encodeURIComponent(DB_ID);
+
 // ── API ──
 async function api(url, options = {}) {
-    const resp = await fetch(url, {
-        headers: { 'Content-Type': 'application/json' },
+    const fullUrl = url.startsWith('http') ? url : (API_BASE + url);
+    const resp = await fetch(fullUrl, {
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
         ...options,
     });
+    if (resp.status === 401 || resp.status === 403) {
+        sessionStorage.removeItem('limem_key');
+    }
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `HTTP ${resp.status}`);

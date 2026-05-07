@@ -518,6 +518,37 @@
 </div>
 
 <script>
+// ── Multi-tenant context (?db=&key=) ──
+const __qs = new URLSearchParams(location.search);
+const DB_ID = __qs.get('db');
+let API_KEY = __qs.get('key') || sessionStorage.getItem('limem_key') || '';
+if (!DB_ID) {
+    document.body.innerHTML = '<div style="padding:24px;font:14px sans-serif;color:#c00">'
+        + '缺少 ?db=&lt;db_id&gt; 参数。请在 URL 中指定要查看的库 id。</div>';
+    throw new Error('missing db_id');
+}
+if (!API_KEY) API_KEY = window.prompt('请输入 API Key（X-API-Key）');
+if (!API_KEY) {
+    document.body.innerHTML = '<div style="padding:24px;font:14px sans-serif;color:#c00">未提供 API Key，无法访问。</div>';
+    throw new Error('missing api key');
+}
+sessionStorage.setItem('limem_key', API_KEY);
+try {
+    const cleaned = new URLSearchParams(location.search);
+    cleaned.delete('key');
+    history.replaceState(null, '', location.pathname + (cleaned.toString() ? '?' + cleaned : ''));
+} catch (_) {}
+const API_BASE = '/db/' + encodeURIComponent(DB_ID);
+async function authFetch(path, options = {}) {
+    const fullUrl = path.startsWith('http') ? path : (API_BASE + path);
+    const merged = Object.assign({}, options, {
+        headers: Object.assign({ 'X-API-Key': API_KEY }, (options && options.headers) || {})
+    });
+    const resp = await fetch(fullUrl, merged);
+    if (resp.status === 401 || resp.status === 403) sessionStorage.removeItem('limem_key');
+    return resp;
+}
+
 let allLogs = [];
 let filteredLogs = [];
 let groupedLogs = [];
@@ -671,7 +702,7 @@ function rawWithLabel(raw, label) {
 
 async function loadLogs() {
     const limit = Math.max(1, Math.min(2000, Number(document.getElementById('limitInput').value || 300)));
-    const response = await fetch('/api/audit/recent?limit=' + encodeURIComponent(limit));
+    const response = await authFetch('/api/audit/recent?limit=' + encodeURIComponent(limit));
     if (!response.ok) {
         renderError('读取日志失败：HTTP ' + response.status);
         return;
