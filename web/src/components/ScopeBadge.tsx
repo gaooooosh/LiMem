@@ -15,8 +15,10 @@ const variantOf: Record<Scope, "accent" | "warning" | "danger"> = {
 
 export function ScopeBadge({ scope }: { scope: Scope }) {
   return (
-    <Badge variant={variantOf[scope]} className="uppercase">
-      {scope} <span className="text-[10px] opacity-70">·</span> {labels[scope]}
+    <Badge variant={variantOf[scope]} dot className="uppercase font-semibold">
+      <span>{scope}</span>
+      <span className="text-[10px] opacity-70">·</span>
+      <span className="font-normal">{labels[scope]}</span>
     </Badge>
   );
 }

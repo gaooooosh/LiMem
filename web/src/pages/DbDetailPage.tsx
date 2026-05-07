@@ -14,7 +14,8 @@ import type { DatabaseView, IngestResponse, QueryResponse } from "@/api/types";
 import { useAuth, hasScope } from "@/auth/AuthContext";
 import { formatDate } from "@/lib/utils";
 import { toast } from "@/components/Toaster";
-import { ArrowLeft, ChartBar, Database as DBIcon, FileSearch, GitGraph, Send, Sparkles } from "lucide-react";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { ArrowLeft, ChartBar, Database as DBIcon, FileSearch, GitGraph, Send, Sparkles, ScrollText } from "lucide-react";
 
 type TabKey = "overview" | "ingest" | "query" | "graph" | "logs" | "evolve";
 
@@ -52,17 +53,23 @@ export function DbDetailPage() {
   return (
     <Layout>
       <div className="mb-3">
-        <Link to="/ui/console" className="inline-flex items-center gap-1 text-sm text-subtle hover:text-text">
+        <Link
+          to="/ui/console"
+          className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-sm text-subtle transition-colors hover:text-text"
+        >
           <ArrowLeft className="h-3.5 w-3.5" /> 返回库列表
         </Link>
       </div>
       <PageHeader
+        eyebrow="数据库"
         title={
-          <span className="flex items-center gap-2">
-            <DBIcon className="h-6 w-6 text-accent" />
-            {meta?.display_name ?? dbId}
+          <span className="flex flex-wrap items-center gap-3">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-brand text-white shadow-glow">
+              <DBIcon className="h-4 w-4" />
+            </span>
+            <span className="truncate">{meta?.display_name ?? dbId}</span>
             {meta && (
-              <Badge variant={meta.status === "active" ? "success" : "outline"}>
+              <Badge variant={meta.status === "active" ? "success" : "outline"} dot>
                 {meta.status === "active" ? "活跃" : "已归档"}
               </Badge>
             )}
@@ -87,7 +94,7 @@ export function DbDetailPage() {
           <TabsTrigger value="ingest" disabled={!canWrite}><Send className="h-3.5 w-3.5" /> 写入</TabsTrigger>
           <TabsTrigger value="query"><FileSearch className="h-3.5 w-3.5" /> 查询</TabsTrigger>
           <TabsTrigger value="graph"><GitGraph className="h-3.5 w-3.5" /> 图谱</TabsTrigger>
-          <TabsTrigger value="logs">审计日志</TabsTrigger>
+          <TabsTrigger value="logs"><ScrollText className="h-3.5 w-3.5" /> 审计日志</TabsTrigger>
           <TabsTrigger value="evolve" disabled={!canWrite}><Sparkles className="h-3.5 w-3.5" /> 演化</TabsTrigger>
         </TabsList>
 
@@ -129,31 +136,70 @@ function OverviewTab({ dbId }: { dbId: string }) {
     <div className="grid gap-4 md:grid-cols-2">
       <Card>
         <CardContent>
-          <div className="mb-2 text-sm font-semibold">健康检查</div>
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-sm font-semibold">健康检查</div>
+            {health !== null && !error && (
+              <Badge variant="success" dot>OK</Badge>
+            )}
+          </div>
           {error ? (
-            <div className="text-sm text-danger">{error}</div>
+            <div className="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
+              {error}
+            </div>
           ) : health === null ? (
-            <div className="text-sm text-subtle">加载中…</div>
+            <SkeletonBlock />
           ) : (
-            <pre className="overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed">
-              {JSON.stringify(health, null, 2)}
-            </pre>
+            <JsonViewer data={health} />
           )}
         </CardContent>
       </Card>
       <Card>
         <CardContent>
-          <div className="mb-2 text-sm font-semibold">统计</div>
+          <div className="mb-3 text-sm font-semibold">统计</div>
           {stats === null ? (
-            <div className="text-sm text-subtle">加载中…</div>
+            <SkeletonBlock />
           ) : (
-            <pre className="overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed">
-              {JSON.stringify(stats, null, 2)}
-            </pre>
+            <JsonViewer data={stats} />
           )}
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function SkeletonBlock() {
+  return (
+    <div className="space-y-2">
+      <Skeleton className="h-3.5 w-full" />
+      <Skeleton className="h-3.5 w-5/6" />
+      <Skeleton className="h-3.5 w-2/3" />
+    </div>
+  );
+}
+
+/** 把对象渲染成 key/value 列表；非对象退回 pre */
+function JsonViewer({ data }: { data: unknown }) {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const entries = Object.entries(data as Record<string, unknown>);
+    return (
+      <dl className="divide-y divide-border/60 rounded-lg border border-border/60 bg-bg-soft">
+        {entries.map(([k, v]) => (
+          <div key={k} className="grid grid-cols-[120px_1fr] gap-2 px-3 py-2 text-xs">
+            <dt className="truncate font-medium text-subtle">{k}</dt>
+            <dd className="break-all font-mono text-text">
+              {typeof v === "object"
+                ? JSON.stringify(v)
+                : String(v ?? "—")}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  return (
+    <pre className="overflow-auto rounded-lg border border-border/60 bg-bg-soft p-3 text-xs leading-relaxed">
+      {JSON.stringify(data, null, 2)}
+    </pre>
   );
 }
 
@@ -245,8 +291,21 @@ function IngestTab({ dbId }: { dbId: string }) {
 function Field({ label, children, mono }: { label: string; children: React.ReactNode; mono?: boolean }) {
   return (
     <div>
-      <div className="text-xs uppercase tracking-wide text-subtle">{label}</div>
-      <div className={"mt-0.5 text-sm " + (mono ? "font-mono" : "")}>{children}</div>
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-subtle">
+        {label}
+      </div>
+      <div className={"mt-0.5 text-sm " + (mono ? "font-mono break-all" : "")}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function KV({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="font-semibold text-text-soft">{label}:</span>
+      <span className="truncate">{value || "—"}</span>
     </div>
   );
 }
@@ -315,18 +374,34 @@ function QueryTab({ dbId }: { dbId: string }) {
                 未命中任何记忆
               </div>
             ) : (
-              <ul className="space-y-3">
+              <ul className="space-y-2.5">
                 {resp.results.map((r) => (
-                  <li key={r.event_id} className="rounded-md border border-border p-3">
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <code className="font-mono text-xs text-subtle">{r.event_id}</code>
-                      <Badge variant="accent">score {r.score.toFixed(3)}</Badge>
+                  <li
+                    key={r.event_id}
+                    className="group/result rounded-xl border border-border/70 bg-panel-soft px-4 py-3 shadow-soft transition-colors hover:border-accent/30 hover:bg-panel"
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <code className="truncate font-mono text-[11px] text-subtle">
+                        {r.event_id}
+                      </code>
+                      <Badge variant="accent" dot>
+                        score {r.score.toFixed(3)}
+                      </Badge>
                     </div>
-                    <div className="mb-1 text-sm font-medium">{r.summary}</div>
-                    <div className="grid grid-cols-1 gap-1 text-xs text-subtle md:grid-cols-3">
-                      <div><strong>action:</strong> {r.action || "—"}</div>
-                      <div><strong>causality:</strong> {r.causality || "—"}</div>
-                      <div><strong>ts:</strong> {r.timestamp ? new Date(r.timestamp).toLocaleString("zh-CN") : "—"}</div>
+                    <div className="mb-2 text-sm font-medium leading-relaxed">
+                      {r.summary}
+                    </div>
+                    <div className="grid grid-cols-1 gap-1.5 text-xs text-subtle md:grid-cols-3">
+                      <KV label="action" value={r.action} />
+                      <KV label="causality" value={r.causality} />
+                      <KV
+                        label="ts"
+                        value={
+                          r.timestamp
+                            ? new Date(r.timestamp).toLocaleString("zh-CN")
+                            : null
+                        }
+                      />
                     </div>
                   </li>
                 ))}
@@ -352,7 +427,7 @@ function GraphTab({ dbId }: { dbId: string }) {
         <iframe
           title="知识图谱"
           src={src}
-          className="block h-[78vh] w-full rounded-lg"
+          className="block h-[78vh] w-full rounded-xl bg-bg-soft"
           sandbox="allow-scripts allow-same-origin allow-popups"
         />
       </CardContent>
@@ -373,7 +448,7 @@ function LogsTab({ dbId }: { dbId: string }) {
         <iframe
           title="审计日志"
           src={src}
-          className="block h-[78vh] w-full rounded-lg"
+          className="block h-[78vh] w-full rounded-xl bg-bg-soft"
           sandbox="allow-scripts allow-same-origin"
         />
       </CardContent>
@@ -441,7 +516,12 @@ function EvolveTab({ dbId }: { dbId: string }) {
         <Card>
           <CardContent>
             <div className="mb-2 text-sm font-semibold">上次操作返回</div>
-            <pre ref={ref} className="overflow-auto rounded-md bg-muted p-3 text-xs">{last}</pre>
+            <pre
+              ref={ref}
+              className="overflow-auto rounded-lg border border-border/60 bg-bg-soft p-3 text-xs leading-relaxed"
+            >
+              {last}
+            </pre>
           </CardContent>
         </Card>
       )}

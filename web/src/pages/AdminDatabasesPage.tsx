@@ -3,11 +3,20 @@ import { Link } from "react-router-dom";
 import { Layout, PageHeader } from "@/components/Layout";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { Table, THead, TBody, TR, TH, TD, EmptyRow } from "@/components/ui/Table";
+import {
+  Table,
+  THead,
+  TBody,
+  TR,
+  TH,
+  TD,
+  EmptyRow,
+  SkeletonRow,
+} from "@/components/ui/Table";
 import { adminApi } from "@/api/client";
 import type { DatabaseView } from "@/api/types";
 import { formatDate, shortId } from "@/lib/utils";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Database } from "lucide-react";
 
 export function AdminDatabasesPage() {
   const [list, setList] = useState<DatabaseView[] | null>(null);
@@ -24,10 +33,11 @@ export function AdminDatabasesPage() {
   return (
     <Layout>
       <PageHeader
+        eyebrow="管理后台 · 数据库"
         title="全部数据库"
         description="跨用户的所有库。点击进入可使用 admin 身份越权访问业务接口。"
         actions={
-          <label className="flex items-center gap-2 text-sm text-subtle">
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-panel px-3 py-1.5 text-sm text-text-soft shadow-soft transition hover:border-border-strong">
             <input
               type="checkbox"
               checked={showArchived}
@@ -52,21 +62,35 @@ export function AdminDatabasesPage() {
         </THead>
         <TBody>
           {list === null ? (
-            <EmptyRow colSpan={7} text="加载中…" />
+            <SkeletonRow colSpan={7} rows={5} />
           ) : list.length === 0 ? (
-            <EmptyRow colSpan={7} text="暂无库" />
+            <EmptyRow
+              colSpan={7}
+              text="暂无库"
+              icon={<Database className="h-5 w-5" />}
+            />
           ) : (
             list.map((d) => (
               <TR key={d.db_id}>
-                <TD className="font-medium">{d.display_name}</TD>
+                <TD className="font-medium">
+                  <span className="inline-flex items-center gap-2.5">
+                    <span className="grid h-7 w-7 place-items-center rounded-lg bg-accent/10 text-accent">
+                      <Database className="h-3.5 w-3.5" />
+                    </span>
+                    {d.display_name}
+                  </span>
+                </TD>
                 <TD className="font-mono text-xs text-subtle">{shortId(d.db_id, 16)}</TD>
                 <TD>
-                  <Link to={`/ui/admin/users/${d.owner_user_id}`} className="font-mono text-xs text-accent hover:underline">
+                  <Link
+                    to={`/ui/admin/users/${d.owner_user_id}`}
+                    className="font-mono text-xs text-accent hover:underline"
+                  >
                     {shortId(d.owner_user_id, 12)}
                   </Link>
                 </TD>
                 <TD>
-                  <Badge variant={d.status === "active" ? "success" : "outline"}>
+                  <Badge variant={d.status === "active" ? "success" : "outline"} dot>
                     {d.status === "active" ? "活跃" : "归档"}
                   </Badge>
                 </TD>

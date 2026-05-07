@@ -7,7 +7,16 @@ import { Label } from "@/components/ui/Label";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Dialog, DialogActions } from "@/components/ui/Dialog";
-import { Table, THead, TBody, TR, TH, TD, EmptyRow } from "@/components/ui/Table";
+import {
+  Table,
+  THead,
+  TBody,
+  TR,
+  TH,
+  TD,
+  EmptyRow,
+  SkeletonRow,
+} from "@/components/ui/Table";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { OneTimeTokenDialog } from "@/components/OneTimeTokenDialog";
 import { ScopeBadgeList } from "@/components/ScopeBadge";
@@ -83,18 +92,22 @@ export function AdminUserDetailPage() {
         </Link>
       </div>
       <PageHeader
+        eyebrow="管理后台 · 用户"
         title={data ? data.user.name : userId}
         description={
           data ? (
             <>
-              user_id: <code className="font-mono">{data.user.id}</code> · 创建于 {formatDate(data.user.created_at)}
+              user_id: <code className="font-mono">{data.user.id}</code> · 创建于{" "}
+              {formatDate(data.user.created_at)}
             </>
           ) : (
             "加载中…"
           )
         }
         actions={
-          <Button onClick={() => setIssuing(true)}><KeyRound className="h-4 w-4" /> 签发新 Key</Button>
+          <Button onClick={() => setIssuing(true)}>
+            <KeyRound className="h-4 w-4" /> 签发新 Key
+          </Button>
         }
       />
 
@@ -116,22 +129,30 @@ export function AdminUserDetailPage() {
               </THead>
               <TBody>
                 {data === null ? (
-                  <EmptyRow colSpan={5} text="加载中…" />
+                  <SkeletonRow colSpan={5} rows={3} />
                 ) : data.keys.length === 0 ? (
-                  <EmptyRow colSpan={5} text="该用户尚无 Key" />
+                  <EmptyRow
+                    colSpan={5}
+                    text="该用户尚无 Key"
+                    icon={<KeyRound className="h-5 w-5" />}
+                  />
                 ) : (
                   data.keys.map((k) => (
                     <TR key={k.id}>
                       <TD className="font-medium">
                         {k.label || <span className="text-subtle">（无）</span>}
-                        <div className="font-mono text-[10px] text-subtle">{shortId(k.id, 12)}</div>
+                        <div className="font-mono text-[10px] text-subtle">
+                          {shortId(k.id, 12)}
+                        </div>
                       </TD>
-                      <TD><ScopeBadgeList scopes={k.scopes} /></TD>
+                      <TD>
+                        <ScopeBadgeList scopes={k.scopes} />
+                      </TD>
                       <TD>
                         {k.revoked_at ? (
                           <Badge variant="outline">已撤销</Badge>
                         ) : (
-                          <Badge variant="success">活跃</Badge>
+                          <Badge variant="success" dot>活跃</Badge>
                         )}
                       </TD>
                       <TD className="text-xs text-subtle">{formatDate(k.last_used_at)}</TD>
@@ -164,7 +185,7 @@ export function AdminUserDetailPage() {
               </THead>
               <TBody>
                 {data === null ? (
-                  <EmptyRow colSpan={4} text="加载中…" />
+                  <SkeletonRow colSpan={4} rows={3} />
                 ) : data.databases.length === 0 ? (
                   <EmptyRow colSpan={4} text="该用户尚无库" />
                 ) : (
@@ -173,7 +194,7 @@ export function AdminUserDetailPage() {
                       <TD className="font-medium">{d.display_name}</TD>
                       <TD className="font-mono text-xs text-subtle">{shortId(d.db_id, 16)}</TD>
                       <TD>
-                        <Badge variant={d.status === "active" ? "success" : "outline"}>
+                        <Badge variant={d.status === "active" ? "success" : "outline"} dot>
                           {d.status === "active" ? "活跃" : "归档"}
                         </Badge>
                       </TD>

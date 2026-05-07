@@ -5,12 +5,21 @@ import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Badge } from "@/components/ui/Badge";
 import { Dialog, DialogActions } from "@/components/ui/Dialog";
-import { Table, THead, TBody, TR, TH, TD, EmptyRow } from "@/components/ui/Table";
+import {
+  Table,
+  THead,
+  TBody,
+  TR,
+  TH,
+  TD,
+  EmptyRow,
+  SkeletonRow,
+} from "@/components/ui/Table";
 import { ScopeBadgeList } from "@/components/ScopeBadge";
 import { ScopeChecklist } from "@/components/ScopeChecklist";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { OneTimeTokenDialog } from "@/components/OneTimeTokenDialog";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, KeyRound } from "lucide-react";
 import { meApi } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
 import type { ApiKeyView, Scope } from "@/api/types";
@@ -88,10 +97,14 @@ export function ConsoleKeysPage() {
   if (me?.is_root) {
     return (
       <Layout>
-        <PageHeader title="我的 API Key" />
-        <div className="rounded-md border border-warning/30 bg-warning/10 p-4 text-sm">
+        <PageHeader eyebrow="控制台 · 凭据" title="我的 API Key" />
+        <div className="rounded-xl border border-warning/30 bg-warning-soft/60 p-4 text-sm leading-relaxed text-warning shadow-soft">
           您正以 ROOT 身份登录，ROOT_API_KEY 通过环境变量管理，无法在此自助签发或撤销。
-          请前往 <a className="text-accent underline" href="/ui/admin/users">用户管理</a> 创建具名 admin user。
+          请前往{" "}
+          <a className="font-medium underline underline-offset-2" href="/ui/admin/users">
+            用户管理
+          </a>{" "}
+          创建具名 admin user。
         </div>
       </Layout>
     );
@@ -100,6 +113,7 @@ export function ConsoleKeysPage() {
   return (
     <Layout>
       <PageHeader
+        eyebrow="控制台 · 凭据"
         title="我的 API Key"
         description="每个 Key 有独立的 scope；签发后明文 Token 仅显示一次。"
         actions={
@@ -109,9 +123,12 @@ export function ConsoleKeysPage() {
         }
       />
 
-      <div className="mb-4 rounded-md border border-border bg-muted/40 p-3 text-xs text-subtle">
-        当前 Key scope: <ScopeBadgeList scopes={me?.scopes ?? []} />
-        ；签发新 Key 时无法选择超出此范围的 scope（防止自我提权）。
+      <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-border/70 bg-panel-soft px-4 py-3 text-xs text-subtle shadow-soft">
+        <KeyRound className="h-3.5 w-3.5 text-accent" />
+        <span>当前 Key scope:</span>
+        <ScopeBadgeList scopes={me?.scopes ?? []} />
+        <span className="opacity-60">·</span>
+        <span>签发新 Key 时无法选择超出此范围的 scope（防止自我提权）。</span>
       </div>
 
       <Table>
@@ -128,9 +145,13 @@ export function ConsoleKeysPage() {
         </THead>
         <TBody>
           {list === null ? (
-            <EmptyRow colSpan={7} text="加载中…" />
+            <SkeletonRow colSpan={7} rows={4} />
           ) : list.length === 0 ? (
-            <EmptyRow colSpan={7} text="尚无 Key" />
+            <EmptyRow
+              colSpan={7}
+              text="尚无 Key"
+              icon={<KeyRound className="h-5 w-5" />}
+            />
           ) : (
             list.map((k) => {
               const isCurrent = k.id === me?.key_id;
@@ -150,7 +171,7 @@ export function ConsoleKeysPage() {
                     {k.revoked_at ? (
                       <Badge variant="outline">已撤销</Badge>
                     ) : (
-                      <Badge variant="success">活跃</Badge>
+                      <Badge variant="success" dot>活跃</Badge>
                     )}
                   </TD>
                   <TD className="text-xs text-subtle">{formatDate(k.created_at)}</TD>

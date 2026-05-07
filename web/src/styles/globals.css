@@ -2,37 +2,90 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 设计令牌：HSL 数值，与 graph.html 配色逻辑保持同源 */
+/* ============================================================
+ * 设计令牌
+ * - HSL 数值：与 graph.html 配色逻辑保持同源
+ * - 浅色：清爽的中性灰 + indigo→violet 品牌渐变
+ * - 深色：偏冷的 slate，避免发青
+ * ============================================================ */
 :root,
 [data-theme="light"] {
-  --bg: 220 20% 98%;
+  --bg: 220 30% 98%;
+  --bg-soft: 220 24% 96%;
   --panel: 0 0% 100%;
-  --muted: 220 14% 96%;
-  --border: 220 13% 90%;
-  --text: 222 22% 14%;
-  --subtle: 222 10% 45%;
-  --accent: 244 75% 59%;        /* indigo-600 */
+  --panel-soft: 220 28% 99%;
+  --muted: 220 16% 95%;
+  --border: 220 14% 90%;
+  --border-strong: 220 12% 82%;
+  --text: 222 24% 13%;
+  --text-soft: 222 18% 28%;
+  --subtle: 222 10% 46%;
+
+  --accent: 244 75% 59%;            /* indigo-600 */
   --accent-hover: 244 78% 52%;
+  --accent-soft: 244 100% 97%;
+  --accent-2: 270 86% 64%;          /* violet 渐变伴生色 */
+  --accent-3: 200 95% 55%;          /* sky 提亮色 */
+
   --danger: 0 72% 51%;
   --danger-soft: 0 86% 97%;
   --success: 152 60% 36%;
+  --success-soft: 152 70% 96%;
   --warning: 35 92% 50%;
-  --radius: 10px;
+  --warning-soft: 35 92% 96%;
+
+  --radius: 12px;
+  --radius-lg: 16px;
+
+  --ring: 244 75% 59% / 0.35;
+  --shadow-color: 220 40% 12%;
+  --shadow-soft: 0 1px 2px 0 hsl(var(--shadow-color) / 0.04),
+                 0 4px 12px -2px hsl(var(--shadow-color) / 0.06);
+  --shadow-md: 0 2px 6px -1px hsl(var(--shadow-color) / 0.06),
+               0 12px 28px -6px hsl(var(--shadow-color) / 0.10);
+  --shadow-lg: 0 6px 12px -2px hsl(var(--shadow-color) / 0.08),
+               0 24px 48px -8px hsl(var(--shadow-color) / 0.16);
+
+  --gradient-brand: linear-gradient(135deg, hsl(var(--accent)) 0%, hsl(var(--accent-2)) 100%);
+  --gradient-brand-soft: linear-gradient(135deg, hsl(var(--accent) / 0.10) 0%, hsl(var(--accent-2) / 0.10) 100%);
 }
 
 [data-theme="dark"] {
-  --bg: 222 22% 9%;
-  --panel: 222 18% 13%;
-  --muted: 222 14% 18%;
-  --border: 222 12% 22%;
-  --text: 220 20% 96%;
-  --subtle: 220 10% 65%;
+  --bg: 224 20% 7%;
+  --bg-soft: 224 18% 10%;
+  --panel: 224 16% 12%;
+  --panel-soft: 224 14% 14%;
+  --muted: 224 12% 17%;
+  --border: 224 10% 22%;
+  --border-strong: 224 10% 30%;
+  --text: 220 18% 96%;
+  --text-soft: 220 14% 86%;
+  --subtle: 220 10% 64%;
+
   --accent: 244 80% 70%;
-  --accent-hover: 244 86% 76%;
+  --accent-hover: 244 88% 78%;
+  --accent-soft: 244 60% 18%;
+  --accent-2: 270 86% 74%;
+  --accent-3: 200 90% 65%;
+
   --danger: 0 80% 64%;
   --danger-soft: 0 60% 16%;
   --success: 152 55% 55%;
+  --success-soft: 152 40% 16%;
   --warning: 38 92% 60%;
+  --warning-soft: 38 60% 16%;
+
+  --ring: 244 80% 70% / 0.45;
+  --shadow-color: 220 60% 2%;
+  --shadow-soft: 0 1px 2px 0 hsl(var(--shadow-color) / 0.40),
+                 0 4px 12px -2px hsl(var(--shadow-color) / 0.55);
+  --shadow-md: 0 2px 6px -1px hsl(var(--shadow-color) / 0.45),
+               0 12px 28px -6px hsl(var(--shadow-color) / 0.55);
+  --shadow-lg: 0 6px 12px -2px hsl(var(--shadow-color) / 0.55),
+               0 24px 48px -8px hsl(var(--shadow-color) / 0.70);
+
+  --gradient-brand: linear-gradient(135deg, hsl(var(--accent)) 0%, hsl(var(--accent-2)) 100%);
+  --gradient-brand-soft: linear-gradient(135deg, hsl(var(--accent) / 0.18) 0%, hsl(var(--accent-2) / 0.18) 100%);
 }
 
 * {
@@ -47,19 +100,31 @@ body,
 
 body {
   @apply bg-bg text-text font-sans antialiased;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-image:
+    radial-gradient(1100px 600px at 100% -10%, hsl(var(--accent) / 0.06), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, hsl(var(--accent-2) / 0.05), transparent 60%);
+  background-attachment: fixed;
 }
 
-/* 滚动条美化 */
+/* 滚动条 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: hsl(var(--subtle) / 0.5); }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border-strong) / 0.6);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--subtle) / 0.6); background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* 焦点可见 */
 :focus-visible {
   outline: 2px solid hsl(var(--accent));
   outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /* 表单元素重置 */
@@ -68,7 +133,77 @@ input, textarea, select, button {
   color: inherit;
 }
 
-/* 代码块 */
-code, pre, kbd {
-  @apply font-mono;
+/* 代码 */
+code, pre, kbd { @apply font-mono; }
+code:not(pre code) {
+  @apply rounded bg-muted px-1 py-0.5 text-[0.85em];
+}
+
+/* ============================================================
+ * 关键帧动画（手写以避免新增依赖）
+ * ============================================================ */
+@keyframes lm-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes lm-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes lm-scale-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes lm-slide-in-right {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes lm-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes lm-pulse-ring {
+  0%   { box-shadow: 0 0 0 0 hsl(var(--accent) / 0.45); }
+  70%  { box-shadow: 0 0 0 12px hsl(var(--accent) / 0); }
+  100% { box-shadow: 0 0 0 0 hsl(var(--accent) / 0); }
+}
+
+/* 通用动画工具 */
+.lm-anim-fade   { animation: lm-fade-in   200ms ease-out both; }
+.lm-anim-fade-up{ animation: lm-fade-up   220ms ease-out both; }
+.lm-anim-scale  { animation: lm-scale-in  180ms cubic-bezier(.2,.8,.2,1) both; }
+.lm-anim-slide-in-right { animation: lm-slide-in-right 220ms ease-out both; }
+
+/* Skeleton 闪烁 */
+.lm-skeleton {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 0%,
+    hsl(var(--border)) 50%,
+    hsl(var(--muted)) 100%
+  );
+  background-size: 200% 100%;
+  animation: lm-shimmer 1.4s linear infinite;
+  border-radius: 8px;
+}
+
+/* 玻璃质感 */
+.lm-glass {
+  background: hsl(var(--panel) / 0.72);
+  backdrop-filter: saturate(140%) blur(14px);
+  -webkit-backdrop-filter: saturate(140%) blur(14px);
+}
+
+/* 渐变文字 */
+.lm-gradient-text {
+  background: var(--gradient-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 选中文本配色 */
+::selection {
+  background: hsl(var(--accent) / 0.22);
+  color: hsl(var(--text));
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { AlertTriangle } from "lucide-react";
 import { Dialog, DialogActions } from "./ui/Dialog";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
@@ -39,18 +40,27 @@ export function DangerConfirmDialog({
       open={open}
       onClose={onCancel}
       title={
-        <span className="flex items-center gap-2 text-danger">⚠ {title}</span>
+        <span className="flex items-center gap-2 text-danger">
+          <span className="grid h-7 w-7 place-items-center rounded-full bg-danger/10">
+            <AlertTriangle className="h-3.5 w-3.5" />
+          </span>
+          {title}
+        </span>
       }
       description={description}
       dismissOnOverlay={false}
     >
-      <div className="space-y-3">
-        <div className="rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+      <div className="space-y-4">
+        <div className="rounded-lg border border-danger/30 bg-danger/5 p-3.5 text-sm leading-relaxed text-danger">
           此操作不可撤销，请仔细核对。
         </div>
         <div>
-          <Label>
-            {inputLabel ?? "请输入"} <code className="rounded bg-muted px-1.5 py-0.5">{confirmPhrase}</code> 以解锁
+          <Label className="normal-case tracking-normal text-text-soft">
+            {inputLabel ?? "请输入"}{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 text-text">
+              {confirmPhrase}
+            </code>{" "}
+            以解锁
           </Label>
           <Input
             value={typed}

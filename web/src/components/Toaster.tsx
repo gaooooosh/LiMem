@@ -9,6 +9,7 @@ interface ToastItem {
   id: number;
   kind: ToastKind;
   message: string;
+  ttl: number;
 }
 
 type Listener = (items: ToastItem[]) => void;
@@ -28,7 +29,7 @@ class ToastStore {
 
   push(kind: ToastKind, message: string, ttl = 4000) {
     const id = this.nextId++;
-    this.items = [...this.items, { id, kind, message }];
+    this.items = [...this.items, { id, kind, message, ttl }];
     this.emit();
     if (ttl > 0) setTimeout(() => this.dismiss(id), ttl);
   }
@@ -60,35 +61,71 @@ const iconOf: Record<ToastKind, JSX.Element> = {
 };
 
 const styleOf: Record<ToastKind, string> = {
-  info: "border-border bg-panel text-text",
-  success: "border-success/30 bg-success/10 text-success",
-  warning: "border-warning/30 bg-warning/10 text-warning",
-  error: "border-danger/30 bg-danger/10 text-danger",
+  info: "border-border/70 bg-panel/90 text-text",
+  success: "border-success/30 bg-success-soft text-success",
+  warning: "border-warning/30 bg-warning-soft text-warning",
+  error: "border-danger/30 bg-danger-soft text-danger",
+};
+
+const accentOf: Record<ToastKind, string> = {
+  info: "bg-subtle/60",
+  success: "bg-success",
+  warning: "bg-warning",
+  error: "bg-danger",
 };
 
 export function Toaster() {
   const [items, setItems] = useState<ToastItem[]>([]);
   useEffect(() => store.subscribe(setItems), []);
   return (
-    <div className="pointer-events-none fixed right-4 top-4 z-[100] flex w-80 flex-col gap-2">
+    <div
+      className={cn(
+        "pointer-events-none fixed right-4 top-4 z-[100] flex w-[22rem] flex-col gap-2",
+        "max-w-[calc(100vw-2rem)]",
+      )}
+    >
       {items.map((t) => (
         <div
           key={t.id}
           className={cn(
-            "pointer-events-auto flex items-start gap-2 rounded-md border bg-panel px-3 py-2 text-sm shadow-lg",
+            "lm-anim-slide-in-right pointer-events-auto group relative overflow-hidden",
+            "flex items-start gap-2.5 rounded-xl border px-3.5 py-3 pr-9 text-sm shadow-md backdrop-blur",
             styleOf[t.kind],
           )}
+          role="status"
         >
+          <span
+            className={cn(
+              "absolute left-0 top-0 h-full w-1",
+              accentOf[t.kind],
+            )}
+            aria-hidden
+          />
           <span className="mt-0.5 shrink-0">{iconOf[t.kind]}</span>
-          <div className="flex-1 break-words">{t.message}</div>
+          <div className="flex-1 break-words leading-relaxed">{t.message}</div>
           <button
             type="button"
             onClick={() => store.dismiss(t.id)}
-            className="-mr-1 -mt-0.5 rounded p-0.5 text-subtle hover:bg-muted"
+            className={cn(
+              "absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-md",
+              "text-current/70 opacity-60 transition hover:bg-black/5 hover:opacity-100",
+              "dark:hover:bg-white/10",
+            )}
             aria-label="关闭"
           >
             <X className="h-3.5 w-3.5" />
           </button>
+          {t.ttl > 0 && (
+            <span
+              className={cn(
+                "absolute bottom-0 left-0 h-[2px] w-full origin-left opacity-50",
+                accentOf[t.kind],
+              )}
+              style={{ animation: `lm-toast-${t.id} ${t.ttl}ms linear forwards` }}
+              aria-hidden
+            />
+          )}
+          <style>{`@keyframes lm-toast-${t.id} { from { transform: scaleX(1); } to { transform: scaleX(0); } }`}</style>
         </div>
       ))}
     </div>

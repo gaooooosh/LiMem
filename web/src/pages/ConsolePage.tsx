@@ -9,8 +9,17 @@ import { Label } from "@/components/ui/Label";
 import { Dialog, DialogActions } from "@/components/ui/Dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ScopeBadgeList } from "@/components/ScopeBadge";
-import { Table, THead, TBody, TR, TH, TD, EmptyRow } from "@/components/ui/Table";
-import { Database, Plus, Archive, ArrowRight } from "lucide-react";
+import {
+  Table,
+  THead,
+  TBody,
+  TR,
+  TH,
+  TD,
+  EmptyRow,
+  SkeletonRow,
+} from "@/components/ui/Table";
+import { Database, Plus, Archive, ArrowRight, IdCard, KeyRound, ShieldCheck } from "lucide-react";
 import { dbApi } from "@/api/client";
 import { useAuth, hasScope } from "@/auth/AuthContext";
 import type { DatabaseView } from "@/api/types";
@@ -76,6 +85,7 @@ export function ConsolePage() {
   return (
     <Layout>
       <PageHeader
+        eyebrow="控制台"
         title="我的数据库"
         description="每个数据库是一个独立的 Kuzu 图记忆库，物理隔离。可在此创建、归档与进入详情。"
         actions={
@@ -96,31 +106,45 @@ export function ConsolePage() {
       />
 
       {me && (
-        <Card className="mb-6">
-          <CardContent className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <div className="text-xs uppercase tracking-wide text-subtle">当前身份</div>
-              <div className="mt-0.5 text-base font-medium">
+        <Card className="mb-6 overflow-hidden">
+          <CardContent className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <InfoCell
+              icon={<IdCard className="h-4 w-4" />}
+              label="当前身份"
+              tone="accent"
+            >
+              <div className="flex items-center gap-1.5 text-sm font-medium">
                 {me.user_name}
-                {me.is_root && <Badge variant="danger" className="ml-2">ROOT</Badge>}
+                {me.is_root && <Badge variant="danger" dot>ROOT</Badge>}
               </div>
-              <div className="mt-1 text-xs text-subtle">
-                user_id: <code className="font-mono">{me.user_id}</code>
+              <div className="mt-1 truncate font-mono text-[11px] text-subtle">
+                {me.user_id}
               </div>
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-wide text-subtle">权限</div>
-              <div className="mt-1"><ScopeBadgeList scopes={me.scopes} /></div>
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-wide text-subtle">当前 Key</div>
-              <div className="mt-1 font-mono text-xs">
-                {shortId(me.key_id, 12)} {me.key_label && <span className="text-subtle">({me.key_label})</span>}
+            </InfoCell>
+            <InfoCell
+              icon={<ShieldCheck className="h-4 w-4" />}
+              label="权限"
+              tone="success"
+            >
+              <ScopeBadgeList scopes={me.scopes} />
+            </InfoCell>
+            <InfoCell
+              icon={<KeyRound className="h-4 w-4" />}
+              label="当前 Key"
+              tone="warning"
+            >
+              <div className="font-mono text-xs">
+                {shortId(me.key_id, 12)}
               </div>
-            </div>
-            <div>
-              <Link to="/ui/console/keys">
-                <Button variant="outline" size="sm">管理我的 Key</Button>
+              {me.key_label && (
+                <div className="text-[11px] text-subtle">{me.key_label}</div>
+              )}
+            </InfoCell>
+            <div className="flex items-end justify-end sm:col-span-2 lg:col-span-1">
+              <Link to="/ui/console/keys" className="w-full">
+                <Button variant="outline" className="w-full">
+                  管理我的 Key <ArrowRight className="h-3.5 w-3.5" />
+                </Button>
               </Link>
             </div>
           </CardContent>
@@ -140,28 +164,38 @@ export function ConsolePage() {
         </THead>
         <TBody>
           {dbs === null ? (
-            <EmptyRow colSpan={6} text="加载中…" />
+            <SkeletonRow colSpan={6} rows={4} />
           ) : dbs.length === 0 ? (
-            <EmptyRow colSpan={6} text="还没有数据库，点击右上角创建一个" />
+            <EmptyRow
+              colSpan={6}
+              text="还没有数据库，点击右上角创建一个"
+              icon={<Database className="h-5 w-5" />}
+            />
           ) : (
             dbs.map((d) => (
               <TR key={d.db_id}>
                 <TD className="font-medium">
-                  <span className="inline-flex items-center gap-2">
-                    <Database className="h-4 w-4 text-accent" />
+                  <span className="inline-flex items-center gap-2.5">
+                    <span className="grid h-7 w-7 place-items-center rounded-lg bg-accent/10 text-accent">
+                      <Database className="h-3.5 w-3.5" />
+                    </span>
                     {d.display_name}
                   </span>
                 </TD>
-                <TD className="font-mono text-xs text-subtle">{shortId(d.db_id, 16)}</TD>
+                <TD className="font-mono text-xs text-subtle">
+                  {shortId(d.db_id, 16)}
+                </TD>
                 <TD>
                   {d.status === "active" ? (
-                    <Badge variant="success">活跃</Badge>
+                    <Badge variant="success" dot>活跃</Badge>
                   ) : (
                     <Badge variant="outline">已归档</Badge>
                   )}
                 </TD>
                 <TD className="text-xs text-subtle">{formatDate(d.created_at)}</TD>
-                <TD className="text-xs text-subtle">{formatDate(d.last_accessed_at)}</TD>
+                <TD className="text-xs text-subtle">
+                  {formatDate(d.last_accessed_at)}
+                </TD>
                 <TD className="text-right">
                   <div className="flex justify-end gap-1.5">
                     <Link to={`/ui/console/db/${d.db_id}`}>
@@ -193,7 +227,9 @@ export function ConsolePage() {
         description="display_name 仅作展示，db_id 由后端自动生成。"
       >
         <div>
-          <Label htmlFor="dn">显示名</Label>
+          <Label htmlFor="dn" className="normal-case tracking-normal">
+            显示名
+          </Label>
           <Input
             id="dn"
             value={name}
@@ -220,13 +256,46 @@ export function ConsolePage() {
         title="归档数据库"
         description={
           <>
-            将 <code className="font-mono">{archiveTarget?.display_name}</code> 标记为已归档。
-            归档后数据保留但不再可写入；如需恢复请联系管理员。
+            将 <code className="font-mono">{archiveTarget?.display_name}</code>{" "}
+            标记为已归档。 归档后数据保留但不再可写入；如需恢复请联系管理员。
           </>
         }
         confirmText="确认归档"
         danger
       />
     </Layout>
+  );
+}
+
+function InfoCell({
+  icon,
+  label,
+  tone,
+  children,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  tone: "accent" | "success" | "warning";
+  children: React.ReactNode;
+}) {
+  const toneCls: Record<string, string> = {
+    accent: "bg-accent/10 text-accent",
+    success: "bg-success/10 text-success",
+    warning: "bg-warning/12 text-warning",
+  };
+  return (
+    <div className="flex items-start gap-3">
+      <div
+        className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${toneCls[tone]}`}
+      >
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-subtle">
+          {label}
+        </div>
+        <div className="mt-1">{children}</div>
+      </div>
+    </div>
   );
 }
