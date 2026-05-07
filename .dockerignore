@@ -1,8 +1,32 @@
+# 顶层
+.git/
 .venv/
-DB/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 环境
 .env
 .env.*
 !.env.example
-__pycache__/
-.git/
+
+# 数据与日志（运行时挂卷）
+DB/
+outputs/
+
+# 前端：node_modules 和 dist 都不进镜像（dist 由 stage 1 自己构建）
+web/node_modules/
+web/dist/
 node_modules/
+
+# IDE / Claude 工作目录
+.idea/
+.vscode/
+.DS_Store
+.claude/
+.spec-workflow/

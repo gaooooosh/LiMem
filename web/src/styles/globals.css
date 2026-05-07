@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 设计令牌：HSL 数值，与 graph.html 配色逻辑保持同源 */
+:root,
+[data-theme="light"] {
+  --bg: 220 20% 98%;
+  --panel: 0 0% 100%;
+  --muted: 220 14% 96%;
+  --border: 220 13% 90%;
+  --text: 222 22% 14%;
+  --subtle: 222 10% 45%;
+  --accent: 244 75% 59%;        /* indigo-600 */
+  --accent-hover: 244 78% 52%;
+  --danger: 0 72% 51%;
+  --danger-soft: 0 86% 97%;
+  --success: 152 60% 36%;
+  --warning: 35 92% 50%;
+  --radius: 10px;
+}
+
+[data-theme="dark"] {
+  --bg: 222 22% 9%;
+  --panel: 222 18% 13%;
+  --muted: 222 14% 18%;
+  --border: 222 12% 22%;
+  --text: 220 20% 96%;
+  --subtle: 220 10% 65%;
+  --accent: 244 80% 70%;
+  --accent-hover: 244 86% 76%;
+  --danger: 0 80% 64%;
+  --danger-soft: 0 60% 16%;
+  --success: 152 55% 55%;
+  --warning: 38 92% 60%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-text font-sans antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--subtle) / 0.5); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* 焦点可见 */
+:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 2px;
+}
+
+/* 表单元素重置 */
+input, textarea, select, button {
+  font: inherit;
+  color: inherit;
+}
+
+/* 代码块 */
+code, pre, kbd {
+  @apply font-mono;
+}

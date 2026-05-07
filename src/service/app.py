@@ -19,7 +19,9 @@ from .routers import admin as admin_router
 from .routers import databases as databases_router
 from .routers import debug_ui as debug_router
 from .routers import graph as graph_router
+from .routers import me as me_router
 from .routers import memory as memory_router
+from .routers import ui as ui_router
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,9 @@ def create_app() -> FastAPI:
     app.include_router(memory_router.router)
     app.include_router(graph_router.router)
     app.include_router(debug_router.router)
+    app.include_router(me_router.router)
+    # SPA 静态托管：必须最后挂载，避免 /ui 前缀影响 API 路由匹配
+    ui_router.mount(app)
 
     @app.get("/")
     def index() -> dict[str, Any]:
@@ -110,7 +115,9 @@ def create_app() -> FastAPI:
                 "admin": "/admin/*",
                 "databases": "/databases (POST/GET/DELETE)",
                 "per_db": "/db/{db_id}/{ingest,query,evolve,health,stats,...}",
+                "me": "/me, /me/keys (GET/POST/DELETE)",
                 "debug_ui": "/graph?db=...&key=..., /logs?db=...&key=...",
+                "console_ui": "/ui/login, /ui/console, /ui/admin",
             },
         }
 
