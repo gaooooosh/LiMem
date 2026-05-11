@@ -11,11 +11,13 @@ import {
   CardTitle,
 } from "@/components/ui/Card";
 import { useAuth } from "@/auth/AuthContext";
+import { getLastKey } from "@/api/client";
 import { Eye, EyeOff, KeyRound, Sparkles } from "lucide-react";
 
 export function LoginPage() {
   const { login, loginError, me } = useAuth();
-  const [key, setKey] = useState("");
+  // 惰性初始化：进入登录页时预填上次成功登录的 Key（持久化于 localStorage）
+  const [key, setKey] = useState<string>(() => getLastKey() ?? "");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();

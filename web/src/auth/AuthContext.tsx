@@ -11,6 +11,7 @@ import {
   clearStoredKey,
   getStoredKey,
   meApi,
+  setLastKey,
   setStoredKey,
 } from "@/api/client";
 import type { Me } from "@/api/types";
@@ -53,8 +54,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (key: string) => {
     setLoginError(null);
     try {
-      const data = await meApi.whoami(key.trim());
-      setStoredKey(key.trim());
+      const trimmed = key.trim();
+      const data = await meApi.whoami(trimmed);
+      setStoredKey(trimmed);
+      // 仅在验证通过后写入持久化记录，避免污染下次预填
+      setLastKey(trimmed);
       setMe(data);
       return data;
     } catch (e: unknown) {

@@ -16,6 +16,8 @@ import type {
 } from "./types";
 
 const KEY_STORAGE = "limem_key";
+// 持久化"上次成功登录的 Key"，仅用于登录页输入框预填，不参与请求注入
+const LAST_KEY_STORAGE = "limem_last_key";
 
 export function getStoredKey(): string | null {
   return sessionStorage.getItem(KEY_STORAGE);
@@ -27,6 +29,23 @@ export function setStoredKey(key: string) {
 
 export function clearStoredKey() {
   sessionStorage.removeItem(KEY_STORAGE);
+}
+
+export function getLastKey(): string | null {
+  try {
+    return localStorage.getItem(LAST_KEY_STORAGE);
+  } catch {
+    return null;
+  }
+}
+
+export function setLastKey(key: string) {
+  if (!key) return;
+  try {
+    localStorage.setItem(LAST_KEY_STORAGE, key);
+  } catch {
+    // 隐私模式 / 配额超限：静默降级，不影响登录主流程
+  }
 }
 
 export class ApiError extends Error {
