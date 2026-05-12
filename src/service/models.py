@@ -127,3 +127,47 @@ class CreateDatabaseRequest(BaseModel):
 
 
 UserDetailResponse.model_rebuild()
+
+
+# ---------- 注册实体 ----------
+
+
+class RegisteredEntity(BaseModel):
+    id: str
+    type: str = "UNKNOWN"
+    description: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    registered: bool = True
+    status: str = "active"
+    canonical_id: Optional[str] = None
+    merged_from: list[str] = Field(default_factory=list)
+    created_at: Optional[int] = None
+    updated_at: Optional[int] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RegisterEntityRequest(BaseModel):
+    entity_id: str
+    description: str
+    entity_type: str = "UNKNOWN"
+    aliases: Optional[list[str]] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class UpdateEntityRequest(BaseModel):
+    description: Optional[str] = None
+    entity_type: Optional[str] = None
+    add_aliases: Optional[list[str]] = None
+    remove_aliases: Optional[list[str]] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class RegisterEntityResponse(BaseModel):
+    action: str  # created | promoted | updated
+    existed_as_extracted: bool = False
+    entity: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListEntitiesResponse(BaseModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0

@@ -6,6 +6,7 @@
 
 import os
 import re
+import time
 from typing import Any, Optional
 
 import kuzu
@@ -127,6 +128,16 @@ class KuzuStore(GraphStore):
                 id STRING,
                 type STRING,
                 embedding FLOAT[{dim}],
+                description STRING,
+                description_embedding FLOAT[{dim}],
+                aliases STRING,
+                registered BOOLEAN,
+                status STRING,
+                canonical_id STRING,
+                merged_from STRING,
+                metadata STRING,
+                created_at INT64,
+                updated_at INT64,
                 PRIMARY KEY(id)
             )
         """)
@@ -205,6 +216,15 @@ class KuzuStore(GraphStore):
             )
         """)
         self.conn.execute("""
+            CREATE REL TABLE IF NOT EXISTS ENTITY_MERGE_TRACE(
+                FROM Entity TO Entity,
+                merge_reason STRING,
+                similarity_score DOUBLE,
+                merged_at INT64,
+                strategy_version STRING
+            )
+        """)
+        self.conn.execute("""
             CREATE REL TABLE IF NOT EXISTS EVENT_RELATION(
                 FROM Event TO Event,
                 relation_type STRING,
@@ -245,6 +265,20 @@ class KuzuStore(GraphStore):
             "ALTER TABLE Event ADD status STRING",
             "ALTER TABLE Event ADD support_count INT64",
             f"ALTER TABLE Entity ADD embedding FLOAT[{dim}]",
+            "ALTER TABLE Entity ADD description STRING",
+            f"ALTER TABLE Entity ADD description_embedding FLOAT[{dim}]",
+            "ALTER TABLE Entity ADD aliases STRING",
+            "ALTER TABLE Entity ADD registered BOOLEAN",
+            "ALTER TABLE Entity ADD status STRING",
+            "ALTER TABLE Entity ADD canonical_id STRING",
+            "ALTER TABLE Entity ADD merged_from STRING",
+            "ALTER TABLE Entity ADD metadata STRING",
+            "ALTER TABLE Entity ADD created_at INT64",
+            "ALTER TABLE Entity ADD updated_at INT64",
+            "ALTER TABLE ENTITY_MERGE_TRACE ADD merge_reason STRING",
+            "ALTER TABLE ENTITY_MERGE_TRACE ADD similarity_score DOUBLE",
+            "ALTER TABLE ENTITY_MERGE_TRACE ADD merged_at INT64",
+            "ALTER TABLE ENTITY_MERGE_TRACE ADD strategy_version STRING",
             "ALTER TABLE INVOLVES ADD t_expired INT64",
             "ALTER TABLE INVOLVES ADD t_valid INT64",
             "ALTER TABLE INVOLVES ADD t_invalid INT64",
@@ -559,30 +593,106 @@ class KuzuStore(GraphStore):
 
     # ==================== Entity 操作 ====================
 
+    # 仅在 SELECT 这些非主键字段时使用；主键 id 单独处理
+    _ENTITY_NON_KEY_COLUMNS = [
+        "type",
+        "embedding",
+        "description",
+        "description_embedding",
+        "aliases",
+        "registered",
+        "status",
+        "canonical_id",
+        "merged_from",
+        "metadata",
+        "created_at",
+        "updated_at",
+    ]
+
+    def _entity_select_clause(self, alias: str = "e") -> str:
+        cols = ["id"] + self._ENTITY_NON_KEY_COLUMNS
+        return ", ".join(f"{alias}.{c}" for c in cols)
+
+    def _entity_columns(self) -> list[str]:
+        return ["id"] + self._ENTITY_NON_KEY_COLUMNS
+
+    def _row_to_entity(self, row: list[Any]) -> Entity:
+        return Entity.from_db_row(list(row), self._entity_columns())
+
     def ensure_entity(self, entity_name: str, entity_type: str = "UNKNOWN") -> bool:
-        """确保实体存在"""
+        """确保实体存在。
+
+        如果命中的节点已 status=merged 且有 canonical_id：
+        不创建新节点；返回 False 表示"未新建"。调用方若需要拿到
+        canonical id，请配合 resolve_canonical_entity_id。
+        """
         resp = self.conn.execute(
-            "MATCH (e:Entity {id: $id}) RETURN count(*)",
+            "MATCH (e:Entity {id: $id}) RETURN e.status, e.canonical_id",
             {"id": entity_name},
         )
-        exists = resp.has_next() and resp.get_next()[0] > 0
+        if resp.has_next():
+            row = resp.get_next()
+            # 命中已合并节点：不新建，也不复活
+            if (row[0] or "active") == "merged" and row[1]:
+                return False
+            return False
 
-        if not exists:
-            # 生成嵌入（如果有客户端）
-            embedding = None
-            if self.embedding_client:
-                embedding = self.embedding_client.get_embedding(entity_name)
+        # 生成裸名 embedding（保留既有行为）
+        embedding = None
+        if self.embedding_client:
+            embedding = self.embedding_client.get_embedding(entity_name)
 
-            self.conn.execute(
-                "CREATE (:Entity {id: $id, type: $type, embedding: $embedding})",
-                {"id": entity_name, "type": entity_type, "embedding": embedding},
-            )
-            return True
+        ts = int(time.time())
+        self.conn.execute(
+            """
+            CREATE (:Entity {
+                id: $id,
+                type: $type,
+                embedding: $embedding,
+                description: $description,
+                description_embedding: $description_embedding,
+                aliases: $aliases,
+                registered: $registered,
+                status: $status,
+                canonical_id: $canonical_id,
+                merged_from: $merged_from,
+                metadata: $metadata,
+                created_at: $created_at,
+                updated_at: $updated_at
+            })
+            """,
+            {
+                "id": entity_name,
+                "type": entity_type,
+                "embedding": embedding,
+                "description": "",
+                "description_embedding": None,
+                "aliases": safe_json_dumps([]),
+                "registered": False,
+                "status": "active",
+                "canonical_id": None,
+                "merged_from": safe_json_dumps([]),
+                "metadata": safe_json_dumps({}),
+                "created_at": ts,
+                "updated_at": ts,
+            },
+        )
+        return True
 
-        return False
+    def resolve_canonical_entity_id(self, entity_id: str) -> str:
+        """若节点 status=merged 且 canonical_id 非空，返回 canonical；否则返回原 id。"""
+        resp = self.conn.execute(
+            "MATCH (e:Entity {id: $id}) RETURN e.status, e.canonical_id",
+            {"id": entity_id},
+        )
+        if resp.has_next():
+            row = resp.get_next()
+            if (row[0] or "active") == "merged" and row[1]:
+                return str(row[1])
+        return entity_id
 
     def get_all_entities(self) -> list[str]:
-        """获取所有实体名称"""
+        """获取所有实体名称（含 merged 节点；调用方按需过滤）"""
         resp = self.conn.execute("MATCH (e:Entity) RETURN e.id")
         entities = []
         while resp.has_next():
@@ -603,6 +713,298 @@ class KuzuStore(GraphStore):
                 embeddings[entity_id] = list(embedding)
 
         return embeddings
+
+    # ------------------ Registered Entity 操作 ------------------
+
+    def get_entity(self, entity_id: str) -> Optional[Entity]:
+        resp = self.conn.execute(
+            f"MATCH (e:Entity {{id: $id}}) RETURN {self._entity_select_clause('e')}",
+            {"id": entity_id},
+        )
+        if resp.has_next():
+            return self._row_to_entity(resp.get_next())
+        return None
+
+    def get_registered_entity(self, entity_id: str) -> Optional[Entity]:
+        entity = self.get_entity(entity_id)
+        if entity is None or not entity.registered:
+            return None
+        return entity
+
+    def list_registered_entities_with_embeddings(self) -> list[Entity]:
+        resp = self.conn.execute(
+            f"""
+            MATCH (e:Entity)
+            WHERE e.registered = true AND (e.status IS NULL OR e.status = 'active')
+            RETURN {self._entity_select_clause('e')}
+            """
+        )
+        out: list[Entity] = []
+        while resp.has_next():
+            out.append(self._row_to_entity(resp.get_next()))
+        return out
+
+    def register_entity_node(
+        self,
+        entity_id: str,
+        entity_type: str,
+        description: str,
+        description_embedding: Optional[list[float]],
+        aliases: list[str],
+        metadata: dict[str, Any],
+        created_at: int,
+        name_embedding: Optional[list[float]] = None,
+    ) -> dict[str, Any]:
+        existing = self.get_entity(entity_id)
+        ts = int(created_at or time.time())
+        norm_aliases = list({a for a in (aliases or []) if a})
+        existed_as_extracted = False
+        mode = "created"
+
+        if existing is None:
+            # 创建：name_embedding 优先采用传入的；否则按裸名生成
+            name_emb = name_embedding
+            if name_emb is None and self.embedding_client:
+                name_emb = self.embedding_client.get_embedding(entity_id)
+            self.conn.execute(
+                """
+                CREATE (:Entity {
+                    id: $id,
+                    type: $type,
+                    embedding: $embedding,
+                    description: $description,
+                    description_embedding: $description_embedding,
+                    aliases: $aliases,
+                    registered: $registered,
+                    status: $status,
+                    canonical_id: $canonical_id,
+                    merged_from: $merged_from,
+                    metadata: $metadata,
+                    created_at: $created_at,
+                    updated_at: $updated_at
+                })
+                """,
+                {
+                    "id": entity_id,
+                    "type": entity_type or "UNKNOWN",
+                    "embedding": name_emb,
+                    "description": description or "",
+                    "description_embedding": description_embedding,
+                    "aliases": safe_json_dumps(norm_aliases),
+                    "registered": True,
+                    "status": "active",
+                    "canonical_id": None,
+                    "merged_from": safe_json_dumps([]),
+                    "metadata": safe_json_dumps(metadata or {}),
+                    "created_at": ts,
+                    "updated_at": ts,
+                },
+            )
+            mode = "created"
+        else:
+            if not existing.registered:
+                existed_as_extracted = True
+                mode = "promoted"
+            else:
+                mode = "updated"
+            # 原地更新关键字段
+            self.conn.execute(
+                """
+                MATCH (e:Entity {id: $id})
+                SET e.type = $type,
+                    e.description = $description,
+                    e.description_embedding = $description_embedding,
+                    e.aliases = $aliases,
+                    e.registered = true,
+                    e.status = 'active',
+                    e.metadata = $metadata,
+                    e.updated_at = $updated_at
+                """,
+                {
+                    "id": entity_id,
+                    "type": entity_type or existing.type or "UNKNOWN",
+                    "description": description or "",
+                    "description_embedding": description_embedding,
+                    "aliases": safe_json_dumps(
+                        sorted(set(list(existing.aliases or []) + norm_aliases))
+                    ),
+                    "metadata": safe_json_dumps(metadata or existing.metadata or {}),
+                    "updated_at": ts,
+                },
+            )
+        return {"mode": mode, "existed_as_extracted": existed_as_extracted}
+
+    def update_entity_attributes(
+        self,
+        entity_id: str,
+        *,
+        description: Optional[str] = None,
+        description_embedding: Optional[list[float]] = None,
+        entity_type: Optional[str] = None,
+        add_aliases: Optional[list[str]] = None,
+        remove_aliases: Optional[list[str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        updated_at: int = 0,
+    ) -> None:
+        existing = self.get_entity(entity_id)
+        if existing is None:
+            return
+        ts = int(updated_at or time.time())
+
+        new_aliases = list(existing.aliases or [])
+        if add_aliases:
+            for alias in add_aliases:
+                if alias and alias not in new_aliases:
+                    new_aliases.append(alias)
+        if remove_aliases:
+            remove_set = {a for a in remove_aliases if a}
+            new_aliases = [a for a in new_aliases if a not in remove_set]
+
+        new_description = (
+            description if description is not None else existing.description
+        )
+        new_description_embedding = (
+            description_embedding
+            if description_embedding is not None
+            else existing.description_embedding
+        )
+        new_type = entity_type or existing.type or "UNKNOWN"
+        new_metadata = metadata if metadata is not None else existing.metadata or {}
+
+        self.conn.execute(
+            """
+            MATCH (e:Entity {id: $id})
+            SET e.type = $type,
+                e.description = $description,
+                e.description_embedding = $description_embedding,
+                e.aliases = $aliases,
+                e.metadata = $metadata,
+                e.updated_at = $updated_at
+            """,
+            {
+                "id": entity_id,
+                "type": new_type,
+                "description": new_description or "",
+                "description_embedding": new_description_embedding,
+                "aliases": safe_json_dumps(new_aliases),
+                "metadata": safe_json_dumps(new_metadata),
+                "updated_at": ts,
+            },
+        )
+
+    def add_entity_alias(self, canonical_id: str, alias: str) -> None:
+        if not alias:
+            return
+        existing = self.get_entity(canonical_id)
+        if existing is None or not existing.registered:
+            return
+        if alias == canonical_id or alias in (existing.aliases or []):
+            return
+        new_aliases = list(existing.aliases or []) + [alias]
+        ts = int(time.time())
+        self.conn.execute(
+            "MATCH (e:Entity {id: $id}) SET e.aliases = $aliases, e.updated_at = $ts",
+            {"id": canonical_id, "aliases": safe_json_dumps(new_aliases), "ts": ts},
+        )
+
+    def relink_entity_references(
+        self,
+        source_entity_id: str,
+        target_entity_id: str,
+        timestamp: int,
+    ) -> int:
+        """把 (:Event)-[:INVOLVES]->(:Entity {id: source}) 全部迁移到 target，并去重。"""
+        if source_entity_id == target_entity_id:
+            return 0
+        ts = int(timestamp)
+        moved = 0
+        resp = self.conn.execute(
+            """
+            MATCH (e:Event)-[r:INVOLVES]->(:Entity {id: $source})
+            RETURN e.id, r.t_created, r.t_expired, r.t_valid, r.t_invalid, r.c_valid
+            """,
+            {"source": source_entity_id},
+        )
+        rows = []
+        while resp.has_next():
+            rows.append(list(resp.get_next()))
+        for row in rows:
+            event_id = row[0]
+            existing = self.get_involves_relation(event_id, target_entity_id)
+            if existing:
+                existing.t_created = min(existing.t_created, int(row[1] or ts))
+                existing.t_valid = max(existing.t_valid, int(row[3] or ts))
+                existing.c_valid = max(existing.c_valid, int(row[5] or 1))
+                if row[2] is not None:
+                    existing.t_expired = row[2]
+                if row[4] is not None:
+                    existing.t_invalid = row[4]
+                self.update_involves_relation(existing)
+            else:
+                self.create_involves_relation(
+                    event_id=event_id,
+                    entity_id=target_entity_id,
+                    t_created=int(row[1] or ts),
+                    t_valid=int(row[3] or ts),
+                    c_valid=int(row[5] or 1),
+                    t_expired=row[2],
+                    t_invalid=row[4],
+                )
+            moved += 1
+        self.conn.execute(
+            """
+            MATCH (:Event)-[r:INVOLVES]->(:Entity {id: $source})
+            DELETE r
+            """,
+            {"source": source_entity_id},
+        )
+        return moved
+
+    def mark_entity_merged(
+        self,
+        merged_id: str,
+        canonical_id: str,
+        merged_at: int,
+    ) -> None:
+        ts = int(merged_at or time.time())
+        self.conn.execute(
+            """
+            MATCH (e:Entity {id: $id})
+            SET e.status = 'merged',
+                e.canonical_id = $canonical_id,
+                e.updated_at = $ts
+            """,
+            {"id": merged_id, "canonical_id": canonical_id, "ts": ts},
+        )
+
+    def save_entity_merge_trace(
+        self,
+        source_entity_id: str,
+        target_entity_id: str,
+        merge_reason: str,
+        similarity_score: float,
+        merged_at: int,
+        strategy_version: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            MATCH (s:Entity {id: $source}), (t:Entity {id: $target})
+            CREATE (s)-[:ENTITY_MERGE_TRACE {
+                merge_reason: $merge_reason,
+                similarity_score: $similarity_score,
+                merged_at: $merged_at,
+                strategy_version: $strategy_version
+            }]->(t)
+            """,
+            {
+                "source": source_entity_id,
+                "target": target_entity_id,
+                "merge_reason": merge_reason or "",
+                "similarity_score": float(similarity_score or 0.0),
+                "merged_at": int(merged_at or time.time()),
+                "strategy_version": strategy_version or "v1",
+            },
+        )
 
     # ==================== Relation 操作 ====================
 

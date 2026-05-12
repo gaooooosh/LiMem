@@ -280,6 +280,49 @@ class LTMemoryImpl(LTMemory):
             text=text,
         )
 
+    # ==================== 注册实体接口（透传） ====================
+
+    def register_entity(
+        self,
+        entity_id: str,
+        description: str,
+        entity_type: str = "UNKNOWN",
+        aliases: Optional[list[Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        return self.ops.register_entity(
+            entity_id=entity_id,
+            description=description,
+            entity_type=entity_type,
+            aliases=aliases,
+            metadata=metadata,
+        )
+
+    def update_entity(
+        self,
+        entity_id: str,
+        *,
+        description: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        add_aliases: Optional[list[str]] = None,
+        remove_aliases: Optional[list[str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        return self.ops.update_entity(
+            entity_id,
+            description=description,
+            entity_type=entity_type,
+            add_aliases=add_aliases,
+            remove_aliases=remove_aliases,
+            metadata=metadata,
+        )
+
+    def get_registered_entity(self, entity_id: str) -> Optional[dict[str, Any]]:
+        return self.ops.get_registered_entity(entity_id)
+
+    def list_registered_entities(self) -> list[dict[str, Any]]:
+        return self.ops.list_registered_entities()
+
     def auto_merge(
         self,
         scope: str = "all",

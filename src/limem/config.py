@@ -44,6 +44,14 @@ DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_BASE_URL = normalize_dashscope_base_url(
     os.getenv("DASHSCOPE_BASE_URL", DEFAULT_DASHSCOPE_BASE_URL)
 )
+GENERATION_API_KEY = os.getenv("GENERATION_API_KEY", DASHSCOPE_API_KEY)
+GENERATION_BASE_URL = normalize_dashscope_base_url(
+    os.getenv("GENERATION_BASE_URL", DASHSCOPE_BASE_URL)
+)
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", DASHSCOPE_API_KEY)
+EMBEDDING_BASE_URL = normalize_dashscope_base_url(
+    os.getenv("EMBEDDING_BASE_URL", DASHSCOPE_BASE_URL)
+)
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "qwen3-1.7b")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v2")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
@@ -124,6 +132,17 @@ EVENT_MERGE_TRACE_STRATEGY_VERSION = os.getenv(
 EVENT_MERGE_TRACE_LOG_PATH = os.getenv(
     "EVENT_MERGE_TRACE_LOG_PATH", "./outputs/event_merge_trace.jsonl"
 )
+
+# ---------------- Registered Entity resolution ----------------
+# 注册（重要）实体解析算法所需的阈值与预算控制。
+REG_ENTITY_VECTOR_HIGH = float(os.getenv("REG_ENTITY_VECTOR_HIGH", "0.82"))
+REG_ENTITY_VECTOR_LOW = float(os.getenv("REG_ENTITY_VECTOR_LOW", "0.55"))
+REG_ENTITY_AMBIGUOUS_MARGIN = float(os.getenv("REG_ENTITY_AMBIGUOUS_MARGIN", "0.03"))
+REG_ENTITY_LLM_BUDGET_PER_INGEST = int(
+    os.getenv("REG_ENTITY_LLM_BUDGET_PER_INGEST", "8")
+)
+REG_ENTITY_STRATEGY_VERSION = os.getenv("REG_ENTITY_STRATEGY_VERSION", "v1")
+REG_ENTITY_EVENT_SUMMARY_MAX = int(os.getenv("REG_ENTITY_EVENT_SUMMARY_MAX", "240"))
 
 RECALL_MAX_CANDIDATES = int(os.getenv("RECALL_MAX_CANDIDATES", "10"))
 RECALL_MIN_AGGREGATE_SCORE = float(os.getenv("RECALL_MIN_AGGREGATE_SCORE", "0.12"))

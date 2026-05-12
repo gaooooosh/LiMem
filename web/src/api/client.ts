@@ -9,8 +9,13 @@ import type {
   DbStats,
   IngestResponse,
   IssueKeyResponse,
+  ListEntitiesResponse,
   Me,
   QueryResponse,
+  RegisterEntityRequest,
+  RegisterEntityResponse,
+  RegisteredEntity,
+  UpdateEntityRequest,
   UserDetail,
   UserView,
 } from "./types";
@@ -182,6 +187,26 @@ export const memoryApi = {
   audit: (db_id: string, limit = 200) =>
     api<AuditEntry[] | { entries: AuditEntry[] }>(
       `/db/${encodeURIComponent(db_id)}/api/audit/recent?limit=${limit}`,
+    ),
+};
+
+// ---------- /db/{id}/api/entities (注册实体管理) ----------
+export const entityApi = {
+  list: (db_id: string) =>
+    api<ListEntitiesResponse>(`/db/${encodeURIComponent(db_id)}/api/entities`),
+  get: (db_id: string, eid: string) =>
+    api<RegisteredEntity>(
+      `/db/${encodeURIComponent(db_id)}/api/entities/${encodeURIComponent(eid)}`,
+    ),
+  register: (db_id: string, body: RegisterEntityRequest) =>
+    api<RegisterEntityResponse>(
+      `/db/${encodeURIComponent(db_id)}/api/entities`,
+      { method: "POST", body },
+    ),
+  update: (db_id: string, eid: string, body: UpdateEntityRequest) =>
+    api<RegisterEntityResponse>(
+      `/db/${encodeURIComponent(db_id)}/api/entities/${encodeURIComponent(eid)}`,
+      { method: "PATCH", body },
     ),
 };
 

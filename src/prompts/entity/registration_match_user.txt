@@ -1,0 +1,12 @@
+已注册实体：
+  id: {reg_id}
+  type: {reg_type}
+  description: {reg_description}
+  已知别名: {reg_aliases}
+
+新抽取提及：
+  surface name: {ext_name}
+  declared type: {ext_type}
+  所在事件: {event_summary}
+
+问题：新提及是否指向上述注册实体？请只输出 JSON。

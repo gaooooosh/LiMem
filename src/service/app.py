@@ -18,6 +18,7 @@ from .errors import install_error_handlers
 from .routers import admin as admin_router
 from .routers import databases as databases_router
 from .routers import debug_ui as debug_router
+from .routers import entities as entities_router
 from .routers import graph as graph_router
 from .routers import me as me_router
 from .routers import memory as memory_router
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(databases_router.router)
     app.include_router(memory_router.router)
     app.include_router(graph_router.router)
+    app.include_router(entities_router.router)
     app.include_router(debug_router.router)
     app.include_router(me_router.router)
     # SPA 静态托管：必须最后挂载，避免 /ui 前缀影响 API 路由匹配

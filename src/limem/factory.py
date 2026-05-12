@@ -22,8 +22,12 @@ from .config import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     DEFERRED_EVOLUTION,
+    EMBEDDING_API_KEY,
+    EMBEDDING_BASE_URL,
     ENABLE_DYNAMIC_EVOLUTION,
     ENABLE_EVENT_RELATIONS,
+    GENERATION_API_KEY,
+    GENERATION_BASE_URL,
     GENERATION_MODEL,
     EMBEDDING_DIM,
     EMBEDDING_MODEL,
@@ -64,17 +68,31 @@ def create_ltm_system(
         >>> stats = ltm.get_stats()
     """
     config = config or {}
-    api_key = api_key or DASHSCOPE_API_KEY
-    base_url = normalize_dashscope_base_url(base_url or DASHSCOPE_BASE_URL)
+    generation_api_key = config.get("generation_api_key", api_key or GENERATION_API_KEY)
+    generation_base_url = normalize_dashscope_base_url(
+        config.get("generation_base_url", base_url or GENERATION_BASE_URL)
+    )
+    embedding_api_key = config.get("embedding_api_key", DASHSCOPE_API_KEY)
+    if "embedding_api_key" not in config:
+        embedding_api_key = EMBEDDING_API_KEY
+    embedding_base_url = normalize_dashscope_base_url(
+        config.get("embedding_base_url", EMBEDDING_BASE_URL)
+    )
     generation_model = config.get("generation_model", GENERATION_MODEL)
     embedding_model = config.get("embedding_model", EMBEDDING_MODEL)
     llm_client = config.get("llm_client")
+    embedding_client = config.get("embedding_client")
 
     if llm_client is None:
         llm_client = DashScopeClient(
-            api_key=api_key,
-            base_url=base_url,
+            api_key=generation_api_key,
+            base_url=generation_base_url,
             generation_model=generation_model,
+        )
+    if embedding_client is None:
+        embedding_client = DashScopeClient(
+            api_key=embedding_api_key,
+            base_url=embedding_base_url,
             embedding_model=embedding_model,
         )
 
@@ -82,7 +100,7 @@ def create_ltm_system(
     embedding_dim = config.get("embedding_dim", EMBEDDING_DIM)
     store = KuzuStore(
         db_path=config.get("db_path", db_path),
-        embedding_client=llm_client,
+        embedding_client=embedding_client,
         embedding_dim=embedding_dim,
     )
 
@@ -109,8 +127,8 @@ def create_ltm_system(
             llm_concurrency=config.get("llm_concurrency", LLM_CONCURRENCY),
             bulk_ingest_mode=config.get("bulk_ingest_mode", BULK_INGEST_MODE),
             merge_decision_strategy=config.get("merge_decision_strategy", "auto"),
-            llm_api_key=api_key,
-            llm_base_url=base_url,
+            llm_api_key=generation_api_key,
+            llm_base_url=generation_base_url,
             llm_model=generation_model,
             enable_auto_consolidation=config.get("enable_auto_consolidation", True),
             context_extraction_batch_size=config.get(
@@ -155,7 +173,7 @@ def create_ltm_system(
         config=builder_config,
         embedding_model=embedding_model,
         dynamic_engine=dynamic_engine,
-        llm_client=llm_client,
+        llm_client=embedding_client,
     )
 
     # 6. 组装系统

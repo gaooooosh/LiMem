@@ -153,6 +153,99 @@ class GraphStore(ABC):
         """
         pass
 
+    # ==================== Registered Entity 算法扩展 ====================
+    # 子类按需实现。注册实体相关方法默认抛 NotImplementedError，
+    # 这样老的 store 实现不被破坏；KuzuStore 会全部覆盖实现。
+
+    def register_entity_node(
+        self,
+        entity_id: str,
+        entity_type: str,
+        description: str,
+        description_embedding: Optional[list[float]],
+        aliases: list[str],
+        metadata: dict[str, Any],
+        created_at: int,
+        name_embedding: Optional[list[float]] = None,
+    ) -> dict[str, Any]:
+        """注册或晋升一个实体节点。
+
+        若 entity_id 不存在则创建；若已存在抽取节点则原地晋升 registered=True；
+        若已是注册节点则等价于一次属性更新。返回包含 mode 字段的诊断结果：
+            mode: "created" | "promoted" | "updated"
+            existed_as_extracted: bool   # 触发回扫合并的判定依据
+        """
+        raise NotImplementedError("register_entity_node is not implemented")
+
+    def get_registered_entity(self, entity_id: str) -> Optional[Entity]:
+        """获取注册实体节点（仅在 registered=True 时返回）。"""
+        raise NotImplementedError("get_registered_entity is not implemented")
+
+    def get_entity(self, entity_id: str) -> Optional[Entity]:
+        """获取任一实体节点（注册 / 抽取均可），不存在返回 None。"""
+        raise NotImplementedError("get_entity is not implemented")
+
+    def update_entity_attributes(
+        self,
+        entity_id: str,
+        *,
+        description: Optional[str] = None,
+        description_embedding: Optional[list[float]] = None,
+        entity_type: Optional[str] = None,
+        add_aliases: Optional[list[str]] = None,
+        remove_aliases: Optional[list[str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        updated_at: int = 0,
+    ) -> None:
+        """按字段 patch 注册实体属性。description 变更后调用方需重算 embedding 后再传入。"""
+        raise NotImplementedError("update_entity_attributes is not implemented")
+
+    def list_registered_entities_with_embeddings(self) -> list[Entity]:
+        """列出所有 registered=True 且 status=active 的实体（含 description_embedding）。"""
+        raise NotImplementedError(
+            "list_registered_entities_with_embeddings is not implemented"
+        )
+
+    def add_entity_alias(self, canonical_id: str, alias: str) -> None:
+        """将一个 surface form 追加到注册实体的 aliases（已存在则不重复）。"""
+        raise NotImplementedError("add_entity_alias is not implemented")
+
+    def relink_entity_references(
+        self,
+        source_entity_id: str,
+        target_entity_id: str,
+        timestamp: int,
+    ) -> int:
+        """把 INVOLVES 边从 source_entity 迁移到 target_entity，
+        对 target 已存在的同源 INVOLVES 做合并去重。返回搬运/合并的边数。"""
+        raise NotImplementedError("relink_entity_references is not implemented")
+
+    def mark_entity_merged(
+        self,
+        merged_id: str,
+        canonical_id: str,
+        merged_at: int,
+    ) -> None:
+        """把 merged 节点标记为 status=merged 并记录 canonical_id。"""
+        raise NotImplementedError("mark_entity_merged is not implemented")
+
+    def save_entity_merge_trace(
+        self,
+        source_entity_id: str,
+        target_entity_id: str,
+        merge_reason: str,
+        similarity_score: float,
+        merged_at: int,
+        strategy_version: str,
+    ) -> None:
+        """写一条 ENTITY_MERGE_TRACE 关系（审计用）。"""
+        raise NotImplementedError("save_entity_merge_trace is not implemented")
+
+    def resolve_canonical_entity_id(self, entity_id: str) -> str:
+        """若 entity_id 对应节点已 status=merged 且有 canonical_id，
+        返回 canonical_id；否则返回入参本身。用作 ensure_entity 的重定向保险。"""
+        raise NotImplementedError("resolve_canonical_entity_id is not implemented")
+
     # ==================== Relation 操作 ====================
 
     @abstractmethod

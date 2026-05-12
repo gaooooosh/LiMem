@@ -8,16 +8,23 @@ import { Textarea } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Badge } from "@/components/ui/Badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
+import { Table, THead, TBody, TR, TH, TD, EmptyRow, SkeletonRow } from "@/components/ui/Table";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { dbApi, getStoredKey, memoryApi, adminApi } from "@/api/client";
-import type { DatabaseView, IngestResponse, QueryResponse } from "@/api/types";
+import { dbApi, getStoredKey, memoryApi, adminApi, entityApi } from "@/api/client";
+import type {
+  DatabaseView,
+  IngestResponse,
+  QueryResponse,
+  RegisteredEntity,
+  UpdateEntityRequest,
+} from "@/api/types";
 import { useAuth, hasScope } from "@/auth/AuthContext";
 import { formatDate } from "@/lib/utils";
 import { toast } from "@/components/Toaster";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { ArrowLeft, ChartBar, Database as DBIcon, FileSearch, GitGraph, Send, Sparkles, ScrollText } from "lucide-react";
+import { ArrowLeft, ChartBar, Database as DBIcon, FileSearch, GitGraph, Send, Sparkles, ScrollText, Tags } from "lucide-react";
 
-type TabKey = "overview" | "ingest" | "query" | "graph" | "logs" | "evolve";
+type TabKey = "overview" | "ingest" | "query" | "graph" | "logs" | "evolve" | "entities";
 
 export function DbDetailPage() {
   const { dbId = "" } = useParams();
@@ -95,6 +102,7 @@ export function DbDetailPage() {
           <TabsTrigger value="query"><FileSearch className="h-3.5 w-3.5" /> 查询</TabsTrigger>
           <TabsTrigger value="graph"><GitGraph className="h-3.5 w-3.5" /> 图谱</TabsTrigger>
           <TabsTrigger value="logs"><ScrollText className="h-3.5 w-3.5" /> 审计日志</TabsTrigger>
+          <TabsTrigger value="entities"><Tags className="h-3.5 w-3.5" /> 实体注册</TabsTrigger>
           <TabsTrigger value="evolve" disabled={!canWrite}><Sparkles className="h-3.5 w-3.5" /> 演化</TabsTrigger>
         </TabsList>
 
@@ -103,6 +111,7 @@ export function DbDetailPage() {
         <TabsContent value="query"><QueryTab dbId={dbId} /></TabsContent>
         <TabsContent value="graph"><GraphTab dbId={dbId} /></TabsContent>
         <TabsContent value="logs"><LogsTab dbId={dbId} /></TabsContent>
+        <TabsContent value="entities"><EntitiesTab dbId={dbId} canWrite={canWrite} /></TabsContent>
         <TabsContent value="evolve"><EvolveTab dbId={dbId} /></TabsContent>
       </Tabs>
     </Layout>
@@ -545,6 +554,280 @@ function EvolveTab({ dbId }: { dbId: string }) {
         confirmText="开始重建"
         danger
       />
+    </div>
+  );
+}
+
+// ----- 实体注册 -----
+function EntitiesTab({ dbId, canWrite }: { dbId: string; canWrite: boolean }) {
+  const [items, setItems] = useState<RegisteredEntity[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<"create" | "edit">("create");
+  const [editTarget, setEditTarget] = useState<RegisteredEntity | null>(null);
+  const [form, setForm] = useState({
+    entity_id: "",
+    description: "",
+    entity_type: "UNKNOWN",
+    aliasesCsv: "",
+    metadataJson: "",
+  });
+  const [addAliasesCsv, setAddAliasesCsv] = useState("");
+  const [removeAliasesCsv, setRemoveAliasesCsv] = useState("");
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const r = await entityApi.list(dbId);
+      setItems(r.items);
+    } catch {
+      // api<T> 已统一 toast
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dbId]);
+
+  const resetForm = () => {
+    setMode("create");
+    setEditTarget(null);
+    setForm({ entity_id: "", description: "", entity_type: "UNKNOWN", aliasesCsv: "", metadataJson: "" });
+    setAddAliasesCsv("");
+    setRemoveAliasesCsv("");
+  };
+
+  const onSelect = (e: RegisteredEntity) => {
+    setMode("edit");
+    setEditTarget(e);
+    setForm({
+      entity_id: e.id,
+      description: e.description,
+      entity_type: e.type,
+      aliasesCsv: e.aliases.join(","),
+      metadataJson: "",
+    });
+    setAddAliasesCsv("");
+    setRemoveAliasesCsv("");
+  };
+
+  const csv = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+
+  const onSubmit = async () => {
+    if (!canWrite) return;
+    if (mode === "create") {
+      if (!form.entity_id.trim() || !form.description.trim()) {
+        toast.error("entity_id 与 description 必填");
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      if (mode === "create") {
+        let metadata: Record<string, unknown> | undefined;
+        if (form.metadataJson.trim()) {
+          try {
+            metadata = JSON.parse(form.metadataJson);
+          } catch {
+            toast.error("metadata 必须是合法 JSON");
+            return;
+          }
+        }
+        const r = await entityApi.register(dbId, {
+          entity_id: form.entity_id.trim(),
+          description: form.description,
+          entity_type: form.entity_type || "UNKNOWN",
+          aliases: csv(form.aliasesCsv),
+          metadata,
+        });
+        const verb = r.action === "created" ? "注册" : r.action === "promoted" ? "晋升" : "更新";
+        toast.success(`已${verb}：${r.entity.id}`);
+      } else if (editTarget) {
+        const adds = csv(addAliasesCsv);
+        const rms = csv(removeAliasesCsv);
+        const body: UpdateEntityRequest = {
+          description: form.description !== editTarget.description ? form.description : undefined,
+          entity_type: form.entity_type !== editTarget.type ? form.entity_type : undefined,
+          add_aliases: adds.length ? adds : undefined,
+          remove_aliases: rms.length ? rms : undefined,
+        };
+        await entityApi.update(dbId, editTarget.id, body);
+        toast.success(`已更新：${editTarget.id}`);
+      }
+      await refresh();
+      resetForm();
+    } catch {
+      // api<T> 已统一 toast
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitDisabled =
+    !canWrite ||
+    busy ||
+    (mode === "create" && (!form.entity_id.trim() || !form.description.trim()));
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+      {/* 左：注册实体列表 */}
+      <Card>
+        <CardContent>
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-sm font-semibold">注册实体（{items.length}）</div>
+            <Button variant="ghost" size="sm" onClick={refresh} loading={loading}>
+              刷新
+            </Button>
+          </div>
+          <Table>
+            <THead>
+              <TR>
+                <TH>id</TH>
+                <TH>type</TH>
+                <TH>aliases</TH>
+                <TH>updated</TH>
+                <TH></TH>
+              </TR>
+            </THead>
+            <TBody>
+              {loading && <SkeletonRow colSpan={5} />}
+              {!loading && items.length === 0 && (
+                <EmptyRow colSpan={5} text="暂无注册实体，可在右侧表单注册第一个实体" />
+              )}
+              {!loading &&
+                items.map((e) => (
+                  <TR key={e.id}>
+                    <TD className="font-mono">{e.id}</TD>
+                    <TD>{e.type}</TD>
+                    <TD className="max-w-[220px] truncate">{e.aliases.join(", ") || "-"}</TD>
+                    <TD>
+                      {e.updated_at
+                        ? formatDate(new Date(e.updated_at * 1000).toISOString())
+                        : "-"}
+                    </TD>
+                    <TD>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={!canWrite}
+                        onClick={() => onSelect(e)}
+                      >
+                        编辑
+                      </Button>
+                    </TD>
+                  </TR>
+                ))}
+            </TBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* 右：注册/编辑表单 */}
+      <Card>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold">
+              {mode === "create" ? "注册新实体" : `编辑：${editTarget?.id ?? ""}`}
+            </div>
+            {mode === "edit" && (
+              <Button variant="ghost" size="sm" onClick={resetForm} disabled={busy}>
+                取消
+              </Button>
+            )}
+          </div>
+
+          <div>
+            <Label htmlFor="eid">entity_id *</Label>
+            <Input
+              id="eid"
+              value={form.entity_id}
+              disabled={mode === "edit" || !canWrite}
+              onChange={(e) => setForm((f) => ({ ...f, entity_id: e.target.value }))}
+              placeholder="如 u_alice / proj_apollo"
+            />
+          </div>
+          <div>
+            <Label htmlFor="etype">entity_type</Label>
+            <Input
+              id="etype"
+              value={form.entity_type}
+              disabled={!canWrite}
+              onChange={(e) => setForm((f) => ({ ...f, entity_type: e.target.value }))}
+              placeholder="UNKNOWN / person / project / ..."
+            />
+          </div>
+          <div>
+            <Label htmlFor="edesc">description *</Label>
+            <Textarea
+              id="edesc"
+              rows={4}
+              value={form.description}
+              disabled={!canWrite}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+              placeholder="对实体的自然语言描述，用于语义链接"
+            />
+          </div>
+
+          {mode === "create" ? (
+            <>
+              <div>
+                <Label htmlFor="ealiases">aliases（逗号分隔）</Label>
+                <Input
+                  id="ealiases"
+                  value={form.aliasesCsv}
+                  disabled={!canWrite}
+                  onChange={(e) => setForm((f) => ({ ...f, aliasesCsv: e.target.value }))}
+                  placeholder="alice, 小李"
+                />
+              </div>
+              <div>
+                <Label htmlFor="emeta">metadata（JSON，可选）</Label>
+                <Textarea
+                  id="emeta"
+                  rows={3}
+                  value={form.metadataJson}
+                  disabled={!canWrite}
+                  onChange={(e) => setForm((f) => ({ ...f, metadataJson: e.target.value }))}
+                  placeholder='{"team": "infra"}'
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <Label htmlFor="eadd">新增 aliases（逗号分隔）</Label>
+                <Input
+                  id="eadd"
+                  value={addAliasesCsv}
+                  disabled={!canWrite}
+                  onChange={(e) => setAddAliasesCsv(e.target.value)}
+                  placeholder="A.L., Alice Liu"
+                />
+              </div>
+              <div>
+                <Label htmlFor="erm">移除 aliases（逗号分隔）</Label>
+                <Input
+                  id="erm"
+                  value={removeAliasesCsv}
+                  disabled={!canWrite}
+                  onChange={(e) => setRemoveAliasesCsv(e.target.value)}
+                  placeholder="留空则不移除"
+                />
+              </div>
+              <div className="text-xs text-subtle">
+                当前 aliases：{editTarget?.aliases.join(", ") || "（空）"}
+              </div>
+            </>
+          )}
+
+          <Button onClick={onSubmit} loading={busy} disabled={submitDisabled}>
+            <Tags className="h-4 w-4" /> {mode === "create" ? "注册实体" : "保存修改"}
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

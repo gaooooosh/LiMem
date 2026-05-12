@@ -23,6 +23,12 @@ from ..config import (
     CONTEXT_CANDIDATE_LIMIT,
     CONTEXT_CONFLICT_THRESHOLD,
     CONTEXT_EXTRACTION_BATCH_SIZE,
+    REG_ENTITY_AMBIGUOUS_MARGIN,
+    REG_ENTITY_EVENT_SUMMARY_MAX,
+    REG_ENTITY_LLM_BUDGET_PER_INGEST,
+    REG_ENTITY_STRATEGY_VERSION,
+    REG_ENTITY_VECTOR_HIGH,
+    REG_ENTITY_VECTOR_LOW,
     CONTEXT_REUSE_ALLOW_CROSS_SUBTYPE,
     CONTEXT_REUSE_CANDIDATE_LIMIT,
     CONTEXT_REUSE_GATING_ENABLED,
@@ -84,6 +90,7 @@ from ..config import (
 )
 from ..builder.context_extractor import ContextExtractionPipeline
 from ..core.context import Context, ContextDraft
+from ..core.entity import Entity
 from ..core.event import Event
 from ..llm import DashScopeClient
 from ..utils import hash_summary, load_prompt, robust_json_loads, safe_json_dumps, safe_json_loads
@@ -240,6 +247,13 @@ class DynamicEvolutionEngine:
         self._extract_relation_system_prompt = load_prompt("evolution/extract_relation_system.txt")
         self._rewrite_merged_event_system_prompt = load_prompt("evolution/rewrite_merged_event_system.txt")
         self._rewrite_merged_event_user_prompt = load_prompt("evolution/rewrite_merged_event_user.txt")
+        self._reg_entity_match_system_prompt = load_prompt("entity/registration_match_system.txt")
+        self._reg_entity_match_user_prompt = load_prompt("entity/registration_match_user.txt")
+        # batch 级缓存：仅在 _create_entities_for_events 调用期间填充。
+        self._reg_entity_index: Optional[list[dict[str, Any]]] = None
+        self._reg_entity_resolution_cache: dict[str, Optional[tuple[str, str, float]]] = {}
+        self._reg_entity_extraction_embedding_cache: dict[str, list[float]] = {}
+        self._reg_entity_llm_budget_used: int = 0
 
     # -------------------------------------------------------------------------
     # Algorithm 1: Incremental Event Ingestion
@@ -408,22 +422,81 @@ class DynamicEvolutionEngine:
         return report
 
     def _create_entities_for_events(self, events: list[Event]) -> int:
+        """为事件批量创建实体并建立 INVOLVES 关系。
+
+        增强：在写入 INVOLVES 前先通过 _resolve_to_registered_entity
+        判断每个抽取实体是否指向某个注册实体，若是则把 INVOLVES
+        指向注册实体（必要时执行 Case B 合并）。
+        """
         if not events:
             return 0
 
-        unique_entities: dict[tuple[str, str], None] = {}
+        # 构建本批次的注册实体解析上下文（只加载一次）
+        self._begin_registered_resolution_batch()
+
+        # 收集 (entity_name, entity_type) → 用作上下文的事件 summary
+        # 同名实体可能出现在多个事件中：取首次遇到的事件 summary 作上下文
+        unique_entities: dict[tuple[str, str], str] = {}
         for event in events:
             if not event or not event.id or event.status in {"merged", "archived"}:
                 continue
             participants = event.participants if isinstance(event.participants, list) else []
+            summary = str(getattr(event, "summary", "") or "")
             for participant in participants:
                 entity_ref = self._participant_entity_ref(participant)
                 if not entity_ref:
                     continue
-                unique_entities.setdefault(entity_ref, None)
+                unique_entities.setdefault(entity_ref, summary)
 
-        for entity_name, entity_type in unique_entities:
-            self.store.ensure_entity(entity_name, entity_type)
+        # name_to_canonical: 把抽取出的实体名映射到最终该写入 INVOLVES 的实体 id
+        # 若解析到注册实体 → 指向注册 id；否则确保抽取节点存在并指向自身。
+        name_to_canonical: dict[str, str] = {}
+        merge_now = int(time.time())
+        for (entity_name, entity_type), event_summary in unique_entities.items():
+            resolved = self._resolve_to_registered_entity(
+                name=entity_name,
+                etype=entity_type,
+                event_summary=event_summary,
+            )
+            if resolved is not None:
+                canonical_id, reason, score = resolved
+                # 别名记入注册实体（surface form != canonical id 时）
+                if entity_name != canonical_id:
+                    try:
+                        self.store.add_entity_alias(canonical_id, entity_name)
+                    except Exception:
+                        pass
+                # 若抽取节点之前已物化存在 → 触发 Case B 合并
+                existing = self._get_entity_safe(entity_name)
+                if (
+                    existing is not None
+                    and existing.id != canonical_id
+                    and existing.status == "active"
+                ):
+                    try:
+                        self.merge_entity(
+                            canonical_id=canonical_id,
+                            merged_id=existing.id,
+                            merge_reason=reason,
+                            similarity_score=float(score or 0.0),
+                            merged_at=merge_now,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "merge_entity failed for %s -> %s: %s",
+                            existing.id,
+                            canonical_id,
+                            exc,
+                        )
+                name_to_canonical[entity_name] = canonical_id
+            else:
+                # 没有注册命中：照旧物化抽取节点，并做 merged 重定向保险
+                self.store.ensure_entity(entity_name, entity_type)
+                try:
+                    redirected = self.store.resolve_canonical_entity_id(entity_name)
+                except NotImplementedError:
+                    redirected = entity_name
+                name_to_canonical[entity_name] = redirected or entity_name
 
         linked = 0
         fallback_now = int(time.time())
@@ -443,22 +516,323 @@ class DynamicEvolutionEngine:
                 entity_ref = self._participant_entity_ref(participant)
                 if not entity_ref:
                     continue
-                entity_name, entity_type = entity_ref
-                if entity_name in seen_entities:
+                entity_name, _ = entity_ref
+                target_id = name_to_canonical.get(entity_name) or entity_name
+                if target_id in seen_entities:
                     continue
-                seen_entities.add(entity_name)
-                relation = self.store.get_involves_relation(event.id, entity_name)
+                seen_entities.add(target_id)
+                relation = self.store.get_involves_relation(event.id, target_id)
                 if relation:
                     continue
                 self.store.create_involves_relation(
                     event_id=event.id,
-                    entity_id=entity_name,
+                    entity_id=target_id,
                     t_created=current_time,
                     t_valid=current_time,
                     c_valid=1,
                 )
                 linked += 1
+
+        self._end_registered_resolution_batch()
         return linked
+
+    # ---------------- Registered Entity 解析与合并 ----------------
+
+    def _begin_registered_resolution_batch(self) -> None:
+        """加载注册实体索引；清空 batch 级缓存与预算计数。"""
+        try:
+            registered_entities = self.store.list_registered_entities_with_embeddings()
+        except NotImplementedError:
+            registered_entities = []
+        except Exception as exc:
+            logger.warning("list_registered_entities_with_embeddings failed: %s", exc)
+            registered_entities = []
+        index: list[dict[str, Any]] = []
+        for ent in registered_entities or []:
+            if not getattr(ent, "id", None):
+                continue
+            alias_set = {str(ent.id).strip().lower()}
+            for alias in (ent.aliases or []):
+                a = str(alias).strip().lower()
+                if a:
+                    alias_set.add(a)
+            index.append(
+                {
+                    "entity": ent,
+                    "id": ent.id,
+                    "type": (ent.type or "UNKNOWN"),
+                    "description": ent.description or "",
+                    "description_embedding": ent.description_embedding,
+                    "alias_set": alias_set,
+                }
+            )
+        self._reg_entity_index = index
+        self._reg_entity_resolution_cache = {}
+        self._reg_entity_extraction_embedding_cache = {}
+        self._reg_entity_llm_budget_used = 0
+
+    def _end_registered_resolution_batch(self) -> None:
+        self._reg_entity_index = None
+        self._reg_entity_resolution_cache = {}
+        self._reg_entity_extraction_embedding_cache = {}
+        self._reg_entity_llm_budget_used = 0
+
+    def _get_entity_safe(self, entity_id: str) -> Optional[Entity]:
+        getter = getattr(self.store, "get_entity", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(entity_id)
+        except NotImplementedError:
+            return None
+        except Exception as exc:
+            logger.debug("store.get_entity(%s) failed: %s", entity_id, exc)
+            return None
+
+    def _resolve_to_registered_entity(
+        self,
+        name: str,
+        etype: str,
+        event_summary: str,
+    ) -> Optional[tuple[str, str, float]]:
+        """三阶段解析：精确/别名 → 向量相似度 → LLM 仲裁。
+
+        返回 (canonical_id, reason, score)；不命中返回 None。
+        结果按 surface name 缓存以避免同 batch 内重复解析。
+        """
+        if not self._reg_entity_index:
+            return None
+        name_norm = (name or "").strip()
+        if not name_norm:
+            return None
+        cache_key = name_norm.lower()
+        if cache_key in self._reg_entity_resolution_cache:
+            return self._reg_entity_resolution_cache[cache_key]
+
+        # Stage 1: 精确 / 别名匹配
+        stage1_hits = [
+            entry for entry in self._reg_entity_index
+            if cache_key in entry["alias_set"]
+        ]
+        if len(stage1_hits) == 1:
+            result = (stage1_hits[0]["id"], "exact_match", 1.0)
+            self._reg_entity_resolution_cache[cache_key] = result
+            return result
+        # 多命中：交由 Stage 2 用上下文向量裁决（仅在这些候选里选）
+        stage2_candidates = stage1_hits if stage1_hits else self._reg_entity_index
+
+        # Stage 2: 向量相似度
+        etype_norm = (etype or "UNKNOWN").strip() or "UNKNOWN"
+        viable: list[tuple[float, dict[str, Any]]] = []
+        ext_text = self._build_extraction_context_text(name_norm, event_summary)
+        ext_emb = self._embed_extraction_context(ext_text)
+        if not ext_emb:
+            # 没有 embedding：仅 Stage 1 已经决定；Stage 2/3 跳过
+            self._reg_entity_resolution_cache[cache_key] = None
+            return None
+        for entry in stage2_candidates:
+            reg_type = (entry.get("type") or "UNKNOWN").upper()
+            if (
+                etype_norm.upper() != "UNKNOWN"
+                and reg_type != "UNKNOWN"
+                and etype_norm.upper() != reg_type
+            ):
+                continue
+            reg_emb = entry.get("description_embedding")
+            if not reg_emb:
+                continue
+            score = self._event_embedding_similarity(ext_emb, reg_emb)
+            if score <= 0.0:
+                continue
+            viable.append((score, entry))
+
+        if not viable:
+            self._reg_entity_resolution_cache[cache_key] = None
+            return None
+
+        viable.sort(key=lambda x: x[0], reverse=True)
+        top_score, top_entry = viable[0]
+        second_score = viable[1][0] if len(viable) > 1 else 0.0
+        margin = top_score - second_score
+
+        if top_score >= REG_ENTITY_VECTOR_HIGH and margin > REG_ENTITY_AMBIGUOUS_MARGIN:
+            result = (top_entry["id"], "vector_high", top_score)
+            self._reg_entity_resolution_cache[cache_key] = result
+            return result
+        if top_score < REG_ENTITY_VECTOR_LOW:
+            self._reg_entity_resolution_cache[cache_key] = None
+            return None
+
+        # Stage 3: LLM 仲裁（含预算控制）
+        if self._reg_entity_llm_budget_used >= REG_ENTITY_LLM_BUDGET_PER_INGEST:
+            # 预算耗尽 → 按 uncertain 处理：保守不链接
+            self._reg_entity_resolution_cache[cache_key] = None
+            return None
+        self._reg_entity_llm_budget_used += 1
+        decision = self._llm_adjudicate_registration_match(
+            entry=top_entry,
+            ext_name=name_norm,
+            ext_type=etype_norm,
+            event_summary=event_summary,
+        )
+        if decision == "yes":
+            result = (top_entry["id"], "llm_yes", top_score)
+            self._reg_entity_resolution_cache[cache_key] = result
+            return result
+        self._reg_entity_resolution_cache[cache_key] = None
+        return None
+
+    def _build_extraction_context_text(self, name: str, event_summary: str) -> str:
+        snippet = (event_summary or "").strip()
+        if len(snippet) > REG_ENTITY_EVENT_SUMMARY_MAX:
+            snippet = snippet[:REG_ENTITY_EVENT_SUMMARY_MAX]
+        if snippet:
+            return f"{name} | {snippet}"
+        return name
+
+    def _embed_extraction_context(self, text: str) -> Optional[list[float]]:
+        if not text:
+            return None
+        key = text.strip()
+        cached = self._reg_entity_extraction_embedding_cache.get(key)
+        if cached is not None:
+            return cached
+        emb = self._maybe_embed_context(key)
+        if emb:
+            self._reg_entity_extraction_embedding_cache[key] = emb
+        return emb
+
+    def _llm_adjudicate_registration_match(
+        self,
+        entry: dict[str, Any],
+        ext_name: str,
+        ext_type: str,
+        event_summary: str,
+    ) -> str:
+        """调用 LLM 仲裁；返回 'yes' / 'no' / 'uncertain'（异常默认 'uncertain'）。"""
+        if not self._reg_entity_match_system_prompt or not self._reg_entity_match_user_prompt:
+            return "uncertain"
+        try:
+            user_msg = self._reg_entity_match_user_prompt.format(
+                reg_id=entry.get("id", ""),
+                reg_type=entry.get("type", "UNKNOWN") or "UNKNOWN",
+                reg_description=entry.get("description", "") or "",
+                reg_aliases=", ".join(
+                    sorted(
+                        (entry["entity"].aliases or [])[:5]
+                        if isinstance(entry.get("entity"), Entity) else []
+                    )
+                ),
+                ext_name=ext_name,
+                ext_type=ext_type or "UNKNOWN",
+                event_summary=(event_summary or "")[:REG_ENTITY_EVENT_SUMMARY_MAX],
+            )
+        except KeyError:
+            return "uncertain"
+        try:
+            result = self.llm_client.call_generation_json(
+                system_prompt=self._reg_entity_match_system_prompt,
+                user_message=user_msg,
+                default={"decision": "uncertain"},
+                model=self.config.llm_model,
+            )
+        except Exception as exc:
+            logger.warning("registered entity LLM adjudication failed: %s", exc)
+            return "uncertain"
+        decision = ""
+        if isinstance(result, dict):
+            decision = str(result.get("decision", "") or "").strip().lower()
+        if decision not in {"yes", "no", "uncertain"}:
+            return "uncertain"
+        return decision
+
+    def merge_entity(
+        self,
+        canonical_id: str,
+        merged_id: str,
+        merge_reason: str = "manual_merge",
+        similarity_score: float = 1.0,
+        merged_at: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """把 merged 实体节点合并到 canonical 实体节点。
+
+        步骤镜像 merge_contexts：
+            1. INVOLVES 边迁移并去重；
+            2. 更新 canonical 的 merged_from / aliases；
+            3. 标记 merged 节点 status="merged" + canonical_id；
+            4. 写一条 ENTITY_MERGE_TRACE。
+        """
+        if not canonical_id or not merged_id:
+            raise ValueError("canonical_id and merged_id are required")
+        if canonical_id == merged_id:
+            raise ValueError("Cannot merge the same entity")
+        canonical = self._get_entity_safe(canonical_id)
+        merged = self._get_entity_safe(merged_id)
+        if canonical is None:
+            raise ValueError(f"Canonical entity not found: {canonical_id}")
+        if merged is None:
+            raise ValueError(f"Merged entity not found: {merged_id}")
+        ts = int(merged_at or time.time())
+
+        moved = 0
+        try:
+            moved = self.store.relink_entity_references(merged_id, canonical_id, ts)
+        except NotImplementedError:
+            moved = 0
+
+        # canonical 更新：合并 aliases / merged_from
+        canonical_aliases = list(canonical.aliases or [])
+        if merged.id not in canonical_aliases and merged.id != canonical.id:
+            canonical_aliases.append(merged.id)
+        for alias in (merged.aliases or []):
+            if alias and alias not in canonical_aliases and alias != canonical.id:
+                canonical_aliases.append(alias)
+        new_merged_from = sorted(
+            set(list(canonical.merged_from or []) + [merged.id] + list(merged.merged_from or []))
+        )
+        try:
+            self.store.update_entity_attributes(
+                canonical.id,
+                add_aliases=canonical_aliases,
+                updated_at=ts,
+            )
+        except NotImplementedError:
+            pass
+        # merged_from 单独通过低阶 cypher 写回，避免 update_entity_attributes 扩面
+        try:
+            self.store.conn.execute(  # type: ignore[attr-defined]
+                "MATCH (e:Entity {id: $id}) SET e.merged_from = $mf, e.updated_at = $ts",
+                {"id": canonical.id, "mf": safe_json_dumps(new_merged_from), "ts": ts},
+            )
+        except Exception:
+            pass
+
+        try:
+            self.store.mark_entity_merged(merged.id, canonical.id, ts)
+        except NotImplementedError:
+            pass
+
+        try:
+            self.store.save_entity_merge_trace(
+                source_entity_id=merged.id,
+                target_entity_id=canonical.id,
+                merge_reason=merge_reason or "manual_merge",
+                similarity_score=float(similarity_score or 0.0),
+                merged_at=ts,
+                strategy_version=REG_ENTITY_STRATEGY_VERSION,
+            )
+        except NotImplementedError:
+            pass
+
+        return {
+            "canonical_entity_id": canonical.id,
+            "merged_entity_id": merged.id,
+            "merged_at": ts,
+            "moved_involves": int(moved or 0),
+            "merge_reason": merge_reason,
+            "similarity_score": float(similarity_score or 0.0),
+            "strategy_version": REG_ENTITY_STRATEGY_VERSION,
+        }
 
     def extract_event_event_relations(
         self,

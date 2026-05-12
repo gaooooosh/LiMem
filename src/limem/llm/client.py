@@ -12,6 +12,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from ..config import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL
 from ..utils import robust_json_loads
+from .adapters import LLMRequestAdapter
 
 
 class DashScopeClient:
@@ -31,6 +32,7 @@ class DashScopeClient:
         self.generation_model = generation_model
         self.embedding_model = embedding_model
         self._openai_client: Optional[_OpenAI] = None
+        self.request_adapter = LLMRequestAdapter()
 
     def _get_openai_client(self) -> _OpenAI:
         if self._openai_client is None:
@@ -76,18 +78,11 @@ class DashScopeClient:
         resolved_model = model or self.generation_model
         if not resolved_model:
             raise ValueError("No generation model specified.")
-        # Strip dashscope-specific params that OpenAI client doesn't accept
-        kwargs.pop("result_format", None)
-        # For qwen3+ models, the DashScope API defaults to enable_thinking=True
-        # which is extremely slow for non-streaming calls. Explicitly disable
-        # unless the caller opts in.
-        enable_thinking = kwargs.pop("enable_thinking", None)
-        if enable_thinking is None and self._is_thinking_model(resolved_model):
-            enable_thinking = False
-        if enable_thinking is not None:
-            extra_body = kwargs.pop("extra_body", {}) or {}
-            extra_body["enable_thinking"] = enable_thinking
-            kwargs["extra_body"] = extra_body
+        kwargs = self.request_adapter.adapt_chat_completion_kwargs(
+            base_url=self.base_url,
+            model=resolved_model,
+            kwargs=kwargs,
+        )
         client = self._get_openai_client()
         response = client.chat.completions.create(
             model=resolved_model,
@@ -95,12 +90,6 @@ class DashScopeClient:
             **kwargs,
         )
         return response
-
-    @staticmethod
-    def _is_thinking_model(model: str) -> bool:
-        """Check if a model defaults to thinking mode on DashScope."""
-        m = model.lower()
-        return "qwen3" in m or "qwq" in m
 
     def call_generation_from_prompts(
         self,

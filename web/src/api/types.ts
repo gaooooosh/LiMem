@@ -90,3 +90,45 @@ export interface AuditEntry {
   detail?: unknown;
   [k: string]: unknown;
 }
+
+// ---------- 注册实体（与后端 models.py 镜像） ----------
+export interface RegisteredEntity {
+  id: string;
+  type: string;
+  description: string;
+  aliases: string[];
+  registered: boolean;
+  status: string;
+  canonical_id?: string | null;
+  merged_from: string[];
+  created_at?: number | null;
+  updated_at?: number | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface RegisterEntityRequest {
+  entity_id: string;
+  description: string;
+  entity_type?: string;
+  aliases?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateEntityRequest {
+  description?: string;
+  entity_type?: string;
+  add_aliases?: string[];
+  remove_aliases?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface RegisterEntityResponse {
+  action: "created" | "promoted" | "updated";
+  existed_as_extracted: boolean;
+  entity: RegisteredEntity;
+}
+
+export interface ListEntitiesResponse {
+  items: RegisteredEntity[];
+  total: number;
+}

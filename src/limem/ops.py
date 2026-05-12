@@ -158,6 +158,185 @@ class MemoryGraphOps:
         result["merged_context"] = self._serialize_context(self.store.get_context(merged_context_id))
         return result
 
+    # ==================== 注册实体（重要实体）算法接口 ====================
+
+    def register_entity(
+        self,
+        entity_id: str,
+        description: str,
+        entity_type: str = "UNKNOWN",
+        aliases: Optional[list[str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """注册一个重要实体。
+
+        - 若 id 不存在：创建注册节点；
+        - 若已存在抽取节点：原地晋升为注册实体，并对该 id 触发一次回扫
+          （把同名抽取节点上已有的 INVOLVES 边合并到注册节点本身，
+           这里 canonical_id 与 merged_id 相同——表现为"复用同 id 的晋升"，
+           不写 ENTITY_MERGE_TRACE）；
+        - 若已是注册节点：等价于 update_entity。
+
+        description 同步生成 description_embedding；裸名也生成 embedding
+        以保留既有检索路径行为。
+        """
+        eid = str(entity_id or "").strip()
+        if not eid:
+            raise ValueError("entity_id is required")
+        desc = str(description or "")
+        etype = (entity_type or "UNKNOWN").strip() or "UNKNOWN"
+        alias_list = [str(a).strip() for a in (aliases or []) if str(a).strip()]
+
+        # 计算 embeddings
+        embedding_client = getattr(self.store, "embedding_client", None)
+        description_embedding: Optional[list[float]] = None
+        name_embedding: Optional[list[float]] = None
+        if embedding_client is not None and hasattr(embedding_client, "get_embedding"):
+            try:
+                description_embedding = embedding_client.get_embedding(
+                    self._build_registration_embedding_text(eid, etype, desc)
+                )
+            except Exception:
+                description_embedding = None
+            try:
+                name_embedding = embedding_client.get_embedding(eid)
+            except Exception:
+                name_embedding = None
+
+        ts = int(time.time())
+        result = self.store.register_entity_node(
+            entity_id=eid,
+            entity_type=etype,
+            description=desc,
+            description_embedding=description_embedding,
+            aliases=alias_list,
+            metadata=metadata or {},
+            created_at=ts,
+            name_embedding=name_embedding,
+        )
+
+        # 别名命中的旧抽取节点合并：把所有"目标节点 != eid 且是 alias 的抽取节点"
+        # 合并到 eid。这覆盖了：用户用新 id 注册，aliases 中包含一个早已被抽取的旧名。
+        if self.dynamic_engine is not None:
+            for alias in alias_list:
+                if alias == eid:
+                    continue
+                existing_alias_node = self._get_entity_safe(alias)
+                if (
+                    existing_alias_node is not None
+                    and existing_alias_node.status == "active"
+                    and existing_alias_node.id != eid
+                ):
+                    try:
+                        self.dynamic_engine.merge_entity(
+                            canonical_id=eid,
+                            merged_id=existing_alias_node.id,
+                            merge_reason="exact_match",
+                            similarity_score=1.0,
+                            merged_at=ts,
+                        )
+                    except Exception:
+                        # 容错：单个别名合并失败不影响注册主流程
+                        pass
+
+        stored = self._get_entity_safe(eid)
+        return {
+            "action": result.get("mode", "registered"),
+            "existed_as_extracted": bool(result.get("existed_as_extracted", False)),
+            "entity": stored.to_serializable() if stored else None,
+        }
+
+    def update_entity(
+        self,
+        entity_id: str,
+        *,
+        description: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        add_aliases: Optional[list[str]] = None,
+        remove_aliases: Optional[list[str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """更新注册实体属性。description 变更时重算 description_embedding。"""
+        eid = str(entity_id or "").strip()
+        if not eid:
+            raise ValueError("entity_id is required")
+        existing = self._get_entity_safe(eid)
+        if existing is None or not existing.registered:
+            raise ValueError(f"Registered entity not found: {eid}")
+
+        ts = int(time.time())
+        description_embedding: Optional[list[float]] = None
+        if description is not None:
+            embedding_client = getattr(self.store, "embedding_client", None)
+            new_desc = str(description or "")
+            new_type = (entity_type or existing.type or "UNKNOWN")
+            if embedding_client is not None and hasattr(embedding_client, "get_embedding"):
+                try:
+                    description_embedding = embedding_client.get_embedding(
+                        self._build_registration_embedding_text(eid, new_type, new_desc)
+                    )
+                except Exception:
+                    description_embedding = None
+
+        self.store.update_entity_attributes(
+            eid,
+            description=description,
+            description_embedding=description_embedding if description is not None else None,
+            entity_type=entity_type,
+            add_aliases=add_aliases,
+            remove_aliases=remove_aliases,
+            metadata=metadata,
+            updated_at=ts,
+        )
+
+        stored = self._get_entity_safe(eid)
+        return {
+            "action": "updated",
+            "entity": stored.to_serializable() if stored else None,
+        }
+
+    def get_registered_entity(self, entity_id: str) -> Optional[dict[str, Any]]:
+        eid = str(entity_id or "").strip()
+        if not eid:
+            return None
+        try:
+            ent = self.store.get_registered_entity(eid)
+        except NotImplementedError:
+            return None
+        if ent is None:
+            return None
+        return ent.to_serializable()
+
+    def list_registered_entities(self) -> list[dict[str, Any]]:
+        """列出所有注册实体（不含 embedding 大数组）。"""
+        lister = getattr(self.store, "list_registered_entities_with_embeddings", None)
+        if not callable(lister):
+            return []
+        try:
+            ents = lister() or []
+        except NotImplementedError:
+            return []
+        return [e.to_serializable() for e in ents if e is not None]
+
+    def _get_entity_safe(self, entity_id: str) -> Optional[Any]:
+        getter = getattr(self.store, "get_entity", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(entity_id)
+        except NotImplementedError:
+            return None
+        except Exception:
+            return None
+
+    def _build_registration_embedding_text(
+        self,
+        entity_id: str,
+        entity_type: str,
+        description: str,
+    ) -> str:
+        return f"{entity_id} ({entity_type}): {description}".strip()
+
     def query(
         self,
         text: str = "",
