@@ -22,6 +22,7 @@ from .routers import entities as entities_router
 from .routers import graph as graph_router
 from .routers import me as me_router
 from .routers import memory as memory_router
+from .routers import patterns as patterns_router
 from .routers import ui as ui_router
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(databases_router.router)
     app.include_router(memory_router.router)
     app.include_router(graph_router.router)
+    app.include_router(patterns_router.router)
     app.include_router(entities_router.router)
     app.include_router(debug_router.router)
     app.include_router(me_router.router)

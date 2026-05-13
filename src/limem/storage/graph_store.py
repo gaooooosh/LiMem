@@ -246,6 +246,60 @@ class GraphStore(ABC):
         返回 canonical_id；否则返回入参本身。用作 ensure_entity 的重定向保险。"""
         raise NotImplementedError("resolve_canonical_entity_id is not implemented")
 
+    # ==================== Entity Pattern 服务扩展 ====================
+
+    def create_entity_pattern(
+        self,
+        entity_id: str,
+        content: str,
+        pattern_type: str,
+        metadata: dict[str, Any],
+        created_at: int,
+        pattern_id: Optional[str] = None,
+        embedding: Optional[list[float]] = None,
+    ) -> dict[str, Any]:
+        """为注册实体创建一条 pattern（例如用户明确偏好）。"""
+        raise NotImplementedError("create_entity_pattern is not implemented")
+
+    def get_entity_pattern(self, entity_id: str, pattern_id: str) -> Optional[dict[str, Any]]:
+        """获取注册实体下的单条 pattern。"""
+        raise NotImplementedError("get_entity_pattern is not implemented")
+
+    def list_entity_patterns(
+        self,
+        entity_id: str,
+        query: str = "",
+        limit: int = 100,
+        include_inactive: bool = False,
+    ) -> list[dict[str, Any]]:
+        """列出或搜索注册实体下的 patterns。"""
+        raise NotImplementedError("list_entity_patterns is not implemented")
+
+    def update_entity_pattern(
+        self,
+        entity_id: str,
+        pattern_id: str,
+        *,
+        content: Optional[str] = None,
+        pattern_type: Optional[str] = None,
+        status: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        updated_at: int = 0,
+        embedding: Optional[list[float]] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Patch 注册实体 pattern。"""
+        raise NotImplementedError("update_entity_pattern is not implemented")
+
+    def delete_entity_pattern(
+        self,
+        entity_id: str,
+        pattern_id: str,
+        deleted_at: int,
+        hard_delete: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        """删除注册实体 pattern。默认软删除为 archived。"""
+        raise NotImplementedError("delete_entity_pattern is not implemented")
+
     # ==================== Relation 操作 ====================
 
     @abstractmethod

@@ -318,6 +318,167 @@ class MemoryGraphOps:
             return []
         return [e.to_serializable() for e in ents if e is not None]
 
+    def unregister_entity(self, entity_id: str) -> Optional[dict[str, Any]]:
+        """物理删除一个注册实体（含所有 HAS_PATTERN / INVOLVES 等关系）。
+
+        仅用于注册流程的回滚 —— **不会触发 dynamic_engine**，也不会写
+        ENTITY_MERGE_TRACE。调用方需自行确保该实体的所有 pattern 已先被回滚。
+
+        Returns: 被删除实体的序列化快照；若实体不存在或不是注册节点，返回 None。
+        """
+        eid = str(entity_id or "").strip()
+        if not eid:
+            raise ValueError("entity_id is required")
+        remover = getattr(self.store, "unregister_entity_node", None)
+        if not callable(remover):
+            raise NotImplementedError("unregister_entity_node is not implemented")
+        existing = remover(eid)
+        if existing is None:
+            return None
+        return existing.to_serializable()
+
+    # ==================== 注册实体 Pattern 接口 ====================
+
+    def create_entity_pattern(
+        self,
+        entity_id: str,
+        content: str,
+        pattern_type: str = "preference",
+        metadata: Optional[dict[str, Any]] = None,
+        pattern_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        eid = str(entity_id or "").strip()
+        if not eid:
+            raise ValueError("entity_id is required")
+        if self.get_registered_entity(eid) is None:
+            raise ValueError(f"Registered entity not found: {eid}")
+        text = str(content or "").strip()
+        if not text:
+            raise ValueError("content is required")
+        ptype = str(pattern_type or "preference").strip() or "preference"
+        ts = int(time.time())
+        creator = getattr(self.store, "create_entity_pattern", None)
+        if not callable(creator):
+            raise NotImplementedError("create_entity_pattern is not implemented")
+        pattern = creator(
+            entity_id=eid,
+            content=text,
+            pattern_type=ptype,
+            metadata=metadata or {},
+            created_at=ts,
+            pattern_id=pattern_id,
+        )
+        return {"action": "created", "pattern": pattern}
+
+    def get_entity_pattern(self, entity_id: str, pattern_id: str) -> Optional[dict[str, Any]]:
+        eid = str(entity_id or "").strip()
+        pid = str(pattern_id or "").strip()
+        if not eid or not pid:
+            return None
+        getter = getattr(self.store, "get_entity_pattern", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(eid, pid)
+        except NotImplementedError:
+            return None
+
+    def list_entity_patterns(
+        self,
+        entity_id: str,
+        query: str = "",
+        limit: int = 100,
+        include_inactive: bool = False,
+    ) -> list[dict[str, Any]]:
+        eid = str(entity_id or "").strip()
+        if not eid:
+            raise ValueError("entity_id is required")
+        if self.get_registered_entity(eid) is None:
+            raise ValueError(f"Registered entity not found: {eid}")
+        lister = getattr(self.store, "list_entity_patterns", None)
+        if not callable(lister):
+            return []
+        try:
+            return lister(
+                eid,
+                query=str(query or ""),
+                limit=int(limit or 100),
+                include_inactive=include_inactive,
+            )
+        except NotImplementedError:
+            return []
+
+    def update_entity_pattern(
+        self,
+        entity_id: str,
+        pattern_id: str,
+        *,
+        content: Optional[str] = None,
+        pattern_type: Optional[str] = None,
+        status: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        eid = str(entity_id or "").strip()
+        pid = str(pattern_id or "").strip()
+        if not eid:
+            raise ValueError("entity_id is required")
+        if not pid:
+            raise ValueError("pattern_id is required")
+        existing = self.get_entity_pattern(eid, pid)
+        if existing is None:
+            raise ValueError(f"Entity pattern not found: {pid}")
+        if content is not None and not str(content or "").strip():
+            raise ValueError("content cannot be empty")
+        new_content = str(content).strip() if content is not None else existing["content"]
+        new_type = str(pattern_type or "").strip() if pattern_type is not None else existing["pattern_type"]
+        new_status = str(status or "").strip() if status is not None else existing["status"]
+        if new_status not in {"active", "archived"}:
+            raise ValueError("status must be active or archived")
+        ts = int(time.time())
+        updater = getattr(self.store, "update_entity_pattern", None)
+        if not callable(updater):
+            raise NotImplementedError("update_entity_pattern is not implemented")
+        pattern = updater(
+            eid,
+            pid,
+            content=new_content if content is not None else None,
+            pattern_type=new_type if pattern_type is not None else None,
+            status=new_status if status is not None else None,
+            metadata=metadata,
+            updated_at=ts,
+        )
+        if pattern is None:
+            raise ValueError(f"Entity pattern not found: {pid}")
+        return {"action": "updated", "pattern": pattern}
+
+    def delete_entity_pattern(
+        self,
+        entity_id: str,
+        pattern_id: str,
+        hard_delete: bool = False,
+    ) -> dict[str, Any]:
+        eid = str(entity_id or "").strip()
+        pid = str(pattern_id or "").strip()
+        if not eid:
+            raise ValueError("entity_id is required")
+        if not pid:
+            raise ValueError("pattern_id is required")
+        deleter = getattr(self.store, "delete_entity_pattern", None)
+        if not callable(deleter):
+            raise NotImplementedError("delete_entity_pattern is not implemented")
+        pattern = deleter(
+            eid,
+            pid,
+            deleted_at=int(time.time()),
+            hard_delete=hard_delete,
+        )
+        if pattern is None:
+            raise ValueError(f"Entity pattern not found: {pid}")
+        return {
+            "action": "deleted" if hard_delete else "archived",
+            "pattern": pattern,
+        }
+
     def _get_entity_safe(self, entity_id: str) -> Optional[Any]:
         getter = getattr(self.store, "get_entity", None)
         if not callable(getter):

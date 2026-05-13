@@ -323,6 +323,74 @@ class LTMemoryImpl(LTMemory):
     def list_registered_entities(self) -> list[dict[str, Any]]:
         return self.ops.list_registered_entities()
 
+    def unregister_entity(self, entity_id: str) -> Optional[dict[str, Any]]:
+        """硬删除一个注册实体（仅用于注册流程回滚，不触发 evolution）。"""
+        return self.ops.unregister_entity(entity_id)
+
+    def create_entity_pattern(
+        self,
+        entity_id: str,
+        content: str,
+        pattern_type: str = "preference",
+        metadata: Optional[dict[str, Any]] = None,
+        pattern_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        return self.ops.create_entity_pattern(
+            entity_id=entity_id,
+            content=content,
+            pattern_type=pattern_type,
+            metadata=metadata,
+            pattern_id=pattern_id,
+        )
+
+    def get_entity_pattern(self, entity_id: str, pattern_id: str) -> Optional[dict[str, Any]]:
+        return self.ops.get_entity_pattern(entity_id, pattern_id)
+
+    def list_entity_patterns(
+        self,
+        entity_id: str,
+        query: str = "",
+        limit: int = 100,
+        include_inactive: bool = False,
+    ) -> list[dict[str, Any]]:
+        return self.ops.list_entity_patterns(
+            entity_id=entity_id,
+            query=query,
+            limit=limit,
+            include_inactive=include_inactive,
+        )
+
+    def update_entity_pattern(
+        self,
+        entity_id: str,
+        pattern_id: str,
+        *,
+        content: Optional[str] = None,
+        pattern_type: Optional[str] = None,
+        status: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        return self.ops.update_entity_pattern(
+            entity_id=entity_id,
+            pattern_id=pattern_id,
+            content=content,
+            pattern_type=pattern_type,
+            status=status,
+            metadata=metadata,
+        )
+
+    def delete_entity_pattern(
+        self,
+        entity_id: str,
+        pattern_id: str,
+        hard_delete: bool = False,
+    ) -> dict[str, Any]:
+        return self.ops.delete_entity_pattern(
+            entity_id=entity_id,
+            pattern_id=pattern_id,
+            hard_delete=hard_delete,
+        )
+
     def auto_merge(
         self,
         scope: str = "all",
