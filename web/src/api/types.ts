@@ -132,3 +132,47 @@ export interface ListEntitiesResponse {
   items: RegisteredEntity[];
   total: number;
 }
+
+// ---------- 注册实体 Pattern（与后端 models.py 镜像） ----------
+export type EntityPatternStatus = "active" | "archived";
+
+export interface EntityPattern {
+  id: string;
+  entity_id: string;
+  content: string;
+  pattern_type: string;
+  status: EntityPatternStatus;
+  created_at?: number | null;
+  updated_at?: number | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface CreateEntityPatternRequest {
+  content: string;
+  pattern_type?: string;
+  metadata?: Record<string, unknown> | null;
+  pattern_id?: string | null;
+}
+
+export interface UpdateEntityPatternRequest {
+  content?: string;
+  pattern_type?: string;
+  status?: EntityPatternStatus;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface EntityPatternResponse {
+  action: string;
+  pattern: EntityPattern;
+}
+
+export interface DeleteEntityPatternResponse {
+  action: "archived" | "deleted";
+  pattern: EntityPattern;
+}
+
+export interface ListEntityPatternsResponse {
+  items: EntityPattern[];
+  total: number;
+  query: string;
+}

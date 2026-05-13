@@ -4,17 +4,23 @@ import type {
   AdminHealth,
   ApiKeyView,
   AuditEntry,
+  CreateEntityPatternRequest,
   DatabaseView,
   DbHealth,
   DbStats,
+  DeleteEntityPatternResponse,
+  EntityPattern,
+  EntityPatternResponse,
   IngestResponse,
   IssueKeyResponse,
   ListEntitiesResponse,
+  ListEntityPatternsResponse,
   Me,
   QueryResponse,
   RegisterEntityRequest,
   RegisterEntityResponse,
   RegisteredEntity,
+  UpdateEntityPatternRequest,
   UpdateEntityRequest,
   UserDetail,
   UserView,
@@ -207,6 +213,54 @@ export const entityApi = {
     api<RegisterEntityResponse>(
       `/db/${encodeURIComponent(db_id)}/api/entities/${encodeURIComponent(eid)}`,
       { method: "PATCH", body },
+    ),
+};
+
+// ---------- /db/{id}/api/entities/{eid}/patterns (注册实体 Pattern) ----------
+function patternBase(db_id: string, eid: string): string {
+  return `/db/${encodeURIComponent(db_id)}/api/entities/${encodeURIComponent(eid)}/patterns`;
+}
+
+export const entityPatternApi = {
+  list: (
+    db_id: string,
+    eid: string,
+    opts: { q?: string; limit?: number; include_inactive?: boolean } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts.q) qs.set("q", opts.q);
+    if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts.include_inactive) qs.set("include_inactive", "true");
+    const suffix = qs.toString();
+    return api<ListEntityPatternsResponse>(
+      suffix ? `${patternBase(db_id, eid)}?${suffix}` : patternBase(db_id, eid),
+    );
+  },
+  get: (db_id: string, eid: string, pattern_id: string) =>
+    api<EntityPattern>(`${patternBase(db_id, eid)}/${encodeURIComponent(pattern_id)}`),
+  create: (db_id: string, eid: string, body: CreateEntityPatternRequest) =>
+    api<EntityPatternResponse>(patternBase(db_id, eid), { method: "POST", body }),
+  update: (
+    db_id: string,
+    eid: string,
+    pattern_id: string,
+    body: UpdateEntityPatternRequest,
+  ) =>
+    api<EntityPatternResponse>(
+      `${patternBase(db_id, eid)}/${encodeURIComponent(pattern_id)}`,
+      { method: "PATCH", body },
+    ),
+  remove: (
+    db_id: string,
+    eid: string,
+    pattern_id: string,
+    hard_delete = false,
+  ) =>
+    api<DeleteEntityPatternResponse>(
+      `${patternBase(db_id, eid)}/${encodeURIComponent(pattern_id)}${
+        hard_delete ? "?hard_delete=true" : ""
+      }`,
+      { method: "DELETE" },
     ),
 };
 

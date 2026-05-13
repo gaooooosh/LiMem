@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
 import { Table, THead, TBody, TR, TH, TD, EmptyRow, SkeletonRow } from "@/components/ui/Table";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { PatternsDrawer } from "@/pages/PatternsDrawer";
 import { dbApi, getStoredKey, memoryApi, adminApi, entityApi } from "@/api/client";
 import type {
   DatabaseView,
@@ -565,6 +566,7 @@ function EntitiesTab({ dbId, canWrite }: { dbId: string; canWrite: boolean }) {
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<"create" | "edit">("create");
   const [editTarget, setEditTarget] = useState<RegisteredEntity | null>(null);
+  const [patternsFor, setPatternsFor] = useState<RegisteredEntity | null>(null);
   const [form, setForm] = useState({
     entity_id: "",
     description: "",
@@ -709,14 +711,23 @@ function EntitiesTab({ dbId, canWrite }: { dbId: string; canWrite: boolean }) {
                         : "-"}
                     </TD>
                     <TD>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={!canWrite}
-                        onClick={() => onSelect(e)}
-                      >
-                        编辑
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={!canWrite}
+                          onClick={() => onSelect(e)}
+                        >
+                          编辑
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setPatternsFor(e)}
+                        >
+                          Patterns
+                        </Button>
+                      </div>
                     </TD>
                   </TR>
                 ))}
@@ -724,6 +735,13 @@ function EntitiesTab({ dbId, canWrite }: { dbId: string; canWrite: boolean }) {
           </Table>
         </CardContent>
       </Card>
+      <PatternsDrawer
+        open={!!patternsFor}
+        onClose={() => setPatternsFor(null)}
+        dbId={dbId}
+        entity={patternsFor}
+        canWrite={canWrite}
+      />
 
       {/* 右：注册/编辑表单 */}
       <Card>
