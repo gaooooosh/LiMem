@@ -170,13 +170,21 @@ class KuzuStore(GraphStore):
                 PRIMARY KEY(id)
             )
         """)
+        # Pattern v2：单文档 markdown 模型。
+        # 若检测到旧 schema（无 entity_id 列）→ 先 drop edge + drop node 再重建。
+        # 旧数据无迁移，按设计接受丢失。
+        if self._pattern_table_is_legacy():
+            for stmt in ("DROP TABLE HAS_PATTERN", "DROP TABLE Pattern"):
+                try:
+                    self.conn.execute(stmt)
+                except Exception:
+                    continue
         self.conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS Pattern(
                 id STRING,
+                entity_id STRING,
                 content STRING,
-                pattern_type STRING,
                 status STRING,
-                metadata STRING,
                 created_at INT64,
                 updated_at INT64,
                 PRIMARY KEY(id)
@@ -257,13 +265,30 @@ class KuzuStore(GraphStore):
         """)
         self.conn.execute("""
             CREATE REL TABLE IF NOT EXISTS HAS_PATTERN(
-                FROM Entity TO Pattern,
-                created_at INT64
+                FROM Entity TO Pattern
             )
         """)
 
         # Best-effort 迁移
         self._run_migrations()
+
+    def _pattern_table_is_legacy(self) -> bool:
+        """探测 Pattern 表是否为旧 schema（不含 entity_id 列）。
+
+        旧 schema：(id, content, pattern_type, status, metadata, created_at, updated_at)
+        新 schema：(id, entity_id, content, status, created_at, updated_at)
+
+        如果表不存在或查询失败返回 False（让 CREATE TABLE IF NOT EXISTS 走正常路径）。
+        """
+        try:
+            self.conn.execute("MATCH (p:Pattern) RETURN p.entity_id LIMIT 1")
+            return False  # 新 schema 已可读 entity_id 列
+        except Exception as exc:
+            # 表存在但读不到 entity_id 列 → 旧 schema；表不存在则报"table not found"。
+            msg = str(exc).lower()
+            if "entity_id" in msg or "property" in msg or "field" in msg:
+                return True
+            return False
 
     def _run_migrations(self) -> None:
         """运行数据库迁移"""
@@ -338,13 +363,6 @@ class KuzuStore(GraphStore):
             "ALTER TABLE EVENT_RELATION ADD source_session_id STRING",
             "ALTER TABLE EVENT_RELATION ADD created_at INT64",
             "ALTER TABLE EVENT_RELATION ADD updated_at INT64",
-            "ALTER TABLE Pattern ADD content STRING",
-            "ALTER TABLE Pattern ADD pattern_type STRING",
-            "ALTER TABLE Pattern ADD status STRING",
-            "ALTER TABLE Pattern ADD metadata STRING",
-            "ALTER TABLE Pattern ADD created_at INT64",
-            "ALTER TABLE Pattern ADD updated_at INT64",
-            "ALTER TABLE HAS_PATTERN ADD created_at INT64",
         ]
 
         for stmt in migrations:
@@ -1055,203 +1073,98 @@ class KuzuStore(GraphStore):
         )
 
     # ==================== Entity Pattern 操作 ====================
+    # v2 模型：每个 Entity 至多绑定 1 个 Pattern 节点（1:1）。CRUD 为 put / get / delete。
+    # 字段：id, entity_id, content, status, created_at, updated_at。status 当前恒为 'active'。
 
     def _pattern_select_clause(self, alias: str = "p") -> str:
         return (
-            f"{alias}.id, {alias}.content, {alias}.pattern_type, {alias}.status, "
-            f"{alias}.metadata, {alias}.created_at, {alias}.updated_at"
+            f"{alias}.id, {alias}.entity_id, {alias}.content, {alias}.status, "
+            f"{alias}.created_at, {alias}.updated_at"
         )
 
-    def _row_to_pattern_dict(self, row: list[Any], entity_id: str) -> dict[str, Any]:
+    def _row_to_pattern_dict(self, row: list[Any]) -> dict[str, Any]:
         return {
             "id": row[0],
-            "entity_id": entity_id,
-            "content": row[1] or "",
-            "pattern_type": row[2] or "preference",
+            "entity_id": row[1] or "",
+            "content": row[2] or "",
             "status": row[3] or "active",
-            "metadata": safe_json_loads(row[4], {}) if isinstance(row[4], str) else (row[4] or {}),
-            "created_at": int(row[5] or 0),
-            "updated_at": int(row[6] or 0),
+            "created_at": int(row[4] or 0),
+            "updated_at": int(row[5] or 0),
         }
 
-    def create_entity_pattern(
+    def put_entity_pattern(
         self,
         entity_id: str,
         content: str,
-        pattern_type: str,
-        metadata: dict[str, Any],
-        created_at: int,
-        pattern_id: Optional[str] = None,
+        *,
+        now: Optional[int] = None,
     ) -> dict[str, Any]:
-        entity = self.get_registered_entity(entity_id)
-        if entity is None:
+        """Upsert：实体已有 pattern 则覆盖 content；否则新建节点 + HAS_PATTERN 边。"""
+        if self.get_registered_entity(entity_id) is None:
             raise ValueError(f"Registered entity not found: {entity_id}")
-        ts = int(created_at or time.time())
-        pid = str(pattern_id or f"pattern_{uuid.uuid4().hex[:16]}").strip()
-        if not pid:
-            raise ValueError("pattern_id is required")
-        existing = self.conn.execute(
-            "MATCH (p:Pattern {id: $id}) RETURN p.id",
-            {"id": pid},
-        )
-        if existing.has_next():
-            raise ValueError(f"Pattern already exists: {pid}")
+        ts = int(now or time.time())
+        existing = self.get_entity_pattern(entity_id)
+        if existing is not None:
+            self.conn.execute(
+                """
+                MATCH (:Entity {id: $entity_id})-[:HAS_PATTERN]->(p:Pattern)
+                SET p.content = $content, p.updated_at = $updated_at
+                """,
+                {"entity_id": entity_id, "content": content or "", "updated_at": ts},
+            )
+            return {"action": "updated", "pattern": self.get_entity_pattern(entity_id) or {}}
+
+        pid = f"pattern_{uuid.uuid4().hex[:16]}"
         self.conn.execute(
             """
             CREATE (:Pattern {
                 id: $id,
+                entity_id: $entity_id,
                 content: $content,
-                pattern_type: $pattern_type,
-                status: $status,
-                metadata: $metadata,
-                created_at: $created_at,
-                updated_at: $updated_at
+                status: 'active',
+                created_at: $ts,
+                updated_at: $ts
             })
             """,
-            {
-                "id": pid,
-                "content": content or "",
-                "pattern_type": pattern_type or "preference",
-                "status": "active",
-                "metadata": safe_json_dumps(metadata or {}),
-                "created_at": ts,
-                "updated_at": ts,
-            },
+            {"id": pid, "entity_id": entity_id, "content": content or "", "ts": ts},
         )
         self.conn.execute(
             """
             MATCH (e:Entity {id: $entity_id}), (p:Pattern {id: $pattern_id})
-            CREATE (e)-[:HAS_PATTERN {created_at: $created_at}]->(p)
+            CREATE (e)-[:HAS_PATTERN]->(p)
             """,
-            {"entity_id": entity_id, "pattern_id": pid, "created_at": ts},
+            {"entity_id": entity_id, "pattern_id": pid},
         )
-        return self.get_entity_pattern(entity_id, pid) or {}
+        return {"action": "created", "pattern": self.get_entity_pattern(entity_id) or {}}
 
-    def get_entity_pattern(self, entity_id: str, pattern_id: str) -> Optional[dict[str, Any]]:
-        resp = self.conn.execute(
-            f"""
-            MATCH (:Entity {{id: $entity_id}})-[:HAS_PATTERN]->(p:Pattern {{id: $pattern_id}})
-            RETURN {self._pattern_select_clause('p')}
-            """,
-            {"entity_id": entity_id, "pattern_id": pattern_id},
-        )
-        if resp.has_next():
-            return self._row_to_pattern_dict(list(resp.get_next()), entity_id)
-        return None
-
-    def list_entity_patterns(
-        self,
-        entity_id: str,
-        query: str = "",
-        limit: int = 100,
-        include_inactive: bool = False,
-    ) -> list[dict[str, Any]]:
-        # 召回策略：q 为空 → 该实体全部（受 include_inactive 控制）按 updated_at DESC；
-        # q 非空 → 在 content + pattern_type + metadata(JSON) 上做大小写不敏感子串匹配。
-        capped_limit = int(max(1, limit))
-        params: dict[str, Any] = {"entity_id": entity_id}
-        filters = []
-        if not include_inactive:
-            filters.append("(p.status IS NULL OR p.status = 'active')")
-        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-        # q 非空时不在 Cypher 端 LIMIT，避免子串过滤前被截断；单实体下 pattern 数量可控。
-        if query:
-            limit_clause = ""
-        else:
-            limit_clause = "LIMIT $limit"
-            params["limit"] = capped_limit
+    def get_entity_pattern(self, entity_id: str) -> Optional[dict[str, Any]]:
+        """读取实体绑定的 pattern。无则返回 None。"""
         resp = self.conn.execute(
             f"""
             MATCH (:Entity {{id: $entity_id}})-[:HAS_PATTERN]->(p:Pattern)
-            {where_clause}
             RETURN {self._pattern_select_clause('p')}
-            ORDER BY p.updated_at DESC
-            {limit_clause}
+            LIMIT 1
             """,
-            params,
+            {"entity_id": entity_id},
         )
-        q_lower = str(query or "").strip().lower()
-        items: list[dict[str, Any]] = []
-        while resp.has_next():
-            item = self._row_to_pattern_dict(list(resp.get_next()), entity_id)
-            if q_lower:
-                haystack = (
-                    f"{item['content']} {item['pattern_type']} "
-                    f"{safe_json_dumps(item['metadata'])}"
-                ).lower()
-                if q_lower not in haystack:
-                    continue
-            items.append(item)
-            if len(items) >= capped_limit:
-                break
-        return items
+        if resp.has_next():
+            return self._row_to_pattern_dict(list(resp.get_next()))
+        return None
 
-    def update_entity_pattern(
-        self,
-        entity_id: str,
-        pattern_id: str,
-        *,
-        content: Optional[str] = None,
-        pattern_type: Optional[str] = None,
-        status: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        updated_at: int = 0,
-    ) -> Optional[dict[str, Any]]:
-        existing = self.get_entity_pattern(entity_id, pattern_id)
+    def delete_entity_pattern(self, entity_id: str) -> Optional[dict[str, Any]]:
+        """硬删除实体的 pattern（含 HAS_PATTERN 边）。返回被删快照或 None。"""
+        existing = self.get_entity_pattern(entity_id)
         if existing is None:
             return None
-        ts = int(updated_at or time.time())
-        new_content = content if content is not None else existing["content"]
-        new_type = pattern_type if pattern_type is not None else existing["pattern_type"]
-        new_status = status if status is not None else existing["status"]
-        new_metadata = metadata if metadata is not None else existing["metadata"]
         self.conn.execute(
             """
-            MATCH (:Entity {id: $entity_id})-[:HAS_PATTERN]->(p:Pattern {id: $pattern_id})
-            SET p.content = $content,
-                p.pattern_type = $pattern_type,
-                p.status = $status,
-                p.metadata = $metadata,
-                p.updated_at = $updated_at
+            MATCH (:Entity {id: $entity_id})-[r:HAS_PATTERN]->(p:Pattern)
+            DELETE r
+            DETACH DELETE p
             """,
-            {
-                "entity_id": entity_id,
-                "pattern_id": pattern_id,
-                "content": new_content or "",
-                "pattern_type": new_type or "preference",
-                "status": new_status or "active",
-                "metadata": safe_json_dumps(new_metadata or {}),
-                "updated_at": ts,
-            },
+            {"entity_id": entity_id},
         )
-        return self.get_entity_pattern(entity_id, pattern_id)
-
-    def delete_entity_pattern(
-        self,
-        entity_id: str,
-        pattern_id: str,
-        deleted_at: int,
-        hard_delete: bool = False,
-    ) -> Optional[dict[str, Any]]:
-        existing = self.get_entity_pattern(entity_id, pattern_id)
-        if existing is None:
-            return None
-        if hard_delete:
-            self.conn.execute(
-                """
-                MATCH (:Entity {id: $entity_id})-[r:HAS_PATTERN]->(p:Pattern {id: $pattern_id})
-                DELETE r
-                DETACH DELETE p
-                """,
-                {"entity_id": entity_id, "pattern_id": pattern_id},
-            )
-            return existing
-        return self.update_entity_pattern(
-            entity_id,
-            pattern_id,
-            status="archived",
-            updated_at=int(deleted_at or time.time()),
-        )
+        return existing
 
     # ==================== Relation 操作 ====================
 

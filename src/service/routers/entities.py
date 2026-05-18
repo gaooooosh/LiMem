@@ -4,9 +4,11 @@
 - GET    /db/{db_id}/api/entities                   列出所有注册实体（不含 embedding）
 - GET    /db/{db_id}/api/entities/{entity_id}       获取单个注册实体详情
 - POST   /db/{db_id}/api/entities                   注册新实体（创建/晋升/更新三态）
-                                                    可选 `patterns` 字段：内联同时注册 pattern，
-                                                    任何一条失败则整体回滚（已写入的 pattern 硬删；
-                                                    若本次新建了实体节点还会一并 unregister）。
+                                                    可选 `pattern` 字段（v2 单对象）：内联同时
+                                                    upsert 单文档 markdown。失败时回滚：
+                                                    硬删该 pattern + 若本次新建实体则 unregister。
+                                                    若实体已存在且已有 active pattern，本次写入
+                                                    会**覆盖**旧 pattern（audit 记录 previous_pattern_id）。
 - PATCH  /db/{db_id}/api/entities/{entity_id}       更新已注册实体属性
 
 写操作使用与 graph.py 一致的审计模板：trace + write_lock + graph_delta。
@@ -15,7 +17,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -23,6 +25,7 @@ from ..auth.dependencies import get_ltm_context, get_ltm_context_write
 from ..models import (
     EntityPattern,
     ListEntitiesResponse,
+    PutEntityPatternRequest,
     RegisterEntityRequest,
     RegisterEntityResponse,
     RegisteredEntity,
@@ -58,7 +61,7 @@ def register_entity(
     handle: LtmHandle = Depends(get_ltm_context_write),
 ) -> RegisterEntityResponse:
     audit = handle.audit
-    inline_patterns = list(request.patterns or [])
+    inline_pattern = request.pattern
     payload_for_trace = request.model_dump()
     with audit.trace("entity_register", payload_for_trace) as trace_id:
         with handle.write_lock:
@@ -79,13 +82,13 @@ def register_entity(
                 details={"result": result},
             )
 
-            created_patterns: list[dict[str, Any]] = []
-            if inline_patterns:
-                created_patterns = _create_inline_patterns(
+            created_pattern: Optional[dict[str, Any]] = None
+            if inline_pattern is not None:
+                created_pattern = _put_inline_pattern(
                     handle=handle,
                     trace_id=trace_id,
                     entity_id=request.entity_id,
-                    patterns=inline_patterns,
+                    pattern=inline_pattern,
                     entity_was_created=result.get("action") == "created",
                 )
 
@@ -98,7 +101,7 @@ def register_entity(
         action=result["action"],
         existed_as_extracted=bool(result.get("existed_as_extracted", False)),
         entity=result.get("entity") or {},
-        patterns=[EntityPattern(**p) for p in created_patterns],
+        pattern=EntityPattern(**created_pattern) if created_pattern else None,
     )
 
 
@@ -139,84 +142,64 @@ def update_entity(
 # ---------- 内部工具 ----------
 
 
-def _create_inline_patterns(
+def _put_inline_pattern(
     *,
     handle: LtmHandle,
     trace_id: Any,
     entity_id: str,
-    patterns: list[Any],
+    pattern: PutEntityPatternRequest,
     entity_was_created: bool,
-) -> list[dict[str, Any]]:
-    """注册流程内的"附带 pattern 写入"，原子语义：失败回滚已写 pattern；
-    若本次注册新建了实体节点，连带 unregister_entity。
+) -> dict[str, Any]:
+    """注册流程内的"附带 pattern 写入"（v2 单对象）。
+
+    回滚语义：put 失败 → 视实体是否本次新建决定是否 unregister。
+    若实体已存在且已有 active pattern，本次 put 会**覆盖**旧 pattern；audit details
+    记录 previous_pattern_id 让审计可追溯（详见 API_DOC.md §11.6 风险说明）。
     """
     audit = handle.audit
-    created: list[dict[str, Any]] = []
+    previous = handle.ltm.get_entity_pattern(entity_id)
+    previous_id = previous["id"] if previous else None
     try:
-        for idx, p in enumerate(patterns):
-            payload = p.model_dump()
+        result = handle.ltm.put_entity_pattern(
+            entity_id=entity_id,
+            content=pattern.content,
+        )
+    except Exception as exc:
+        if entity_was_created:
             try:
-                result = handle.ltm.create_entity_pattern(
-                    entity_id=entity_id,
-                    content=payload["content"],
-                    pattern_type=payload.get("pattern_type") or "preference",
-                    metadata=payload.get("metadata"),
-                    pattern_id=payload.get("pattern_id"),
-                )
-            except Exception as exc:
-                # 回滚：先删已写 pattern，再视情况 unregister 实体
-                _rollback_inline_patterns(handle, entity_id, created)
-                if entity_was_created:
-                    try:
-                        handle.ltm.unregister_entity(entity_id)
-                    except Exception:
-                        # 回滚阶段尽力而为，已记录审计
-                        pass
-                audit.write(
-                    trace_id,
-                    "entity_pattern",
-                    "inline_create_failed",
-                    entity_type="entity",
-                    entity_id=entity_id,
-                    details={
-                        "failed_index": idx,
-                        "error": str(exc),
-                        "rolled_back_patterns": [p["id"] for p in created],
-                        "rolled_back_entity": entity_was_created,
-                    },
-                )
-                # 透传错误类型：ValueError → 400/404，其它 → 500
-                if isinstance(exc, ValueError):
-                    msg = str(exc)
-                    if "not found" in msg.lower():
-                        raise HTTPException(status_code=404, detail=msg) from exc
-                    raise HTTPException(status_code=400, detail=msg) from exc
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            created.append(result["pattern"])
+                handle.ltm.unregister_entity(entity_id)
+            except Exception:
+                # 回滚阶段尽力而为，已记录审计
+                pass
         audit.write(
             trace_id,
             "entity_pattern",
-            "inline_create_completed",
+            "inline_put_failed",
             entity_type="entity",
             entity_id=entity_id,
-            details={"pattern_ids": [p["id"] for p in created]},
+            details={
+                "error": str(exc),
+                "previous_pattern_id": previous_id,
+                "rolled_back_entity": entity_was_created,
+            },
         )
-        return created
-    except HTTPException:
-        raise
+        if isinstance(exc, ValueError):
+            msg = str(exc)
+            if "not found" in msg.lower():
+                raise HTTPException(status_code=404, detail=msg) from exc
+            raise HTTPException(status_code=400, detail=msg) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-
-def _rollback_inline_patterns(
-    handle: LtmHandle,
-    entity_id: str,
-    created: list[dict[str, Any]],
-) -> None:
-    for p in created:
-        try:
-            handle.ltm.delete_entity_pattern(
-                entity_id=entity_id,
-                pattern_id=p["id"],
-                hard_delete=True,
-            )
-        except Exception:
-            continue
+    audit.write(
+        trace_id,
+        "entity_pattern",
+        "inline_put_completed",
+        entity_type="entity",
+        entity_id=entity_id,
+        details={
+            "action": result["action"],
+            "pattern_id": result["pattern"]["id"],
+            "previous_pattern_id": previous_id,  # 若发生覆盖则非 None
+        },
+    )
+    return result["pattern"]

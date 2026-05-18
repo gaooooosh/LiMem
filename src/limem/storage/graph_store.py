@@ -247,57 +247,32 @@ class GraphStore(ABC):
         raise NotImplementedError("resolve_canonical_entity_id is not implemented")
 
     # ==================== Entity Pattern 服务扩展 ====================
+    # v2 模型：每个注册实体至多绑定 1 篇 markdown 文档。CRUD 收敛为 put / get / delete。
+    # 召回逻辑（H2 切片 + 朴素打分）在 retrieval/pattern_recall.py 中实现，不进 store 层。
 
-    def create_entity_pattern(
+    def put_entity_pattern(
         self,
         entity_id: str,
         content: str,
-        pattern_type: str,
-        metadata: dict[str, Any],
-        created_at: int,
-        pattern_id: Optional[str] = None,
-        embedding: Optional[list[float]] = None,
+        *,
+        now: Optional[int] = None,
     ) -> dict[str, Any]:
-        """为注册实体创建一条 pattern（例如用户明确偏好）。"""
-        raise NotImplementedError("create_entity_pattern is not implemented")
+        """Upsert 注册实体的单文档 pattern。
 
-    def get_entity_pattern(self, entity_id: str, pattern_id: str) -> Optional[dict[str, Any]]:
-        """获取注册实体下的单条 pattern。"""
+        若该实体已有 pattern → SET content / updated_at 覆盖同节点；
+        否则 CREATE 新节点 + CREATE (Entity)-[:HAS_PATTERN]->(Pattern) 边。
+
+        Returns:
+            {"action": "created"|"updated", "pattern": {<PatternDict>}}
+        """
+        raise NotImplementedError("put_entity_pattern is not implemented")
+
+    def get_entity_pattern(self, entity_id: str) -> Optional[dict[str, Any]]:
+        """获取注册实体绑定的 pattern。无则返回 None。"""
         raise NotImplementedError("get_entity_pattern is not implemented")
 
-    def list_entity_patterns(
-        self,
-        entity_id: str,
-        query: str = "",
-        limit: int = 100,
-        include_inactive: bool = False,
-    ) -> list[dict[str, Any]]:
-        """列出或搜索注册实体下的 patterns。"""
-        raise NotImplementedError("list_entity_patterns is not implemented")
-
-    def update_entity_pattern(
-        self,
-        entity_id: str,
-        pattern_id: str,
-        *,
-        content: Optional[str] = None,
-        pattern_type: Optional[str] = None,
-        status: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        updated_at: int = 0,
-        embedding: Optional[list[float]] = None,
-    ) -> Optional[dict[str, Any]]:
-        """Patch 注册实体 pattern。"""
-        raise NotImplementedError("update_entity_pattern is not implemented")
-
-    def delete_entity_pattern(
-        self,
-        entity_id: str,
-        pattern_id: str,
-        deleted_at: int,
-        hard_delete: bool = False,
-    ) -> Optional[dict[str, Any]]:
-        """删除注册实体 pattern。默认软删除为 archived。"""
+    def delete_entity_pattern(self, entity_id: str) -> Optional[dict[str, Any]]:
+        """硬删除注册实体的 pattern（含 HAS_PATTERN 边）。无则返回 None。"""
         raise NotImplementedError("delete_entity_pattern is not implemented")
 
     # ==================== Relation 操作 ====================

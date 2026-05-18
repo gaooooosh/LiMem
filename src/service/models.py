@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ---------- 业务请求 / 响应 ----------
@@ -152,8 +152,20 @@ class RegisterEntityRequest(BaseModel):
     entity_type: str = "UNKNOWN"
     aliases: Optional[list[str]] = None
     metadata: Optional[dict[str, Any]] = None
-    # 可选：注册实体的同时一并写入 pattern；任何一条失败则整体回滚（包含本次新建的实体）。
-    patterns: Optional[list["CreateEntityPatternRequest"]] = None
+    # 可选：注册实体的同时一并写入 pattern（v2：单文档 markdown）。
+    # 失败时回滚：删除该 pattern；本次新建的实体节点一并 unregister。
+    pattern: Optional["PutEntityPatternRequest"] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_patterns_field(cls, data: Any) -> Any:
+        # v1 兼容性 hard break：旧客户端传 patterns:[...] → 422 + 可读提示。
+        if isinstance(data, dict) and "patterns" in data:
+            raise ValueError(
+                "'patterns' field is deprecated; use 'pattern' (single object). "
+                "See API_DOC.md §11.6 Breaking Change."
+            )
+        return data
 
 
 class UpdateEntityRequest(BaseModel):
@@ -168,8 +180,8 @@ class RegisterEntityResponse(BaseModel):
     action: str  # created | promoted | updated
     existed_as_extracted: bool = False
     entity: dict[str, Any] = Field(default_factory=dict)
-    # 内联注册时回填的 pattern 列表；未内联或全部失败回滚时为空。
-    patterns: list["EntityPattern"] = Field(default_factory=list)
+    # 内联注册时回填的 pattern 单对象；未内联 / 全部回滚 / 实体已存在且未覆盖时为 None。
+    pattern: Optional["EntityPattern"] = None
 
 
 class ListEntitiesResponse(BaseModel):
@@ -177,67 +189,56 @@ class ListEntitiesResponse(BaseModel):
     total: int = 0
 
 
-# ---------- 注册实体 Pattern ----------
+# ---------- 注册实体 Pattern（v2：单文档 markdown） ----------
 
 
 class EntityPattern(BaseModel):
+    """绑定到 Entity 的唯一 markdown pattern 文档。"""
     id: str
     entity_id: str
     content: str
-    pattern_type: str = "preference"
-    status: str = "active"
+    status: str = "active"  # 当前恒为 active；保留字段以备未来扩展
     created_at: Optional[int] = None
     updated_at: Optional[int] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class CreateEntityPatternRequest(BaseModel):
+class PutEntityPatternRequest(BaseModel):
+    """Upsert 请求。仅允许 content 字段；其它字段（pattern_type/pattern_id/metadata）一律 422。"""
+    model_config = ConfigDict(extra="forbid")
     content: str
-    pattern_type: str = "preference"
-    metadata: Optional[dict[str, Any]] = None
-    pattern_id: Optional[str] = None
+
+    @field_validator("content")
+    @classmethod
+    def _content_not_blank(cls, v: str) -> str:
+        if not (v or "").strip():
+            raise ValueError("content must not be blank")
+        return v
 
 
-class UpdateEntityPatternRequest(BaseModel):
-    content: Optional[str] = None
-    pattern_type: Optional[str] = None
-    status: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
-
-
-class EntityPatternResponse(BaseModel):
-    action: str
+class PutEntityPatternResponse(BaseModel):
+    action: Literal["created", "updated"]
     pattern: EntityPattern
 
 
 class DeleteEntityPatternResponse(BaseModel):
-    action: str  # "archived" | "deleted"
     pattern: EntityPattern
 
 
-class ListEntityPatternsResponse(BaseModel):
-    items: list[EntityPattern] = Field(default_factory=list)
-    total: int = 0
-    query: str = ""
+class MatchedSection(BaseModel):
+    heading: str
+    score: int
+    char_offset: int
 
 
-class BatchCreateEntityPatternsRequest(BaseModel):
-    patterns: list[CreateEntityPatternRequest]
-    atomic: bool = True
+class RecallEntityPatternResponse(BaseModel):
+    """Pattern 召回响应。无 pattern 时 mode/content 仍合法但 pattern=None、sections=[]。"""
+    mode: Literal["full", "section"]
+    content: str
+    total_chars: int
+    matched_sections: list[MatchedSection] = Field(default_factory=list)
+    pattern: Optional[EntityPattern] = None
 
 
-class BatchCreateEntityPatternFailure(BaseModel):
-    index: int
-    content: str = ""
-    error: str
-
-
-class BatchCreateEntityPatternsResponse(BaseModel):
-    created: list[EntityPattern] = Field(default_factory=list)
-    failed: list[BatchCreateEntityPatternFailure] = Field(default_factory=list)
-    atomic: bool = True
-
-
-# 解析 RegisterEntityRequest/Response 中对 CreateEntityPatternRequest / EntityPattern 的前向引用。
+# 解析 RegisterEntityRequest/Response 对 PutEntityPatternRequest / EntityPattern 的前向引用。
 RegisterEntityRequest.model_rebuild()
 RegisterEntityResponse.model_rebuild()

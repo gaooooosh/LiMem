@@ -1,9 +1,18 @@
-"""/db/{db_id}/api/entities/{entity_id}/patterns 注册实体 pattern 路由。
+"""/db/{db_id}/api/entities/{entity_id}/patterns 注册实体 pattern 路由（v2）。
 
-变更点（vs 旧版）：
-- `GET /{pattern_id}` 显式把 store 返回的 dict 包装成 EntityPattern，避免与 response_model 不一致。
-- `DELETE /{pattern_id}` 由 204 改为 200 + DeleteEntityPatternResponse，保留 action 信息。
-- 新增 `POST :batch` 批量注册，支持原子（默认）与"尽力而为"两种模式。
+v2 模型：每个 entity 至多对应 1 篇 markdown pattern 文档。CRUD 收敛为 4 个端点：
+
+- PUT    ""          upsert 整篇 markdown
+- GET    ""          读取 pattern（无则 pattern=null）
+- GET    "/recall"   召回（H2 切片 + 朴素打分；mode=auto|full|section）
+- DELETE ""          硬删除 pattern
+
+变更摘要（vs v1）：
+- 删除：POST、POST :batch、GET /{pid}、PATCH /{pid}、DELETE /{pid}、GET 列表语义
+- 删除：pattern_type / metadata / pattern_id / batch / archived 软删
+- 路由路径保留复数 /patterns（路径里不再带 {pattern_id}）
+
+写操作沿用 audit.trace + write_lock + graph_snapshot 模板。
 """
 
 from __future__ import annotations
@@ -12,15 +21,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth.dependencies import get_ltm_context, get_ltm_context_write
 from ..models import (
-    BatchCreateEntityPatternFailure,
-    BatchCreateEntityPatternsRequest,
-    BatchCreateEntityPatternsResponse,
-    CreateEntityPatternRequest,
     DeleteEntityPatternResponse,
     EntityPattern,
-    EntityPatternResponse,
-    ListEntityPatternsResponse,
-    UpdateEntityPatternRequest,
+    MatchedSection,
+    PutEntityPatternRequest,
+    PutEntityPatternResponse,
+    RecallEntityPatternResponse,
 )
 from ..pool import LtmHandle
 
@@ -38,248 +44,134 @@ def _not_found_from_value_error(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=400, detail=msg)
 
 
-@router.get("", response_model=ListEntityPatternsResponse)
-def list_entity_patterns(
+@router.put("", response_model=PutEntityPatternResponse)
+def put_entity_pattern(
     entity_id: str,
-    q: str = Query(default="", description="Optional text query for pattern recall."),
-    limit: int = Query(default=100, ge=1, le=500),
-    include_inactive: bool = Query(default=False),
-    handle: LtmHandle = Depends(get_ltm_context),
-) -> ListEntityPatternsResponse:
-    try:
-        items = handle.ltm.list_entity_patterns(
-            entity_id=entity_id,
-            query=q,
-            limit=limit,
-            include_inactive=include_inactive,
-        )
-    except ValueError as exc:
-        raise _not_found_from_value_error(exc) from exc
-    return ListEntityPatternsResponse(
-        items=[EntityPattern(**item) for item in items],
-        total=len(items),
-        query=q,
-    )
-
-
-# 注意：`:batch` 必须放在 `POST ""` 之前注册（FastAPI 按定义顺序匹配），
-# 否则会被通配 `POST ""` 误匹配。
-@router.post("/:batch", response_model=BatchCreateEntityPatternsResponse)
-def batch_create_entity_patterns(
-    entity_id: str,
-    request: BatchCreateEntityPatternsRequest,
+    request: PutEntityPatternRequest,
     handle: LtmHandle = Depends(get_ltm_context_write),
-) -> BatchCreateEntityPatternsResponse:
-    if not request.patterns:
-        raise HTTPException(status_code=400, detail="patterns must not be empty")
+) -> PutEntityPatternResponse:
     audit = handle.audit
-    items = [p.model_dump() for p in request.patterns]
     with audit.trace(
-        "entity_pattern_batch_create",
-        {"entity_id": entity_id, "count": len(items), "atomic": request.atomic},
+        "entity_pattern_put",
+        {"entity_id": entity_id, "content_chars": len(request.content)},
     ) as trace_id:
         with handle.write_lock:
             before = audit.graph_snapshot(handle.ltm)
-            created: list[dict] = []
-            failed: list[BatchCreateEntityPatternFailure] = []
             try:
-                for idx, payload in enumerate(items):
-                    try:
-                        result = handle.ltm.create_entity_pattern(
-                            entity_id=entity_id,
-                            content=payload["content"],
-                            pattern_type=payload.get("pattern_type") or "preference",
-                            metadata=payload.get("metadata"),
-                            pattern_id=payload.get("pattern_id"),
-                        )
-                        created.append(result["pattern"])
-                    except ValueError as exc:
-                        if request.atomic:
-                            # 进入原子回滚：把前面成功创建的 pattern 全部硬删
-                            _rollback_patterns(handle, entity_id, created)
-                            raise _not_found_from_value_error(exc) from exc
-                        failed.append(
-                            BatchCreateEntityPatternFailure(
-                                index=idx,
-                                content=payload.get("content", ""),
-                                error=str(exc),
-                            )
-                        )
-                    except Exception as exc:  # noqa: BLE001 — 必须捕获以确保回滚
-                        if request.atomic:
-                            _rollback_patterns(handle, entity_id, created)
-                            raise HTTPException(status_code=500, detail=str(exc)) from exc
-                        failed.append(
-                            BatchCreateEntityPatternFailure(
-                                index=idx,
-                                content=payload.get("content", ""),
-                                error=str(exc),
-                            )
-                        )
-            finally:
-                audit.write(
-                    trace_id,
-                    "entity_pattern",
-                    "batch_create_completed",
-                    entity_type="entity",
-                    entity_id=entity_id,
-                    details={
-                        "created_ids": [p["id"] for p in created],
-                        "failed_count": len(failed),
-                    },
+                result = handle.ltm.put_entity_pattern(
+                    entity_id=entity_id, content=request.content
                 )
-                after = audit.graph_snapshot(handle.ltm)
-                audit.write_graph_delta(
-                    trace_id, before, after, operation="entity_pattern_batch_create"
-                )
-    return BatchCreateEntityPatternsResponse(
-        created=[EntityPattern(**p) for p in created],
-        failed=failed,
-        atomic=request.atomic,
+            except ValueError as exc:
+                raise _not_found_from_value_error(exc) from exc
+            audit.write(
+                trace_id,
+                "entity_pattern",
+                "put_completed",
+                entity_type="entity",
+                entity_id=entity_id,
+                details={
+                    "action": result["action"],
+                    "pattern_id": result["pattern"]["id"],
+                },
+            )
+            after = audit.graph_snapshot(handle.ltm)
+            audit.write_graph_delta(trace_id, before, after, operation="entity_pattern_put")
+    return PutEntityPatternResponse(
+        action=result["action"],
+        pattern=EntityPattern(**result["pattern"]),
     )
 
 
-@router.get("/{pattern_id}", response_model=EntityPattern)
+# 路由顺序：`/recall` 必须先于 `""` 的 GET 注册，避免被通配吞掉。FastAPI 按定义顺序匹配。
+@router.get("/recall", response_model=RecallEntityPatternResponse)
+def recall_entity_pattern(
+    entity_id: str,
+    query: str = Query(default="", description="召回查询字符串；空字符串走 full。"),
+    mode: str = Query(default="auto", pattern="^(auto|full|section)$"),
+    top_k_sections: int = Query(default=0, ge=0, le=20, description="0=使用 config 默认"),
+    handle: LtmHandle = Depends(get_ltm_context),
+) -> RecallEntityPatternResponse:
+    result = handle.ltm.recall_entity_pattern(
+        entity_id=entity_id,
+        query=query,
+        mode=mode,
+        top_k_sections=top_k_sections,
+    )
+    if result is None:
+        # 无 pattern：返回空响应而非 404，与 GET "" 行为一致。
+        return RecallEntityPatternResponse(
+            mode="full",
+            content="",
+            total_chars=0,
+            matched_sections=[],
+            pattern=None,
+        )
+    return RecallEntityPatternResponse(
+        mode=result["mode"],
+        content=result["content"],
+        total_chars=result["total_chars"],
+        matched_sections=[MatchedSection(**s) for s in result["matched_sections"]],
+        pattern=EntityPattern(**result["pattern"]),
+    )
+
+
+@router.get("", response_model=RecallEntityPatternResponse)
 def get_entity_pattern(
     entity_id: str,
-    pattern_id: str,
     handle: LtmHandle = Depends(get_ltm_context),
-) -> EntityPattern:
-    pattern = handle.ltm.get_entity_pattern(entity_id, pattern_id)
+) -> RecallEntityPatternResponse:
+    """读取实体 pattern；无则 pattern=null + content=""。
+
+    复用 RecallEntityPatternResponse 作为响应模型：mode=full、matched_sections=[]、
+    content 即整篇 markdown。这样客户端只需处理一种响应形态。
+    """
+    pattern = handle.ltm.get_entity_pattern(entity_id)
     if pattern is None:
-        raise HTTPException(status_code=404, detail=f"Entity pattern not found: {pattern_id}")
-    return EntityPattern(**pattern)
-
-
-@router.post("", response_model=EntityPatternResponse)
-def create_entity_pattern(
-    entity_id: str,
-    request: CreateEntityPatternRequest,
-    handle: LtmHandle = Depends(get_ltm_context_write),
-) -> EntityPatternResponse:
-    audit = handle.audit
-    payload = request.model_dump()
-    with audit.trace("entity_pattern_create", {"entity_id": entity_id, **payload}) as trace_id:
-        with handle.write_lock:
-            before = audit.graph_snapshot(handle.ltm)
-            try:
-                result = handle.ltm.create_entity_pattern(
-                    entity_id=entity_id,
-                    content=request.content,
-                    pattern_type=request.pattern_type,
-                    metadata=request.metadata,
-                    pattern_id=request.pattern_id,
-                )
-            except ValueError as exc:
-                raise _not_found_from_value_error(exc) from exc
-            audit.write(
-                trace_id,
-                "entity_pattern",
-                "create_completed",
-                entity_type="entity",
-                entity_id=entity_id,
-                details={"pattern_id": result["pattern"]["id"]},
-            )
-            after = audit.graph_snapshot(handle.ltm)
-            audit.write_graph_delta(trace_id, before, after, operation="entity_pattern_create")
-    return EntityPatternResponse(
-        action=result["action"],
-        pattern=EntityPattern(**result["pattern"]),
+        return RecallEntityPatternResponse(
+            mode="full",
+            content="",
+            total_chars=0,
+            matched_sections=[],
+            pattern=None,
+        )
+    return RecallEntityPatternResponse(
+        mode="full",
+        content=pattern["content"],
+        total_chars=len(pattern["content"] or ""),
+        matched_sections=[],
+        pattern=EntityPattern(**pattern),
     )
 
 
-@router.patch("/{pattern_id}", response_model=EntityPatternResponse)
-def update_entity_pattern(
-    entity_id: str,
-    pattern_id: str,
-    request: UpdateEntityPatternRequest,
-    handle: LtmHandle = Depends(get_ltm_context_write),
-) -> EntityPatternResponse:
-    audit = handle.audit
-    payload = request.model_dump(exclude_none=True)
-    with audit.trace(
-        "entity_pattern_update",
-        {"entity_id": entity_id, "pattern_id": pattern_id, **payload},
-    ) as trace_id:
-        with handle.write_lock:
-            before = audit.graph_snapshot(handle.ltm)
-            try:
-                result = handle.ltm.update_entity_pattern(
-                    entity_id=entity_id,
-                    pattern_id=pattern_id,
-                    **payload,
-                )
-            except ValueError as exc:
-                raise _not_found_from_value_error(exc) from exc
-            audit.write(
-                trace_id,
-                "entity_pattern",
-                "update_completed",
-                entity_type="entity",
-                entity_id=entity_id,
-                details={"pattern_id": pattern_id},
-            )
-            after = audit.graph_snapshot(handle.ltm)
-            audit.write_graph_delta(trace_id, before, after, operation="entity_pattern_update")
-    return EntityPatternResponse(
-        action=result["action"],
-        pattern=EntityPattern(**result["pattern"]),
-    )
-
-
-@router.delete("/{pattern_id}", response_model=DeleteEntityPatternResponse)
+@router.delete("", response_model=DeleteEntityPatternResponse)
 def delete_entity_pattern(
     entity_id: str,
-    pattern_id: str,
-    hard_delete: bool = Query(default=False),
     handle: LtmHandle = Depends(get_ltm_context_write),
 ) -> DeleteEntityPatternResponse:
     audit = handle.audit
     with audit.trace(
         "entity_pattern_delete",
-        {"entity_id": entity_id, "pattern_id": pattern_id, "hard_delete": hard_delete},
+        {"entity_id": entity_id},
     ) as trace_id:
         with handle.write_lock:
             before = audit.graph_snapshot(handle.ltm)
             try:
-                result = handle.ltm.delete_entity_pattern(
-                    entity_id=entity_id,
-                    pattern_id=pattern_id,
-                    hard_delete=hard_delete,
-                )
+                deleted = handle.ltm.delete_entity_pattern(entity_id=entity_id)
             except ValueError as exc:
                 raise _not_found_from_value_error(exc) from exc
+            if deleted is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Entity pattern not found for entity: {entity_id}",
+                )
             audit.write(
                 trace_id,
                 "entity_pattern",
                 "delete_completed",
                 entity_type="entity",
                 entity_id=entity_id,
-                details={"pattern_id": pattern_id, "action": result["action"]},
+                details={"pattern_id": deleted["id"]},
             )
             after = audit.graph_snapshot(handle.ltm)
             audit.write_graph_delta(trace_id, before, after, operation="entity_pattern_delete")
-    return DeleteEntityPatternResponse(
-        action=result["action"],
-        pattern=EntityPattern(**result["pattern"]),
-    )
-
-
-# ---------- 内部工具 ----------
-
-
-def _rollback_patterns(
-    handle: LtmHandle,
-    entity_id: str,
-    created: list[dict],
-) -> None:
-    """对一组已创建的 pattern 执行硬删除（容错：单条失败不阻断整体回滚）。"""
-    for p in created:
-        try:
-            handle.ltm.delete_entity_pattern(
-                entity_id=entity_id,
-                pattern_id=p["id"],
-                hard_delete=True,
-            )
-        except Exception:  # noqa: BLE001 — 回滚阶段尽最大努力
-            continue
+    return DeleteEntityPatternResponse(pattern=EntityPattern(**deleted))

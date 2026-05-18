@@ -260,8 +260,7 @@ class AuditedStoreProxy:
         "relink_event_references",
         "relink_context_edges",
         "save_event_merge_trace",
-        "create_entity_pattern",
-        "update_entity_pattern",
+        "put_entity_pattern",
         "delete_entity_pattern",
         "unregister_entity_node",
     }
