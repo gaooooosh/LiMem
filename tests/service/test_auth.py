@@ -233,6 +233,137 @@ def test_root_can_archive_database(client):
     assert client.get(f"/db/{db_id}/health", headers={"X-API-Key": token}).status_code == 404
 
 
+def test_hard_delete_database_removes_files_and_row(client, tmp_path):
+    """DELETE /databases/{db_id}/hard：sqlite 行 + .kz 目录 + 审计文件全部消失。
+
+    fake loader 不会真正创建 Kuzu 目录，所以这里手动落地一个占位 .kz 目录与
+    一个占位审计文件，确保 hard_delete 真的走到了 rmtree / unlink 分支。
+    """
+    _, token, _ = _create_user_and_key(client, "alice")
+    db = client.post(
+        "/databases", json={"display_name": "Disposable"}, headers={"X-API-Key": token}
+    ).json()
+    db_id = db["db_id"]
+
+    # 触发一次 acquire 让 pool 持有一个 fake handle（模拟"在用"状态）
+    assert client.get(f"/db/{db_id}/health", headers={"X-API-Key": token}).status_code == 200
+
+    # 手工模拟真实环境的产物
+    from pathlib import Path
+    db_root = tmp_path / "DB" / "users"
+    user_dirs = [p for p in db_root.iterdir() if p.is_dir()]
+    assert len(user_dirs) == 1
+    kz_dir: Path = user_dirs[0] / f"{db_id}.kz"
+    kz_dir.mkdir(parents=True, exist_ok=True)
+    (kz_dir / "marker").write_text("placeholder", encoding="utf-8")
+
+    audit_root = tmp_path / "audit"
+    audit_user_dir = audit_root / user_dirs[0].name
+    audit_user_dir.mkdir(parents=True, exist_ok=True)
+    audit_file = audit_user_dir / f"{db_id}.jsonl"
+    audit_file.write_text("{}\n", encoding="utf-8")
+
+    r = client.delete(f"/databases/{db_id}/hard", headers={"X-API-Key": token})
+    assert r.status_code == 204
+
+    # 文件全部清理
+    assert not kz_dir.exists(), f"kz dir should be removed: {kz_dir}"
+    assert not audit_file.exists(), f"audit file should be removed: {audit_file}"
+    # admin 列表（含归档）也不再可见
+    listing = client.get("/admin/databases?include_archived=true", headers=_root()).json()
+    assert db_id not in {d["db_id"] for d in listing}
+
+
+def test_hard_delete_handles_kuzu_single_file_layout(client, tmp_path):
+    """生产 Kuzu 实际是单文件（不是目录）；hard_delete 应同时清理 .kz 主文件与 .kz.wal 等旁路。"""
+    _, token, _ = _create_user_and_key(client, "alice")
+    db = client.post(
+        "/databases", json={"display_name": "SingleFile"}, headers={"X-API-Key": token}
+    ).json()
+    db_id = db["db_id"]
+    # 触发 acquire 让 audit 文件落地（fake handle 不会真的写 .kz）
+    client.get(f"/db/{db_id}/health", headers={"X-API-Key": token})
+
+    from pathlib import Path
+    db_root = tmp_path / "DB" / "users"
+    user_dirs = [p for p in db_root.iterdir() if p.is_dir()]
+    assert len(user_dirs) == 1
+    kz_file: Path = user_dirs[0] / f"{db_id}.kz"
+    # 模拟 Kuzu 单文件 + WAL 旁路
+    kz_file.write_bytes(b"\x00" * 16)
+    kz_wal = user_dirs[0] / f"{db_id}.kz.wal"
+    kz_wal.write_bytes(b"\x00")
+    kz_shadow = user_dirs[0] / f"{db_id}.kz.shadow"
+    kz_shadow.write_bytes(b"\x00")
+
+    r = client.delete(f"/databases/{db_id}/hard", headers={"X-API-Key": token})
+    assert r.status_code == 204
+    assert not kz_file.exists()
+    assert not kz_wal.exists()
+    assert not kz_shadow.exists()
+
+
+def test_hard_delete_archived_database_works(client):
+    """硬删允许作用于 active 或 archived；区别于 archive 接口仅 active。"""
+    _, token, _ = _create_user_and_key(client, "alice")
+    db = client.post(
+        "/databases", json={"display_name": "ToArchive"}, headers={"X-API-Key": token}
+    ).json()
+    db_id = db["db_id"]
+    assert client.delete(f"/databases/{db_id}", headers={"X-API-Key": token}).status_code == 204
+    # 再次软归档 → 404
+    assert (
+        client.delete(f"/databases/{db_id}", headers={"X-API-Key": token}).status_code == 404
+    )
+    # 但硬删仍然成功
+    assert (
+        client.delete(f"/databases/{db_id}/hard", headers={"X-API-Key": token}).status_code == 204
+    )
+
+
+def test_hard_delete_other_user_database_403(client):
+    _, alice_token, _ = _create_user_and_key(client, "alice")
+    _, bob_token, _ = _create_user_and_key(client, "bob")
+    db = client.post(
+        "/databases", json={"display_name": "A"}, headers={"X-API-Key": alice_token}
+    ).json()
+    r = client.delete(f"/databases/{db['db_id']}/hard", headers={"X-API-Key": bob_token})
+    assert r.status_code == 403
+
+
+def test_delete_user_cascades(client, tmp_path):
+    """DELETE /admin/users/{uid}：库 + 文件 + keys + user 全部清理。"""
+    uid, token, _ = _create_user_and_key(client, "alice")
+    db1 = client.post(
+        "/databases", json={"display_name": "One"}, headers={"X-API-Key": token}
+    ).json()
+    db2 = client.post(
+        "/databases", json={"display_name": "Two"}, headers={"X-API-Key": token}
+    ).json()
+    # 触发 audit 落地
+    client.get(f"/db/{db1['db_id']}/health", headers={"X-API-Key": token})
+    client.get(f"/db/{db2['db_id']}/health", headers={"X-API-Key": token})
+
+    r = client.delete(f"/admin/users/{uid}", headers=_root())
+    assert r.status_code == 204
+
+    # 用户已不存在
+    assert client.get(f"/admin/users/{uid}", headers=_root()).status_code == 404
+    # 数据库目录全部消失
+    db_root = tmp_path / "DB" / "users"
+    assert not list(db_root.rglob("*.kz")) or all(
+        db1["db_id"] not in str(p) and db2["db_id"] not in str(p)
+        for p in db_root.rglob("*.kz")
+    )
+    # 旧 token 立即失效
+    assert client.get("/databases", headers={"X-API-Key": token}).status_code == 401
+
+
+def test_delete_user_404_when_absent(client):
+    r = client.delete("/admin/users/nonexistent", headers=_root())
+    assert r.status_code == 404
+
+
 def test_path_normalization_and_token_listing(client):
     """list_databases_by_user 与 cross-user 列表应只看到自己的活动库。"""
     a_uid, a_token, _ = _create_user_and_key(client, "alice")

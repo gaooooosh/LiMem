@@ -67,3 +67,25 @@ def archive_my_database(
         raise HTTPException(status_code=403, detail="not your database")
     mgr.archive(db_id)
     return None
+
+
+@router.delete("/{db_id}/hard", status_code=204)
+def hard_delete_my_database(
+    db_id: str, request: Request, caller: CallerCtx = Depends(get_caller)
+) -> None:
+    """彻底销毁一个库：池驱逐 + 文件系统清理 + sqlite 行删除。
+
+    与 archive 不同：本接口对 active / archived 两种状态都允许；不可逆。
+    审计：DatabaseManager.hard_delete 内部已记录 logger.exception 错误路径。
+    """
+    if not caller.can_write:
+        raise HTTPException(status_code=403, detail="write scope required")
+    repo = request.app.state.auth_repo
+    mgr = request.app.state.dbmgr
+    db = repo.get_database(db_id)
+    if not db:
+        raise HTTPException(status_code=404, detail="database not found")
+    if not (caller.is_root or db.owner_user_id == caller.user_id):
+        raise HTTPException(status_code=403, detail="not your database")
+    mgr.hard_delete(db_id)
+    return None

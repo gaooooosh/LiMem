@@ -8,7 +8,8 @@
     <style>
         :root {
             --sidebar-w: 280px;
-            --detail-w: 380px;
+            /* 详情面板宽度：接近全屏（≤1100px 上限保证大屏不至于难看） */
+            --detail-w: min(92vw, 1100px);
         }
         [data-theme="light"] {
             --bg: #f2eadb;
@@ -310,18 +311,36 @@
         .tooltip .tip-row { margin: 2px 0; color: var(--text-muted); }
         .tooltip .tip-row span { color: var(--text); font-weight: 500; }
 
-        /* ── Detail panel ── */
+        /* ── Detail panel（接近全屏 overlay） ── */
+        .detail-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(2px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.25s ease;
+            z-index: 49;
+        }
+        .detail-backdrop.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
         .detail-panel {
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
             width: var(--detail-w);
-            min-width: var(--detail-w);
             background: var(--panel);
             backdrop-filter: blur(8px);
             border-left: 1px solid var(--border);
+            box-shadow: -8px 0 32px rgba(0, 0, 0, 0.18);
             overflow-y: auto;
-            transform: translateX(var(--detail-w));
+            transform: translateX(100%);
             opacity: 0;
-            transition: transform 0.3s ease, opacity 0.3s ease;
-            z-index: 10;
+            transition: transform 0.28s ease, opacity 0.28s ease;
+            z-index: 50;
         }
         .detail-panel.visible { transform: translateX(0); opacity: 1; }
 
@@ -719,7 +738,8 @@
     <!-- Center graph -->
     <div class="graph-area" id="graphArea"></div>
 
-    <!-- Right detail panel -->
+    <!-- Right detail panel：接近全屏 overlay，点击 backdrop 关闭 -->
+    <div class="detail-backdrop" id="detailBackdrop" onclick="clearSelection()"></div>
     <div class="detail-panel" id="detailPanel">
         <div class="detail-header">
             <div id="detailBadge" class="detail-badge"></div>
@@ -1376,8 +1396,14 @@ function applySelectionHighlight() {
     linkSel.attr('stroke-width', (d, i) => neighborLinkIdxs.has(i) ? 3 : (d.type === 'relation' ? 2 : 1.5));
 }
 
-function showDetailPanel() { document.getElementById('detailPanel').classList.add('visible'); }
-function hideDetailPanel() { document.getElementById('detailPanel').classList.remove('visible'); }
+function showDetailPanel() {
+    document.getElementById('detailPanel').classList.add('visible');
+    document.getElementById('detailBackdrop').classList.add('visible');
+}
+function hideDetailPanel() {
+    document.getElementById('detailPanel').classList.remove('visible');
+    document.getElementById('detailBackdrop').classList.remove('visible');
+}
 
 function kvHtml(key, value) {
     return '<div class="detail-kv"><div class="detail-kv-key">' + esc(key) + '</div><div>' + esc(String(value)) + '</div></div>';

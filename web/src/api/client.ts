@@ -4,23 +4,20 @@ import type {
   AdminHealth,
   ApiKeyView,
   AuditEntry,
-  CreateEntityPatternRequest,
   DatabaseView,
   DbHealth,
   DbStats,
   DeleteEntityPatternResponse,
-  EntityPattern,
-  EntityPatternResponse,
   IngestResponse,
   IssueKeyResponse,
   ListEntitiesResponse,
-  ListEntityPatternsResponse,
   Me,
+  PutEntityPatternResponse,
   QueryResponse,
+  RecallEntityPatternResponse,
   RegisterEntityRequest,
   RegisterEntityResponse,
   RegisteredEntity,
-  UpdateEntityPatternRequest,
   UpdateEntityRequest,
   UserDetail,
   UserView,
@@ -163,8 +160,12 @@ export const dbApi = {
   list: () => api<DatabaseView[]>("/databases"),
   create: (display_name: string) =>
     api<DatabaseView>("/databases", { method: "POST", body: { display_name } }),
+  /** 软归档：仅翻 status='archived'，文件保留 */
   archive: (db_id: string) =>
     api<void>(`/databases/${encodeURIComponent(db_id)}`, { method: "DELETE" }),
+  /** 硬删除：池驱逐 + 删 .kz 目录 + 删审计 + 删 sqlite 行；不可逆 */
+  hardDelete: (db_id: string) =>
+    api<void>(`/databases/${encodeURIComponent(db_id)}/hard`, { method: "DELETE" }),
 };
 
 // ---------- /db/{id}/* (业务操作) ----------
@@ -216,52 +217,24 @@ export const entityApi = {
     ),
 };
 
-// ---------- /db/{id}/api/entities/{eid}/patterns (注册实体 Pattern) ----------
+// ---------- /db/{id}/api/entities/{eid}/patterns (注册实体 Pattern · v2 单文档) ----------
 function patternBase(db_id: string, eid: string): string {
   return `/db/${encodeURIComponent(db_id)}/api/entities/${encodeURIComponent(eid)}/patterns`;
 }
 
 export const entityPatternApi = {
-  list: (
-    db_id: string,
-    eid: string,
-    opts: { q?: string; limit?: number; include_inactive?: boolean } = {},
-  ) => {
-    const qs = new URLSearchParams();
-    if (opts.q) qs.set("q", opts.q);
-    if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
-    if (opts.include_inactive) qs.set("include_inactive", "true");
-    const suffix = qs.toString();
-    return api<ListEntityPatternsResponse>(
-      suffix ? `${patternBase(db_id, eid)}?${suffix}` : patternBase(db_id, eid),
-    );
-  },
-  get: (db_id: string, eid: string, pattern_id: string) =>
-    api<EntityPattern>(`${patternBase(db_id, eid)}/${encodeURIComponent(pattern_id)}`),
-  create: (db_id: string, eid: string, body: CreateEntityPatternRequest) =>
-    api<EntityPatternResponse>(patternBase(db_id, eid), { method: "POST", body }),
-  update: (
-    db_id: string,
-    eid: string,
-    pattern_id: string,
-    body: UpdateEntityPatternRequest,
-  ) =>
-    api<EntityPatternResponse>(
-      `${patternBase(db_id, eid)}/${encodeURIComponent(pattern_id)}`,
-      { method: "PATCH", body },
-    ),
-  remove: (
-    db_id: string,
-    eid: string,
-    pattern_id: string,
-    hard_delete = false,
-  ) =>
-    api<DeleteEntityPatternResponse>(
-      `${patternBase(db_id, eid)}/${encodeURIComponent(pattern_id)}${
-        hard_delete ? "?hard_delete=true" : ""
-      }`,
-      { method: "DELETE" },
-    ),
+  /** GET：读取整篇；无 pattern 时 pattern=null + content="" */
+  get: (db_id: string, eid: string) =>
+    api<RecallEntityPatternResponse>(patternBase(db_id, eid)),
+  /** PUT：upsert 整篇 markdown */
+  put: (db_id: string, eid: string, content: string) =>
+    api<PutEntityPatternResponse>(patternBase(db_id, eid), {
+      method: "PUT",
+      body: { content },
+    }),
+  /** DELETE：硬删除；不存在时后端返回 404 */
+  remove: (db_id: string, eid: string) =>
+    api<DeleteEntityPatternResponse>(patternBase(db_id, eid), { method: "DELETE" }),
 };
 
 // ---------- /admin/* ----------
@@ -279,6 +252,9 @@ export const adminApi = {
     ),
   revokeKey: (key_id: string) =>
     api<void>(`/admin/keys/${encodeURIComponent(key_id)}`, { method: "DELETE" }),
+  /** 彻底删除用户：先硬删名下所有库 → 删 keys → 删 user 行 */
+  deleteUser: (user_id: string) =>
+    api<void>(`/admin/users/${encodeURIComponent(user_id)}`, { method: "DELETE" }),
   listAllDatabases: (include_archived = true) =>
     api<DatabaseView[]>(
       `/admin/databases?include_archived=${include_archived}`,

@@ -84,6 +84,25 @@ def revoke_key(key_id: str, request: Request) -> None:
     return None
 
 
+@router.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: str, request: Request) -> None:
+    """彻底删除用户：先硬删名下所有库 → 删 api_keys → 删 user 行。
+
+    幂等：用户不存在返回 404；任一步异常 500 + logger.exception。
+    """
+    repo = request.app.state.auth_repo
+    mgr = request.app.state.dbmgr
+    user = repo.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+    # 含归档：所有该用户名下的库都要清掉，避免遗留孤儿文件
+    for db in repo.list_databases_by_user(user_id, include_archived=True):
+        mgr.hard_delete(db.db_id)
+    repo.delete_keys_by_user(user_id)
+    repo.delete_user(user_id)
+    return None
+
+
 @router.get("/databases", response_model=list[DatabaseView])
 def list_all_databases(request: Request, include_archived: bool = True) -> list[DatabaseView]:
     repo = request.app.state.auth_repo

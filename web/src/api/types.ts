@@ -112,6 +112,8 @@ export interface RegisterEntityRequest {
   entity_type?: string;
   aliases?: string[];
   metadata?: Record<string, unknown>;
+  /** 可选：注册同时 upsert pattern（v2 单文档）。 */
+  pattern?: PutEntityPatternRequest;
 }
 
 export interface UpdateEntityRequest {
@@ -126,6 +128,8 @@ export interface RegisterEntityResponse {
   action: "created" | "promoted" | "updated";
   existed_as_extracted: boolean;
   entity: RegisteredEntity;
+  /** 内联 pattern 写入时回填；未内联或回滚为 null */
+  pattern?: EntityPattern | null;
 }
 
 export interface ListEntitiesResponse {
@@ -133,46 +137,42 @@ export interface ListEntitiesResponse {
   total: number;
 }
 
-// ---------- 注册实体 Pattern（与后端 models.py 镜像） ----------
-export type EntityPatternStatus = "active" | "archived";
+// ---------- 注册实体 Pattern（v2：单文档 markdown） ----------
 
 export interface EntityPattern {
   id: string;
   entity_id: string;
   content: string;
-  pattern_type: string;
-  status: EntityPatternStatus;
+  /** 后端恒为 "active"，保留以备未来扩展 */
+  status: string;
   created_at?: number | null;
   updated_at?: number | null;
-  metadata: Record<string, unknown>;
 }
 
-export interface CreateEntityPatternRequest {
+export interface PutEntityPatternRequest {
   content: string;
-  pattern_type?: string;
-  metadata?: Record<string, unknown> | null;
-  pattern_id?: string | null;
 }
 
-export interface UpdateEntityPatternRequest {
-  content?: string;
-  pattern_type?: string;
-  status?: EntityPatternStatus;
-  metadata?: Record<string, unknown> | null;
-}
-
-export interface EntityPatternResponse {
-  action: string;
+export interface PutEntityPatternResponse {
+  action: "created" | "updated";
   pattern: EntityPattern;
 }
 
 export interface DeleteEntityPatternResponse {
-  action: "archived" | "deleted";
   pattern: EntityPattern;
 }
 
-export interface ListEntityPatternsResponse {
-  items: EntityPattern[];
-  total: number;
-  query: string;
+export interface MatchedSection {
+  heading: string;
+  score: number;
+  char_offset: number;
+}
+
+/** GET ""、GET "/recall" 共享的响应形态；无 pattern 时 pattern=null + content="" */
+export interface RecallEntityPatternResponse {
+  mode: "full" | "section";
+  content: string;
+  total_chars: number;
+  matched_sections: MatchedSection[];
+  pattern: EntityPattern | null;
 }

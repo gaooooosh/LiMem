@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Layout, PageHeader } from "@/components/Layout";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -18,17 +18,19 @@ import {
   SkeletonRow,
 } from "@/components/ui/Table";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DangerConfirmDialog } from "@/components/DangerConfirmDialog";
 import { OneTimeTokenDialog } from "@/components/OneTimeTokenDialog";
 import { ScopeBadgeList } from "@/components/ScopeBadge";
 import { ScopeChecklist } from "@/components/ScopeChecklist";
 import { adminApi } from "@/api/client";
 import type { ApiKeyView, Scope, UserDetail } from "@/api/types";
 import { formatDate, shortId } from "@/lib/utils";
-import { ArrowLeft, ArrowRight, KeyRound, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, KeyRound, Trash2, UserX } from "lucide-react";
 import { toast } from "@/components/Toaster";
 
 export function AdminUserDetailPage() {
   const { userId = "" } = useParams();
+  const navigate = useNavigate();
   const [data, setData] = useState<UserDetail | null>(null);
   const [issuing, setIssuing] = useState(false);
   const [label, setLabel] = useState("");
@@ -36,6 +38,7 @@ export function AdminUserDetailPage() {
   const [busy, setBusy] = useState(false);
   const [token, setToken] = useState<{ token: string; label: string } | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyView | null>(null);
+  const [deleteUserOpen, setDeleteUserOpen] = useState(false);
 
   const load = async () => {
     setData(null);
@@ -84,6 +87,20 @@ export function AdminUserDetailPage() {
     }
   };
 
+  const onDeleteUser = async () => {
+    if (!data) return;
+    setBusy(true);
+    try {
+      await adminApi.deleteUser(data.user.id);
+      toast.success(`已删除用户 ${data.user.name}`);
+      navigate("/ui/admin/users");
+    } catch {
+      // ignore
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Layout>
       <div className="mb-3">
@@ -105,9 +122,16 @@ export function AdminUserDetailPage() {
           )
         }
         actions={
-          <Button onClick={() => setIssuing(true)}>
-            <KeyRound className="h-4 w-4" /> 签发新 Key
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={() => setIssuing(true)}>
+              <KeyRound className="h-4 w-4" /> 签发新 Key
+            </Button>
+            {data && (
+              <Button variant="ghost" onClick={() => setDeleteUserOpen(true)}>
+                <UserX className="h-4 w-4 text-danger" /> 删除用户
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -255,6 +279,24 @@ export function AdminUserDetailPage() {
         description={`此操作不可恢复，撤销后 ${revokeTarget?.label || revokeTarget?.id?.slice(0, 8)} 将立即失效。`}
         confirmText="撤销"
         danger
+      />
+
+      <DangerConfirmDialog
+        open={deleteUserOpen}
+        onCancel={() => !busy && setDeleteUserOpen(false)}
+        onConfirm={onDeleteUser}
+        loading={busy}
+        title="彻底删除该用户"
+        description={
+          <>
+            将删除用户 <code className="font-mono">{data?.user.name}</code> 名下的
+            所有数据库（含已归档）的 .kz 目录、审计日志、所有 API Key 与用户行。
+            <span className="block mt-1">此操作不可恢复。</span>
+          </>
+        }
+        confirmPhrase={data?.user.name ?? ""}
+        inputLabel="请输入用户名"
+        confirmText="永久删除"
       />
     </Layout>
   );

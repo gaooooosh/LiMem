@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,53 @@ class DatabaseManager:
         self.repo.archive_database(db_id)
         # 状态已归档会阻止新 acquire；已在途请求结束后由池延迟关闭。
         self.pool.evict(db_id, force=False)
+
+    def hard_delete(self, db_id: str) -> bool:
+        """彻底删除一个库：池驱逐 → 文件系统清理 → sqlite 行删除。
+
+        与 archive 区别：archive 仅翻 status；hard_delete 是不可逆销毁。
+        Kuzu 的 db_path 在不同版本下既可能是"单文件"（生产实际形态）也可能是
+        目录，所以这里两种都兼容；并连带清理同前缀的 .wal / .shadow 等旁路文件。
+        幂等：库不存在时返回 False，不抛错（便于 delete_user 循环调用）。
+        """
+        record = self.repo.get_database(db_id)
+        if record is None:
+            return False
+        # 1) 强制驱逐池中 handle（关闭 kuzu connection 才能删文件）
+        self.pool.evict(db_id, force=True)
+        # 2) 清理 db_path 与同前缀的旁路文件
+        db_path = Path(record.db_path)
+        try:
+            if db_path.is_dir():
+                shutil.rmtree(db_path)
+            elif db_path.exists():
+                db_path.unlink()
+            # Kuzu 单文件模式会写出 xxx.kz.wal / xxx.kz.shadow 等旁路文件
+            parent = db_path.parent
+            if parent.exists():
+                for sibling in parent.glob(db_path.name + ".*"):
+                    try:
+                        if sibling.is_dir():
+                            shutil.rmtree(sibling)
+                        else:
+                            sibling.unlink()
+                    except OSError:
+                        logger.exception(
+                            "hard_delete: cleanup sibling failed: %s", sibling
+                        )
+        except OSError:
+            logger.exception("hard_delete: cleanup failed for %s", db_path)
+            raise
+        # 3) 删除审计日志文件
+        audit_path = self._user_audit_path(record.owner_user_id, db_id)
+        if audit_path.exists():
+            try:
+                audit_path.unlink()
+            except OSError:
+                logger.exception("hard_delete: unlink audit failed for %s", audit_path)
+        # 4) 删除 sqlite 行
+        self.repo.delete_database(db_id)
+        return True
 
     # ---------- 路径策略 ----------
 

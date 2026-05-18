@@ -305,6 +305,29 @@ class AuthRepository:
             if cur.rowcount == 0 and not self.get_database(db_id):
                 raise KeyNotFoundError(db_id)
 
+    def delete_database(self, db_id: str) -> bool:
+        """硬删除 sqlite 中的 database 行。返回是否真正删除了一行。
+
+        与 archive_database 不同：archive 只翻 status 字段，本方法直接 DELETE。
+        文件层的 .kz 目录与审计日志由 DatabaseManager.hard_delete 负责清理。
+        幂等：行已不存在时返回 False，不抛错。
+        """
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM databases WHERE db_id = ?", (db_id,))
+            return cur.rowcount > 0
+
+    def delete_keys_by_user(self, user_id: str) -> int:
+        """删除某用户的所有 api_keys 行（含已撤销）。返回删除条数。"""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM api_keys WHERE user_id = ?", (user_id,))
+            return cur.rowcount
+
+    def delete_user(self, user_id: str) -> bool:
+        """硬删除用户行。调用方需先清理该用户名下 databases 与 api_keys。"""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            return cur.rowcount > 0
+
     def touch_database(self, db_id: str) -> None:
         with self._lock:
             self._conn.execute(
