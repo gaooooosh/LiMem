@@ -550,6 +550,29 @@ class GraphStore(ABC):
     ) -> list[dict[str, Any]]:
         raise NotImplementedError("list_event_context_edges is not implemented")
 
+    def project_task_anchors(
+        self,
+        task_text: str,
+        literal_anchors: list[str],
+        lexical_anchors: list[str],
+    ) -> dict[str, Any]:
+        raise NotImplementedError("project_task_anchors is not implemented")
+
+    def walk_task_memory_paths(
+        self,
+        projection: Any,
+        limit_per_anchor: int = 20,
+    ) -> list[Any]:
+        raise NotImplementedError("walk_task_memory_paths is not implemented")
+
+    def get_event_relation_paths(
+        self,
+        event_ids: list[str],
+        relation_types: list[str],
+        depth: int = 1,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError("get_event_relation_paths is not implemented")
+
     # ==================== 统计 ====================
 
     @abstractmethod

@@ -5,6 +5,7 @@ import unittest
 
 from limem.core.episode import Episode
 from limem.core.event import Event
+from limem.core.context import Context
 from limem.storage.kuzu_store import KuzuStore
 
 
@@ -61,6 +62,35 @@ class TestKuzuStoreBatchWrite(unittest.TestCase):
             )
             self.assertTrue(resp.has_next())
             self.assertEqual(resp.get_next()[0], 2)
+
+    def test_context_card_fields_round_trip(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "context_card.kz")
+            store = KuzuStore(db_path=db_path)
+            context = Context(
+                id="ctx_card",
+                subtype="environment",
+                subject="用户",
+                condition="用户处于高温车内出行环境",
+                facts={"气温": "38度", "位置": "车内"},
+                applies_when="用户进行车内舒适度相关交互",
+                summary="用户处于高温车内出行环境",
+                confidence=0.88,
+                created_at=101,
+                updated_at=101,
+                valid_from=101,
+                last_seen_at=101,
+                embedding=[0.0] * store.embedding_dim,
+            )
+
+            store.save_context(context)
+            saved = store.get_context("ctx_card")
+
+            self.assertIsNotNone(saved)
+            self.assertEqual(saved.subject, "用户")
+            self.assertEqual(saved.condition, "用户处于高温车内出行环境")
+            self.assertEqual(saved.facts, {"气温": "38度", "位置": "车内"})
+            self.assertEqual(saved.applies_when, "用户进行车内舒适度相关交互")
 
 
 if __name__ == "__main__":

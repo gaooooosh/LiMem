@@ -116,3 +116,12 @@ class LTMemory(ABC):
             包含事件数、实体数等统计信息的字典
         """
         pass
+
+    def recall_for_task(
+        self,
+        task: str,
+        limit: int = 5,
+        include_debug: bool = False,
+    ) -> dict[str, Any]:
+        """Compile graph memory for an agent's current task."""
+        raise NotImplementedError("recall_for_task is not implemented")

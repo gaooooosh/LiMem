@@ -157,20 +157,26 @@ class UnifiedExtractor(LLMExtractor):
         event_payload["contexts"] = contexts
 
     def _normalize_context_payload(self, item: dict[str, Any]) -> Optional[dict[str, Any]]:
-        summary = str(item.get("summary", "") or "").strip()
-        if not summary:
+        condition = str(item.get("condition", item.get("summary", "")) or "").strip()
+        summary = str(item.get("summary", condition) or "").strip()
+        if not condition and not summary:
             return None
         if self._looks_like_current_intent(item):
             return None
         normalized = dict(item)
         normalized["subtype"] = normalize_context_subtype(item.get("subtype", "situation"))
-        normalized["summary"] = summary
+        normalized["condition"] = condition or summary
+        normalized["summary"] = summary or normalized["condition"]
+        facts = normalized.get("facts", {})
+        normalized["facts"] = facts if isinstance(facts, dict) else {}
+        normalized["subject"] = str(normalized.get("subject", "") or "").strip()
+        normalized["applies_when"] = str(normalized.get("applies_when", "") or "").strip()
         return normalized
 
     def _looks_like_current_intent(self, item: dict[str, Any]) -> bool:
         text = " ".join(
             str(item.get(field, "") or "")
-            for field in ("summary", "evidence_span", "evidence")
+            for field in ("summary", "condition", "applies_when")
         ).lower()
         intent_markers = (
             "想", "希望", "打算", "计划", "准备", "请求", "要求", "需要",

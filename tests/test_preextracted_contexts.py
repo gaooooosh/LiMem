@@ -170,6 +170,42 @@ class TestPreExtractedContexts(unittest.TestCase):
         self.assertEqual(drafts[0].summary, "车内音乐播放场景")
         self.assertIn("车内播放音乐", drafts[0].description)
 
+    def test_payload_contexts_support_condition_and_free_facts(self):
+        engine = DynamicEvolutionEngine(
+            store=types.SimpleNamespace(),
+            config=DynamicEvolutionConfig(),
+        )
+        event = Event(
+            id="evt_context_card",
+            summary="用户要求调低空调",
+            action="调低空调",
+            timestamp=9,
+            last_active=9,
+            valid_from=9,
+            payload={
+                "episode_text": "气温38度，用户在车内要求调低空调",
+                "contexts": [
+                    {
+                        "subtype": "environment",
+                        "subject": "用户",
+                        "condition": "用户处于高温车内出行环境",
+                        "facts": {"气温": "38度", "位置": "车内"},
+                        "applies_when": "用户进行车内舒适度相关交互",
+                        "evidence_span": "气温38度，用户在车内要求调低空调",
+                    }
+                ],
+            },
+        )
+
+        drafts = engine._build_context_drafts_from_payload(event)
+
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0].subject, "用户")
+        self.assertEqual(drafts[0].condition, "用户处于高温车内出行环境")
+        self.assertEqual(drafts[0].facts, {"气温": "38度", "位置": "车内"})
+        self.assertEqual(drafts[0].applies_when, "用户进行车内舒适度相关交互")
+        self.assertIn("气温：38度", drafts[0].description)
+
 
 if __name__ == "__main__":
     unittest.main()

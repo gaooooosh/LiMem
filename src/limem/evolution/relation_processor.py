@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Batch relation classification and operation execution."""
+"""Event lifecycle relation extraction and manual event merging."""
 
 from __future__ import annotations
 
@@ -10,22 +10,28 @@ import json
 import logging
 import os
 import time
-import uuid
 
 from ..core.event import Event
-from ..utils import hash_summary, load_prompt, robust_json_loads, safe_json_dumps
+from ..utils import load_prompt, robust_json_loads, safe_json_dumps
 from .recall_pipeline import CandidateSet, RecallCandidate
+from .relation_types import REL_MEANING_UPDATE, REL_SHARED_CONTEXT
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class OperationDecision:
+    """A narrow relation decision between two active Event nodes.
+
+    Event relation extraction is intentionally not a graph-rewrite engine. It
+    may write lifecycle edges, but it must not merge, archive, derive, or create
+    replacement Event nodes during normal ingest.
+    """
+
     candidate: RecallCandidate
     operation: str
     confidence: float
     reason: str
-    link_subtype: str = ""
     direction: str = ""
     value_before: str = ""
     value_after: str = ""
@@ -45,9 +51,16 @@ class ProcessResult:
 
 
 class RelationProcessor:
-    """Classify recalled event pairs and execute merge/update/link operations."""
+    """Write only residual Event-Event lifecycle constraints.
 
-    _STRUCTURAL_OPS = {"update", "extend", "derive", "merge"}
+    Entity overlap, shared Context, and merge history are modeled elsewhere in
+    the graph. This processor only handles:
+    - supersedes: an old Event interpretation is changed by a newer Event.
+    - co_recall: two active Events must be recalled together and the shared
+      background cannot already be represented by Context.
+    """
+
+    _OPERATIONS = {"skip", "supersedes", "co_recall"}
 
     def __init__(self, store: Any, llm_client: Any, config: Any):
         self.store = store
@@ -55,45 +68,76 @@ class RelationProcessor:
         self.config = config
         self._classify_relations_system_prompt = load_prompt("evolution/classify_relations_system.txt")
         self._classify_relations_user_prompt = load_prompt("evolution/classify_relations_user.txt")
-        self._fuse_event_system_prompt = load_prompt("evolution/fuse_event_system.txt")
-        self._fuse_event_user_prompt = load_prompt("evolution/fuse_event_user.txt")
-        self._derive_event_system_prompt = load_prompt("evolution/derive_event_system.txt")
-        self._derive_event_user_prompt = load_prompt("evolution/derive_event_user.txt")
         self._rewrite_merged_event_system_prompt = load_prompt("evolution/rewrite_merged_event_system.txt")
         self._rewrite_merged_event_user_prompt = load_prompt("evolution/rewrite_merged_event_user.txt")
-
-        self._legacy_relation_call: Optional[Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = None
-        self._legacy_relation_payload: Optional[
-            Callable[[Event, Event, str], dict[str, Any]]
-        ] = None
-        self._legacy_relation_enabled: Optional[Callable[[], bool]] = None
         self._rewrite_merge_callback: Optional[
             Callable[[Event, Event], Optional[dict[str, Any]]]
         ] = None
 
     def bind_engine(self, engine: Any) -> None:
-        self._legacy_relation_call = lambda payload: engine._call_relation_llm(payload)
-        self._legacy_relation_payload = (
-            lambda left, right, source_text: engine._relation_prompt_payload(
-                left=left,
-                right=right,
-                source_text=source_text,
-            )
-        )
-        engine_type = type(engine)
-        self._legacy_relation_enabled = lambda: self._method_is_overridden(
-            engine,
-            "_call_relation_llm",
-            getattr(engine_type, "_call_relation_llm", None),
-        )
         self._rewrite_merge_callback = lambda canonical, merged: engine._llm_rewrite_merged_event(
             canonical,
             merged,
         )
 
     def process(self, e_new: Event, candidates: CandidateSet, source_text: str) -> ProcessResult:
-        decisions = self._classify_batch(e_new=e_new, candidates=candidates, source_text=source_text)
-        return self._execute_decisions(e_new=e_new, decisions=decisions)
+        if not candidates.candidates:
+            return ProcessResult()
+
+        deterministic, llm_candidates, skipped = self._split_candidates(e_new, candidates)
+        decisions = deterministic + self._classify_batch(
+            e_new=e_new,
+            candidates=CandidateSet(candidates=llm_candidates, channel_stats=candidates.channel_stats),
+            source_text=source_text,
+        )
+        result = self._execute_decisions(e_new=e_new, decisions=decisions)
+        result.skipped += skipped
+        return result
+
+    def _split_candidates(
+        self,
+        e_new: Event,
+        candidates: CandidateSet,
+    ) -> tuple[list[OperationDecision], list[RecallCandidate], int]:
+        deterministic: list[OperationDecision] = []
+        llm_candidates: list[RecallCandidate] = []
+        skipped = 0
+
+        for candidate in candidates.candidates:
+            event = candidate.event
+            if not isinstance(event, Event) or event.id == e_new.id:
+                skipped += 1
+                continue
+            if event.status in {"merged", "archived", "ignored"}:
+                skipped += 1
+                continue
+
+            state_update = self._state_update_decision(e_new=e_new, candidate=candidate)
+            if state_update is not None:
+                deterministic.append(state_update)
+                continue
+
+            explicit_reference = self._explicit_reference_decision(e_new=e_new, candidate=candidate)
+            if explicit_reference is not None:
+                deterministic.append(explicit_reference)
+                continue
+
+            if self._shared_context_ids(e_new, event):
+                skipped += 1
+                continue
+
+            if self._is_entity_only_candidate(candidate):
+                skipped += 1
+                continue
+
+            if self._needs_llm_judgement(candidate):
+                llm_candidates.append(candidate)
+            else:
+                skipped += 1
+
+        limited_llm_candidates = self._limit_llm_candidates(llm_candidates)
+        skipped += max(0, len(llm_candidates) - len(limited_llm_candidates))
+        return deterministic, limited_llm_candidates, skipped
 
     def _classify_batch(
         self,
@@ -103,13 +147,6 @@ class RelationProcessor:
     ) -> list[OperationDecision]:
         if not candidates.candidates:
             return []
-
-        if self._should_use_legacy_relation_compat():
-            return self._classify_batch_legacy(
-                e_new=e_new,
-                candidates=candidates,
-                source_text=source_text,
-            )
 
         batch_size = max(
             1,
@@ -123,46 +160,6 @@ class RelationProcessor:
                     e_new=e_new,
                     chunk=chunk,
                     source_text=source_text,
-                )
-            )
-        return decisions
-
-    def _classify_batch_legacy(
-        self,
-        e_new: Event,
-        candidates: CandidateSet,
-        source_text: str,
-    ) -> list[OperationDecision]:
-        if not callable(self._legacy_relation_call) or not callable(self._legacy_relation_payload):
-            return []
-        decisions: list[OperationDecision] = []
-        for candidate in candidates.candidates:
-            payload = self._legacy_relation_payload(e_new, candidate.event, source_text)
-            raw = self._legacy_relation_call(payload) or {}
-            if not isinstance(raw, dict) or not bool(raw.get("should_link", False)):
-                decisions.append(
-                    OperationDecision(
-                        candidate=candidate,
-                        operation="skip",
-                        confidence=0.0,
-                        reason="legacy_skip",
-                        raw=raw if isinstance(raw, dict) else {},
-                    )
-                )
-                continue
-            decisions.append(
-                OperationDecision(
-                    candidate=candidate,
-                    operation="link",
-                    confidence=self._coerce_confidence(raw.get("confidence")),
-                    reason=str(raw.get("reason", "") or "").strip(),
-                    link_subtype=str(raw.get("relation_type", "") or "").strip(),
-                    direction=self._legacy_direction(
-                        e_new=e_new,
-                        candidate=candidate.event,
-                        raw=raw,
-                    ),
-                    raw=dict(raw),
                 )
             )
         return decisions
@@ -209,9 +206,8 @@ class RelationProcessor:
                         "index": 0,
                         "operation": "skip",
                         "confidence": 0.3,
-                        "reason": "两个事件主题相关但无明确导致或延续关系",
+                        "reason": "实体或背景已经由 Entity/Context 表达，不需要 Event-Event 约束",
                         "direction": "",
-                        "link_subtype": "",
                         "value_before": "",
                         "value_after": "",
                     }
@@ -259,28 +255,21 @@ class RelationProcessor:
             if index < 0 or index >= len(chunk):
                 continue
             operation = str(item.get("operation", "skip") or "skip").strip().lower()
-            if operation not in {"update", "extend", "derive", "merge", "link", "skip"}:
-                operation = "skip"
-            link_subtype = self._normalize_link_subtype(item.get("link_subtype"))
-            if operation == "link" and not link_subtype:
+            if operation not in self._OPERATIONS:
                 operation = "skip"
             confidence = self._coerce_confidence(item.get("confidence"))
             if confidence < min_confidence:
                 operation = "skip"
-            if operation == "derive" and not bool(getattr(self.config, "enable_derive_operation", False)):
-                operation = "skip"
-            decision = OperationDecision(
+            indexed[index] = OperationDecision(
                 candidate=chunk[index],
                 operation=operation,
                 confidence=confidence,
                 reason=str(item.get("reason", "") or "").strip(),
-                link_subtype=link_subtype if operation == "link" else "",
                 direction=str(item.get("direction", "") or "").strip(),
                 value_before=str(item.get("value_before", "") or "").strip(),
                 value_after=str(item.get("value_after", "") or "").strip(),
                 raw=dict(item),
             )
-            indexed[index] = decision
 
         decisions: list[OperationDecision] = []
         for idx, candidate in enumerate(chunk):
@@ -306,10 +295,8 @@ class RelationProcessor:
         if not decisions:
             return result
 
-        structural_executed = False
-        derivations_used = 0
-        links_used = 0
         max_links = max(0, int(getattr(self.config, "relation_max_links_per_event", 3) or 3))
+        executed_links = 0
         ordered = sorted(decisions, key=lambda item: item.confidence, reverse=True)
         for decision in ordered:
             candidate = decision.candidate.event
@@ -318,7 +305,6 @@ class RelationProcessor:
                 "operation": decision.operation,
                 "confidence": round(float(decision.confidence or 0.0), 4),
                 "reason": decision.reason,
-                "link_subtype": decision.link_subtype,
                 "direction": decision.direction,
                 "recall_channel": decision.candidate.channel,
                 "recall_score": round(float(decision.candidate.channel_score or 0.0), 6),
@@ -334,259 +320,48 @@ class RelationProcessor:
                 result.decisions.append(decision_log)
                 continue
 
-            if candidate.status in {"merged", "archived"}:
+            if candidate.status in {"merged", "archived", "ignored"}:
                 result.skipped += 1
                 decision_log["status"] = "candidate_inactive"
                 result.decisions.append(decision_log)
                 continue
 
-            if decision.operation == "link":
-                if links_used >= max_links:
-                    result.skipped += 1
-                    decision_log["status"] = "link_budget_exhausted"
-                    result.decisions.append(decision_log)
-                    continue
+            if executed_links >= max_links:
+                result.skipped += 1
+                decision_log["status"] = "relation_budget_exhausted"
+                result.decisions.append(decision_log)
+                continue
 
-            if decision.operation in self._STRUCTURAL_OPS:
-                if structural_executed:
-                    result.skipped += 1
-                    decision_log["status"] = "structural_conflict"
-                    result.decisions.append(decision_log)
-                    continue
-                if decision.operation == "derive":
-                    max_derivations = max(
-                        0,
-                        int(getattr(self.config, "max_derivations_per_batch", 3) or 3),
-                    )
-                    if derivations_used >= max_derivations:
-                        result.skipped += 1
-                        decision_log["status"] = "derive_budget_exhausted"
-                        result.decisions.append(decision_log)
-                        continue
-                    derivations_used += 1
-
-            operation_result = self._execute_operation(e_new=e_new, decision=decision)
+            operation_result = self._execute_relation(e_new=e_new, decision=decision)
             decision_log.update(operation_result.get("log", {}))
             decision_log["status"] = operation_result.get("status", "executed")
             result.total_links += int(operation_result.get("total_links", 0) or 0)
             result.updates += int(operation_result.get("updates", 0) or 0)
-            result.extensions += int(operation_result.get("extensions", 0) or 0)
-            result.derivations += int(operation_result.get("derivations", 0) or 0)
-            result.merges += int(operation_result.get("merges", 0) or 0)
             result.links += int(operation_result.get("links", 0) or 0)
             result.skipped += int(operation_result.get("skipped", 0) or 0)
             result.decisions.append(decision_log)
-
-            if decision.operation in self._STRUCTURAL_OPS and operation_result.get("executed", False):
-                structural_executed = True
-            if decision.operation == "link" and operation_result.get("executed", False):
-                links_used += 1
-            if e_new.status in {"merged", "archived"}:
-                break
+            if operation_result.get("executed", False):
+                executed_links += 1
         return result
 
-    def _execute_operation(
-        self,
-        e_new: Event,
-        decision: OperationDecision,
-    ) -> dict[str, Any]:
-        handlers = {
-            "update": self._execute_update,
-            "extend": self._execute_extend,
-            "derive": self._execute_derive,
-            "merge": self._execute_merge,
-            "link": self._execute_link,
-        }
-        handler = handlers.get(decision.operation)
-        if handler is None:
-            return {"executed": False, "skipped": 1, "status": "unknown_operation"}
-        return handler(e_new=e_new, decision=decision)
+    def _execute_relation(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
+        if decision.operation == "supersedes":
+            return self._execute_supersedes(e_new=e_new, decision=decision)
+        if decision.operation == "co_recall":
+            return self._execute_co_recall(e_new=e_new, decision=decision)
+        return {"executed": False, "skipped": 1, "status": "unknown_operation"}
 
-    def _execute_update(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
-        return self._execute_version_operation(
-            mode="update",
+    def _execute_supersedes(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
+        old_event, new_event = self._resolve_supersedes_direction(
             e_new=e_new,
-            decision=decision,
-            relation_type="更新",
-            source_relation_type="更新",
-        )
-
-    def _execute_extend(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
-        return self._execute_version_operation(
-            mode="extend",
-            e_new=e_new,
-            decision=decision,
-            relation_type="补充",
-            source_relation_type="补充",
-        )
-
-    def _execute_version_operation(
-        self,
-        mode: str,
-        e_new: Event,
-        decision: OperationDecision,
-        relation_type: str,
-        source_relation_type: str,
-    ) -> dict[str, Any]:
-        old_event = decision.candidate.event
-        fused = self._fuse_event(mode=mode, old_event=old_event, new_event=e_new)
-        now = max(
-            int(time.time()),
-            int(old_event.last_active or old_event.timestamp or 0),
-            int(e_new.last_active or e_new.timestamp or 0),
-        )
-        version_event = self._build_version_event(
-            mode=mode,
-            old_event=old_event,
-            new_event=e_new,
-            fused=fused,
-            timestamp=now,
-        )
-        self.store.save_event(version_event)
-        self.store.archive_event(old_event.id, now)
-        old_event.status = "archived"
-        old_event.valid_to = now
-        old_event.updated_at = now
-        self.store.relink_event_references(
-            source_event_id=old_event.id,
-            target_event_id=version_event.id,
-            timestamp=now,
-        )
-        created_links = 0
-        created_links += int(
-            bool(
-                self.store.upsert_event_relation(
-                    from_event_id=old_event.id,
-                    to_event_id=version_event.id,
-                    relation_type=relation_type,
-                    operation=mode,
-                    description=decision.reason,
-                    confidence=decision.confidence,
-                    evidence_span="",
-                    value_before=decision.value_before,
-                    value_after=decision.value_after,
-                    recall_channel=decision.candidate.channel,
-                    recall_score=float(
-                        decision.candidate.features.get("aggregate_score", decision.candidate.channel_score)
-                        or 0.0
-                    ),
-                    source_episode_id=self._source_episode_id(old_event, e_new),
-                    source_session_id=self._source_session_id(old_event, e_new),
-                    timestamp=now,
-                )
-            )
-        )
-        created_links += int(
-            bool(
-                self.store.upsert_event_relation(
-                    from_event_id=e_new.id,
-                    to_event_id=version_event.id,
-                    relation_type=source_relation_type,
-                    operation=mode,
-                    description=decision.reason,
-                    confidence=decision.confidence,
-                    evidence_span="",
-                    value_before=decision.value_before,
-                    value_after=decision.value_after,
-                    recall_channel=decision.candidate.channel,
-                    recall_score=float(
-                        decision.candidate.features.get("aggregate_score", decision.candidate.channel_score)
-                        or 0.0
-                    ),
-                    source_episode_id=self._source_episode_id(old_event, e_new),
-                    source_session_id=self._source_session_id(old_event, e_new),
-                    timestamp=now,
-                )
-            )
-        )
-        counter_key = "updates" if mode == "update" else "extensions"
-        return {
-            "executed": True,
-            "status": "executed",
-            counter_key: 1,
-            "total_links": created_links,
-            "log": {"version_event_id": version_event.id},
-        }
-
-    def _execute_derive(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
-        del e_new, decision
-        logger.info("derive operation is not enabled yet; skipping")
-        return {
-            "executed": False,
-            "skipped": 1,
-            "status": "derive_stub",
-        }
-
-    def _execute_merge(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
-        candidate = decision.candidate.event
-        canonical, merged = self._pick_canonical_event(e_new, candidate)
-        now = max(
-            int(time.time()),
-            int(canonical.last_active or canonical.timestamp or 0),
-            int(merged.last_active or merged.timestamp or 0),
-        )
-        merge_reason = self._build_event_merge_reason(
-            source="relation_classification",
-            local_reason=decision.reason,
-            embedding_similarity=0.0,
-            llm_reason="",
-            strategy="relation_pipeline",
-        )
-        self._merge_event_pair(
-            canonical=canonical,
-            merged=merged,
-            similarity_score=decision.confidence,
-            merge_reason=merge_reason,
-            merged_at=now,
-        )
-        created = self.store.upsert_event_relation(
-            from_event_id=merged.id,
-            to_event_id=canonical.id,
-            relation_type="同一事件",
-            operation="merge",
-            description=decision.reason,
-            confidence=decision.confidence,
-            evidence_span="",
-            value_before="",
-            value_after="",
-            recall_channel=decision.candidate.channel,
-            recall_score=float(
-                decision.candidate.features.get("aggregate_score", decision.candidate.channel_score) or 0.0
-            ),
-            source_episode_id=self._source_episode_id(e_new, candidate),
-            source_session_id=self._source_session_id(e_new, candidate),
-            timestamp=now,
-        )
-        if merged.id == e_new.id:
-            e_new.status = "merged"
-            e_new.valid_to = now
-            e_new.updated_at = now
-        return {
-            "executed": True,
-            "status": "executed",
-            "merges": 1,
-            "total_links": int(bool(created)),
-            "log": {
-                "canonical_event_id": canonical.id,
-                "merged_event_id": merged.id,
-            },
-        }
-
-    def _execute_link(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
-        link_subtype = self._normalize_link_subtype(decision.link_subtype)
-        if not link_subtype:
-            return {"executed": False, "skipped": 1, "status": "missing_link_subtype"}
-        candidate = decision.candidate.event
-        from_event, to_event = self._resolve_link_direction(
-            e_new=e_new,
-            candidate=candidate,
+            candidate=decision.candidate.event,
             direction=decision.direction,
         )
         created = self.store.upsert_event_relation(
-            from_event_id=from_event.id,
-            to_event_id=to_event.id,
-            relation_type=link_subtype,
-            operation="link",
+            from_event_id=old_event.id,
+            to_event_id=new_event.id,
+            relation_type=REL_MEANING_UPDATE,
+            operation="supersedes",
             description=decision.reason,
             confidence=decision.confidence,
             evidence_span="",
@@ -596,13 +371,41 @@ class RelationProcessor:
             recall_score=float(
                 decision.candidate.features.get("aggregate_score", decision.candidate.channel_score) or 0.0
             ),
-            source_episode_id=self._source_episode_id(e_new, candidate),
-            source_session_id=self._source_session_id(e_new, candidate),
-            timestamp=max(
-                int(time.time()),
-                int(from_event.last_active or from_event.timestamp or 0),
-                int(to_event.last_active or to_event.timestamp or 0),
+            source_episode_id=self._source_episode_id(old_event, new_event),
+            source_session_id=self._source_session_id(old_event, new_event),
+            timestamp=self._relation_timestamp(old_event, new_event),
+        )
+        return {
+            "executed": True,
+            "status": "executed",
+            "updates": 1,
+            "total_links": int(bool(created)),
+            "log": {"from_event_id": old_event.id, "to_event_id": new_event.id},
+        }
+
+    def _execute_co_recall(self, e_new: Event, decision: OperationDecision) -> dict[str, Any]:
+        from_event, to_event = self._resolve_link_direction(
+            e_new=e_new,
+            candidate=decision.candidate.event,
+            direction=decision.direction,
+        )
+        created = self.store.upsert_event_relation(
+            from_event_id=from_event.id,
+            to_event_id=to_event.id,
+            relation_type=REL_SHARED_CONTEXT,
+            operation="co_recall",
+            description=decision.reason,
+            confidence=decision.confidence,
+            evidence_span="",
+            value_before="",
+            value_after="",
+            recall_channel=decision.candidate.channel,
+            recall_score=float(
+                decision.candidate.features.get("aggregate_score", decision.candidate.channel_score) or 0.0
             ),
+            source_episode_id=self._source_episode_id(from_event, to_event),
+            source_session_id=self._source_session_id(from_event, to_event),
+            timestamp=self._relation_timestamp(from_event, to_event),
         )
         return {
             "executed": True,
@@ -611,6 +414,67 @@ class RelationProcessor:
             "total_links": int(bool(created)),
             "log": {"from_event_id": from_event.id, "to_event_id": to_event.id},
         }
+
+    def _state_update_decision(
+        self,
+        e_new: Event,
+        candidate: RecallCandidate,
+    ) -> Optional[OperationDecision]:
+        if self._event_sort_key(candidate.event) >= self._event_sort_key(e_new):
+            return None
+        old_changes = self._state_changes(candidate.event)
+        new_changes = self._state_changes(e_new)
+        if not old_changes or not new_changes:
+            return None
+        old_by_key = {self._state_key(item): item for item in old_changes if self._state_key(item)}
+        for item in new_changes:
+            key = self._state_key(item)
+            if not key or key not in old_by_key:
+                continue
+            old_item = old_by_key[key]
+            old_after = str(old_item.get("value_after", old_item.get("value", "")) or "").strip()
+            new_before = str(item.get("value_before", "") or "").strip()
+            new_after = str(item.get("value_after", item.get("value", "")) or "").strip()
+            if not new_after or new_after == old_after:
+                continue
+            if new_before and old_after and new_before != old_after:
+                continue
+            entity, attribute = key
+            return OperationDecision(
+                candidate=candidate,
+                operation="supersedes",
+                confidence=0.95,
+                reason=f"新事件将{entity}的{attribute}从{old_after or '旧值'}更新为{new_after}，旧事件不能再作为当前状态依据。",
+                direction="candidate_to_new",
+                value_before=old_after or new_before,
+                value_after=new_after,
+            )
+        return None
+
+    def _explicit_reference_decision(
+        self,
+        e_new: Event,
+        candidate: RecallCandidate,
+    ) -> Optional[OperationDecision]:
+        new_payload = e_new.payload if isinstance(e_new.payload, dict) else {}
+        old_payload = candidate.event.payload if isinstance(candidate.event.payload, dict) else {}
+        if str(new_payload.get("parent_event_id", "") or "").strip() == candidate.event.id:
+            return OperationDecision(
+                candidate=candidate,
+                operation="co_recall",
+                confidence=0.9,
+                reason="新事件显式引用候选事件作为父事件，未来召回时需要保留这条上下文链。",
+                direction="candidate_to_new",
+            )
+        if str(old_payload.get("parent_event_id", "") or "").strip() == e_new.id:
+            return OperationDecision(
+                candidate=candidate,
+                operation="co_recall",
+                confidence=0.9,
+                reason="候选事件显式引用新事件作为父事件，未来召回时需要保留这条上下文链。",
+                direction="new_to_candidate",
+            )
+        return None
 
     def merge_events(
         self,
@@ -644,6 +508,96 @@ class RelationProcessor:
             "merge_reason": merge_reason,
         }
 
+    def _limit_llm_candidates(self, candidates: list[RecallCandidate]) -> list[RecallCandidate]:
+        if not candidates:
+            return []
+        max_links = max(1, int(getattr(self.config, "relation_max_links_per_event", 3) or 3))
+        limit = min(5, max_links + 2)
+        ranked = sorted(
+            candidates,
+            key=lambda item: (
+                self._candidate_priority(item),
+                float(item.features.get("aggregate_score", 0.0) or 0.0),
+                float(item.channel_score or 0.0),
+                int(item.event.last_active or item.event.timestamp or 0),
+            ),
+            reverse=True,
+        )
+        return ranked[:limit]
+
+    def _candidate_priority(self, candidate: RecallCandidate) -> int:
+        channels = self._candidate_channels(candidate)
+        if "reference" in channels:
+            return 5
+        if "state" in channels:
+            return 4
+        if "semantic" in channels and "entity" in channels:
+            return 3
+        if "semantic" in channels:
+            return 2
+        return 1
+
+    def _needs_llm_judgement(self, candidate: RecallCandidate) -> bool:
+        channels = self._candidate_channels(candidate)
+        if "reference" in channels or "state" in channels:
+            return True
+        aggregate = float(candidate.features.get("aggregate_score", 0.0) or 0.0)
+        semantic_score = float(channels.get("semantic", 0.0) or 0.0)
+        return semantic_score >= 0.82 and aggregate >= 0.25
+
+    def _is_entity_only_candidate(self, candidate: RecallCandidate) -> bool:
+        channels = self._candidate_channels(candidate)
+        return bool(channels) and set(channels.keys()) <= {"entity", "temporal"}
+
+    def _candidate_channels(self, candidate: RecallCandidate) -> dict[str, float]:
+        channels = candidate.features.get("channels", {})
+        if isinstance(channels, dict) and channels:
+            return {str(key): float(value or 0.0) for key, value in channels.items()}
+        return {str(candidate.channel): float(candidate.channel_score or 0.0)}
+
+    def _shared_context_ids(self, left: Event, right: Event) -> set[str]:
+        return self._event_context_ids(left) & self._event_context_ids(right)
+
+    def _event_context_ids(self, event: Event) -> set[str]:
+        try:
+            contexts = self.store.get_event_contexts(event.id)
+        except Exception:
+            contexts = []
+        ids: set[str] = set()
+        for item in contexts or []:
+            context_id = getattr(item, "id", None)
+            if context_id:
+                ids.add(str(context_id))
+            elif isinstance(item, dict) and item.get("id"):
+                ids.add(str(item["id"]))
+            elif isinstance(item, str):
+                ids.add(item)
+        return ids
+
+    def _event_entity_ids(self, event: Event) -> set[str]:
+        try:
+            entity_ids = self.store.get_event_entities(event.id)
+        except Exception:
+            entity_ids = []
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if not entity_ids:
+            raw_ids = payload.get("entity_ids", [])
+            if isinstance(raw_ids, list):
+                entity_ids = raw_ids
+        return {str(item or "").strip() for item in entity_ids if str(item or "").strip()}
+
+    def _state_changes(self, event: Event) -> list[dict[str, Any]]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        raw = payload.get("state_changes", [])
+        return [item for item in raw if isinstance(item, dict)]
+
+    def _state_key(self, item: dict[str, Any]) -> Optional[tuple[str, str]]:
+        entity = str(item.get("entity", "") or "").strip()
+        attribute = str(item.get("attribute", "") or "").strip()
+        if not entity or not attribute:
+            return None
+        return entity, attribute
+
     def _resolve_link_direction(
         self,
         e_new: Event,
@@ -657,118 +611,29 @@ class RelationProcessor:
             return candidate, e_new
         ordered = sorted(
             [candidate, e_new],
-            key=lambda item: (int(item.timestamp or item.last_active or 0), item.id),
+            key=self._event_sort_key,
         )
         return ordered[0], ordered[1]
 
-    def _fuse_event(self, mode: str, old_event: Event, new_event: Event) -> dict[str, str]:
-        if not self._fuse_event_system_prompt or not self._fuse_event_user_prompt:
-            return self._fallback_fused_semantics(mode=mode, old_event=old_event, new_event=new_event)
-        payload = {
-            "mode": mode,
-            "existing_event": self._event_prompt_payload(old_event),
-            "incoming_event": self._event_prompt_payload(new_event),
-            "output_schema": {
-                "summary": "融合后的事件摘要",
-                "action": "融合后的主动作",
-                "causality": "融合后的结果或影响",
-            },
-        }
-        user_message = self._fuse_event_user_prompt.format(
-            payload_json=json.dumps(payload, ensure_ascii=False)
-        )
-        try:
-            response = self.llm_client.call_generation(
-                model=self.config.llm_model,
-                messages=self.llm_client.build_messages(
-                    self._fuse_event_system_prompt,
-                    user_message,
-                ),
-            )
-            raw = robust_json_loads(self.llm_client.message_content(response), {})
-        except Exception:
-            logger.warning("event fusion failed", exc_info=True)
-            raw = {}
-        if not isinstance(raw, dict):
-            return self._fallback_fused_semantics(mode=mode, old_event=old_event, new_event=new_event)
-        summary = str(raw.get("summary", "") or "").strip()
-        action = str(raw.get("action", "") or "").strip()
-        causality = str(raw.get("causality", "") or "").strip()
-        if not summary:
-            return self._fallback_fused_semantics(mode=mode, old_event=old_event, new_event=new_event)
-        return {
-            "summary": summary[:180],
-            "action": action[:120],
-            "causality": causality[:120],
-        }
-
-    def _fallback_fused_semantics(self, mode: str, old_event: Event, new_event: Event) -> dict[str, str]:
-        if mode == "update":
-            summary = str(new_event.summary or old_event.summary or "").strip()
-            action = str(new_event.action or old_event.action or summary).strip()
-            causality = str(new_event.causality or old_event.causality or "").strip()
-            return {
-                "summary": summary[:180],
-                "action": action[:120],
-                "causality": causality[:120],
-            }
-        summary = self._merge_event_summary(old_event.summary, new_event.summary)[:180]
-        action = str(new_event.action or old_event.action or summary).strip()[:120]
-        causality = str(new_event.causality or old_event.causality or "").strip()[:120]
-        return {
-            "summary": summary,
-            "action": action,
-            "causality": causality,
-        }
-
-    def _build_version_event(
+    def _resolve_supersedes_direction(
         self,
-        mode: str,
-        old_event: Event,
-        new_event: Event,
-        fused: dict[str, str],
-        timestamp: int,
-    ) -> Event:
-        payload = self._merge_payload_values(
-            copy.deepcopy(old_event.payload if isinstance(old_event.payload, dict) else {}),
-            copy.deepcopy(new_event.payload if isinstance(new_event.payload, dict) else {}),
+        e_new: Event,
+        candidate: Event,
+        direction: str,
+    ) -> tuple[Event, Event]:
+        normalized = str(direction or "").strip().lower()
+        if normalized == "new_to_candidate":
+            return e_new, candidate
+        if normalized == "candidate_to_new":
+            return candidate, e_new
+        ordered = sorted(
+            [candidate, e_new],
+            key=self._event_sort_key,
         )
-        payload["parent_event_id"] = old_event.id
-        payload["version_source"] = sorted({old_event.id, new_event.id})
-        payload["version_mode"] = mode
-        payload["summary"] = fused.get("summary", "") or old_event.summary
-        payload["action"] = fused.get("action", "") or old_event.action
-        payload["causality"] = fused.get("causality", "") or old_event.causality
-        base = f"{old_event.id}|{mode}|{fused.get('summary', old_event.summary)}"
-        event_id = f"evt_{hash_summary(base)[:20]}_{timestamp}_{uuid.uuid4().hex[:6]}"
-        return Event(
-            id=event_id,
-            summary=fused.get("summary", "") or old_event.summary or new_event.summary,
-            action=fused.get("action", "") or old_event.action or new_event.action,
-            causality=fused.get("causality", "") or old_event.causality or new_event.causality,
-            time_range=self._merge_slots(
-                old_event.time_range if isinstance(old_event.time_range, dict) else {},
-                new_event.time_range if isinstance(new_event.time_range, dict) else {},
-            ),
-            timestamp=min(
-                int(old_event.timestamp or timestamp),
-                int(new_event.timestamp or timestamp),
-            ),
-            last_active=max(
-                int(old_event.last_active or old_event.timestamp or timestamp),
-                int(new_event.last_active or new_event.timestamp or timestamp),
-                int(timestamp),
-            ),
-            created_at=timestamp,
-            updated_at=timestamp,
-            valid_from=timestamp,
-            participants=self._merge_list_values(old_event.participants, new_event.participants),
-            payload=payload,
-            evidence=self._merge_list_values(old_event.evidence, new_event.evidence),
-            status="active",
-            support_count=max(1, int(old_event.support_count or 1)) + 1,
-            embedding=old_event.embedding or new_event.embedding,
-        )
+        return ordered[0], ordered[1]
+
+    def _event_sort_key(self, event: Event) -> tuple[int, str]:
+        return (int(event.timestamp or event.last_active or event.created_at or 0), str(event.id or ""))
 
     def _event_prompt_payload(self, event: Event) -> dict[str, Any]:
         payload = event.payload if isinstance(event.payload, dict) else {}
@@ -782,18 +647,9 @@ class RelationProcessor:
             "participants": event.participants,
             "payload": payload,
             "support_count": event.support_count,
-            "context_ids": [context.id for context in self.store.get_event_contexts(event.id)],
-            "entity_ids": list(self.store.get_event_entities(event.id)),
+            "context_ids": sorted(self._event_context_ids(event)),
+            "entity_ids": sorted(self._event_entity_ids(event)),
         }
-
-    def _legacy_direction(self, e_new: Event, candidate: Event, raw: dict[str, Any]) -> str:
-        from_id = str(raw.get("from_id", "") or "").strip()
-        to_id = str(raw.get("to_id", "") or "").strip()
-        if from_id == e_new.id and to_id == candidate.id:
-            return "new_to_candidate"
-        if from_id == candidate.id and to_id == e_new.id:
-            return "candidate_to_new"
-        return ""
 
     def _source_episode_id(self, left: Event, right: Event) -> str:
         for event in (left, right):
@@ -811,8 +667,12 @@ class RelationProcessor:
                 return value
         return ""
 
-    def _should_use_legacy_relation_compat(self) -> bool:
-        return bool(callable(self._legacy_relation_enabled) and self._legacy_relation_enabled())
+    def _relation_timestamp(self, left: Event, right: Event) -> int:
+        return max(
+            int(time.time()),
+            int(left.last_active or left.timestamp or 0),
+            int(right.last_active or right.timestamp or 0),
+        )
 
     def _coerce_confidence(self, value: Any) -> float:
         try:
@@ -820,44 +680,6 @@ class RelationProcessor:
         except (TypeError, ValueError):
             confidence = 0.0
         return max(0.0, min(1.0, confidence))
-
-    def _normalize_link_subtype(self, value: Any) -> str:
-        relation_type = str(value or "").strip()
-        aliases = {
-            "因果": "导致",
-            "触发": "导致",
-            "前置条件": "导致",
-            "促成": "导致",
-            "后续": "延续",
-            "演进": "延续",
-            "时序相邻": "",
-        }
-        relation_type = aliases.get(relation_type, relation_type)
-        if relation_type not in {"导致", "延续"}:
-            return ""
-        return relation_type
-
-    @staticmethod
-    def _method_is_overridden(instance: Any, name: str, default: Any) -> bool:
-        current = getattr(instance, name, None)
-        if current is None or default is None:
-            return False
-        func = getattr(current, "__func__", None)
-        if func is not None:
-            return func is not default
-        return current is not default
-
-    def _pick_canonical_event(self, event_a: Event, event_b: Event) -> tuple[Event, Event]:
-        def rank_key(event: Event) -> tuple[int, int, int]:
-            return (
-                int(event.support_count or 1),
-                1 if str(event.summary or "").strip() else 0,
-                int(event.created_at or event.timestamp or 0),
-            )
-
-        if rank_key(event_a) >= rank_key(event_b):
-            return event_a, event_b
-        return event_b, event_a
 
     def _merge_event_pair(
         self,
@@ -1055,23 +877,6 @@ class RelationProcessor:
             if value not in (None, "", [], {}):
                 merged[key] = value
         return merged
-
-    def _build_event_merge_reason(
-        self,
-        source: str,
-        local_reason: str,
-        embedding_similarity: float,
-        llm_reason: str,
-        strategy: str,
-    ) -> str:
-        payload = {
-            "source": str(source or "").strip(),
-            "strategy": str(strategy or "").strip(),
-            "local_reason": str(local_reason or "").strip(),
-            "llm_reason": str(llm_reason or "").strip(),
-            "embedding_similarity": round(float(embedding_similarity or 0.0), 4),
-        }
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
     def _append_event_merge_trace_log(
         self,

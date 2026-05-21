@@ -42,6 +42,18 @@ class QueryResponse(BaseModel):
     total: int
 
 
+class RecallTaskRequest(BaseModel):
+    task: str
+    limit: int = Field(default=5, ge=1, le=20)
+    include_debug: bool = False
+
+
+class RecallTaskResponse(BaseModel):
+    prompt_text: str = ""
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    stats: dict[str, Any] = Field(default_factory=dict)
+
+
 class EvolveResponse(BaseModel):
     message: str
     details: dict[str, int] = Field(default_factory=dict)

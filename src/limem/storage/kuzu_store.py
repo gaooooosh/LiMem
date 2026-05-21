@@ -16,7 +16,10 @@ from ..core.episode import Episode
 from ..core.event import Event, EventRelation
 from ..core.context import Context
 from ..core.entity import Entity
+from ..evolution.relation_types import event_relation_query_types, normalize_event_relation_type
 from ..utils import safe_json_dumps, safe_json_loads
+from ..retrieval.pattern_recall import recall_pattern
+from ..retrieval.task_recall import MemoryPath
 from .graph_store import GraphStore
 
 
@@ -156,6 +159,10 @@ class KuzuStore(GraphStore):
                 subtype STRING,
                 summary STRING,
                 description STRING,
+                subject STRING,
+                condition STRING,
+                facts STRING,
+                applies_when STRING,
                 confidence DOUBLE,
                 support_count INT64,
                 created_at INT64,
@@ -328,6 +335,10 @@ class KuzuStore(GraphStore):
             "ALTER TABLE INVOLVES ADD t_invalid INT64",
             "ALTER TABLE INVOLVES ADD c_valid INT64",
             "ALTER TABLE Context ADD description STRING",
+            "ALTER TABLE Context ADD subject STRING",
+            "ALTER TABLE Context ADD condition STRING",
+            "ALTER TABLE Context ADD facts STRING",
+            "ALTER TABLE Context ADD applies_when STRING",
             "ALTER TABLE Context ADD confidence DOUBLE",
             "ALTER TABLE Context ADD support_count INT64",
             "ALTER TABLE Context ADD created_at INT64",
@@ -1458,7 +1469,7 @@ class KuzuStore(GraphStore):
                 {
                     "from_event_id": row[0],
                     "to_event_id": row[1],
-                    "relation_type": row[2] or "",
+                    "relation_type": normalize_event_relation_type(row[2]) or (row[2] or ""),
                     "operation": row[3] or "",
                     "description": row[4] or "",
                     "confidence": float(row[5] or 0.0),
@@ -1497,6 +1508,10 @@ class KuzuStore(GraphStore):
                 subtype: $subtype,
                 summary: $summary,
                 description: $description,
+                subject: $subject,
+                condition: $condition,
+                facts: $facts,
+                applies_when: $applies_when,
                 confidence: $confidence,
                 support_count: $support_count,
                 created_at: $created_at,
@@ -1518,6 +1533,7 @@ class KuzuStore(GraphStore):
             """
             MATCH (c:Context {id: $id})
             RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
+                   c.subject, c.condition, c.facts, c.applies_when,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -1529,6 +1545,7 @@ class KuzuStore(GraphStore):
         row = resp.get_next()
         cols = [
             "id", "context_type", "subtype", "summary", "description",
+            "subject", "condition", "facts", "applies_when",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -1544,6 +1561,10 @@ class KuzuStore(GraphStore):
                 c.subtype = $subtype,
                 c.summary = $summary,
                 c.description = $description,
+                c.subject = $subject,
+                c.condition = $condition,
+                c.facts = $facts,
+                c.applies_when = $applies_when,
                 c.confidence = $confidence,
                 c.support_count = $support_count,
                 c.updated_at = $updated_at,
@@ -1561,6 +1582,10 @@ class KuzuStore(GraphStore):
                 "subtype": fields["subtype"],
                 "summary": fields["summary"],
                 "description": fields["description"],
+                "subject": fields["subject"],
+                "condition": fields["condition"],
+                "facts": fields["facts"],
+                "applies_when": fields["applies_when"],
                 "confidence": fields["confidence"],
                 "support_count": fields["support_count"],
                 "updated_at": fields["updated_at"],
@@ -1594,6 +1619,7 @@ class KuzuStore(GraphStore):
             MATCH (c:Context)
             WHERE {where_clause}
             RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
+                   c.subject, c.condition, c.facts, c.applies_when,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -1604,6 +1630,7 @@ class KuzuStore(GraphStore):
         )
         cols = [
             "id", "context_type", "subtype", "summary", "description",
+            "subject", "condition", "facts", "applies_when",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -1801,6 +1828,7 @@ class KuzuStore(GraphStore):
             """
             MATCH (:Event {id: $event_id})-[r:IN_REL]->(c:Context)
             RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
+                   c.subject, c.condition, c.facts, c.applies_when,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -1810,6 +1838,7 @@ class KuzuStore(GraphStore):
         )
         cols = [
             "id", "context_type", "subtype", "summary", "description",
+            "subject", "condition", "facts", "applies_when",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -1830,6 +1859,7 @@ class KuzuStore(GraphStore):
             MATCH (c:Context)
             WHERE c.status = 'active'
             RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
+                   c.subject, c.condition, c.facts, c.applies_when,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -1840,6 +1870,7 @@ class KuzuStore(GraphStore):
         )
         cols = [
             "id", "context_type", "subtype", "summary", "description",
+            "subject", "condition", "facts", "applies_when",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -2157,7 +2188,7 @@ class KuzuStore(GraphStore):
             self.upsert_event_relation(
                 from_event_id=target_event_id,
                 to_event_id=dst_id,
-                relation_type=row[1] or "关联",
+                relation_type=normalize_event_relation_type(row[1]) or row[1] or "关联",
                 operation=row[2] or "",
                 description=row[3] or "",
                 confidence=float(row[4] or 0.0),
@@ -2196,7 +2227,7 @@ class KuzuStore(GraphStore):
             self.upsert_event_relation(
                 from_event_id=src_id,
                 to_event_id=target_event_id,
-                relation_type=row[1] or "关联",
+                relation_type=normalize_event_relation_type(row[1]) or row[1] or "关联",
                 operation=row[2] or "",
                 description=row[3] or "",
                 confidence=float(row[4] or 0.0),
@@ -2310,6 +2341,7 @@ class KuzuStore(GraphStore):
             MATCH (c:Context)
             {where_clause}
             RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
+                   c.subject, c.condition, c.facts, c.applies_when,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status,
                    c.source_refs, c.merged_from, c.embedding
@@ -2320,6 +2352,7 @@ class KuzuStore(GraphStore):
         )
         cols = [
             "id", "context_type", "subtype", "summary", "description",
+            "subject", "condition", "facts", "applies_when",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status",
             "source_refs", "merged_from", "embedding",
@@ -2378,6 +2411,304 @@ class KuzuStore(GraphStore):
                 }
             )
         return rows
+
+    def project_task_anchors(
+        self,
+        task_text: str,
+        literal_anchors: list[str],
+        lexical_anchors: list[str],
+    ) -> dict[str, Any]:
+        """Return graph-local candidates that may anchor a task.
+
+        The projector still owns the matching algorithm; this method gives it a
+        single graph-facing read point for entities, contexts, and events.
+        """
+        return {
+            "task_text": str(task_text or ""),
+            "literal_anchors": list(literal_anchors or []),
+            "lexical_anchors": list(lexical_anchors or []),
+            "entities": self.list_registered_entities_with_embeddings(),
+            "contexts": self.list_contexts(limit=240, statuses=["active"]),
+            "events": self.list_events(limit=240, statuses=["active"]),
+        }
+
+    def walk_task_memory_paths(
+        self,
+        projection: Any,
+        limit_per_anchor: int = 20,
+    ) -> list[MemoryPath]:
+        limit = int(max(1, limit_per_anchor))
+        terms = list(getattr(projection, "literal_anchors", []) or []) + list(
+            getattr(projection, "lexical_anchors", []) or []
+        )
+        entity_hits = list(getattr(projection, "entity_anchors", []) or [])
+        context_hits = list(getattr(projection, "context_anchors", []) or [])
+        event_hits = list(getattr(projection, "event_anchors", []) or [])
+        paths: list[MemoryPath] = []
+
+        entity_ids = []
+        for hit in entity_hits:
+            entity_id = str(getattr(hit, "target_id", "") or "").strip()
+            if entity_id and entity_id not in entity_ids:
+                entity_ids.append(self.resolve_canonical_entity_id(entity_id))
+
+        for entity_id in entity_ids[:limit]:
+            pattern = self.get_entity_pattern(entity_id)
+            if pattern:
+                section = recall_pattern(
+                    str(pattern.get("content", "") or ""),
+                    query=getattr(projection, "task", ""),
+                    mode="section",
+                    top_k_sections=1,
+                )
+                content = str(section.get("content", "") or "").strip()
+                if content:
+                    paths.append(
+                        MemoryPath(
+                            path_type="rule",
+                            memory_type="rule",
+                            anchor_terms=[entity_id],
+                            nodes=[{"entity_id": entity_id, "pattern": pattern, "section": content}],
+                            path_length=2,
+                            source="entity_pattern",
+                            direct_entity_hits=1,
+                            last_active=int(pattern.get("updated_at") or pattern.get("created_at") or 0),
+                        )
+                    )
+
+        context_ids: list[str] = []
+        for hit in context_hits:
+            context_id = str(getattr(hit, "target_id", "") or "").strip()
+            if context_id and context_id not in context_ids:
+                context_ids.append(context_id)
+        for context in self._contexts_by_ids(context_ids[:limit]):
+            anchor_terms = self._task_recall_matched_terms(self._task_context_text(context), terms)
+            paths.append(
+                MemoryPath(
+                    path_type="context",
+                    memory_type="context",
+                    anchor_terms=anchor_terms,
+                    nodes=[context],
+                    path_length=1,
+                    source="context_anchor",
+                    direct_literal_hits=self._task_recall_literal_hits(anchor_terms, getattr(projection, "literal_anchors", [])),
+                    support_count=int(context.support_count or 1),
+                    last_active=int(context.last_seen_at or context.updated_at or context.created_at or 0),
+                )
+            )
+
+        if entity_ids:
+            for event in self.get_events_by_entities(entity_ids[:limit]):
+                if event.status != "active":
+                    continue
+                anchor_terms = self._task_recall_matched_terms(self._task_event_text(event), terms + entity_ids)
+                paths.append(
+                    MemoryPath(
+                        path_type="event",
+                        memory_type="event",
+                        anchor_terms=anchor_terms,
+                        nodes=[event],
+                        path_length=2,
+                        source="entity_event",
+                        direct_literal_hits=self._task_recall_literal_hits(anchor_terms, getattr(projection, "literal_anchors", [])),
+                        direct_entity_hits=len(set(self.get_event_entities(event.id)) & set(entity_ids)),
+                        support_count=int(event.support_count or 1),
+                        last_active=int(event.last_active or event.timestamp or 0),
+                    )
+                )
+
+        event_ids: list[str] = []
+        for hit in event_hits:
+            event_id = str(getattr(hit, "target_id", "") or "").strip()
+            if event_id and event_id not in event_ids:
+                event_ids.append(event_id)
+        for event in self._events_by_ids(event_ids[:limit]):
+            anchor_terms = self._task_recall_matched_terms(self._task_event_text(event), terms)
+            paths.append(
+                MemoryPath(
+                    path_type="event",
+                    memory_type="event",
+                    anchor_terms=anchor_terms,
+                    nodes=[event],
+                    path_length=1,
+                    source="event_anchor",
+                    direct_literal_hits=self._task_recall_literal_hits(anchor_terms, getattr(projection, "literal_anchors", [])),
+                    support_count=int(event.support_count or 1),
+                    last_active=int(event.last_active or event.timestamp or 0),
+                )
+            )
+
+        context_related_events = self.retrieve_events_by_contexts(context_ids[:limit], limit=limit * 2)
+        for event in context_related_events:
+            if event.status != "active":
+                continue
+            anchor_terms = self._task_recall_matched_terms(self._task_event_text(event), terms)
+            paths.append(
+                MemoryPath(
+                    path_type="context_event",
+                    memory_type="event",
+                    anchor_terms=anchor_terms,
+                    nodes=[event],
+                    path_length=2,
+                    source="context_event",
+                    direct_literal_hits=self._task_recall_literal_hits(anchor_terms, getattr(projection, "literal_anchors", [])),
+                    support_count=int(event.support_count or 1),
+                    last_active=int(event.last_active or event.timestamp or 0),
+                )
+            )
+
+        relation_event_ids = list(dict.fromkeys(event_ids + [p.primary().id for p in paths if isinstance(p.primary(), Event)]))
+        relation_paths = self.get_event_relation_paths(
+            event_ids=relation_event_ids[: max(limit * 2, limit)],
+            relation_types=event_relation_query_types(),
+            depth=1,
+        )
+        for edge in relation_paths:
+            src = edge.get("source_event")
+            dst = edge.get("target_event")
+            if not isinstance(src, Event) or not isinstance(dst, Event):
+                continue
+            combined_text = f"{self._task_event_text(src)} {self._task_event_text(dst)}"
+            anchor_terms = self._task_recall_matched_terms(combined_text, terms)
+            relation_type = normalize_event_relation_type(edge.get("relation_type", ""))
+            if not relation_type:
+                continue
+            edge["relation_type"] = relation_type
+            paths.append(
+                MemoryPath(
+                    path_type="evolution",
+                    memory_type="event",
+                    anchor_terms=anchor_terms,
+                    nodes=[src, dst],
+                    relations=[edge],
+                    path_length=2,
+                    source="event_relation",
+                    direct_literal_hits=self._task_recall_literal_hits(anchor_terms, getattr(projection, "literal_anchors", [])),
+                    support_count=max(int(src.support_count or 1), int(dst.support_count or 1)),
+                    last_active=max(int(src.last_active or src.timestamp or 0), int(dst.last_active or dst.timestamp or 0)),
+                    warning=relation_type == "意义更新",
+                )
+            )
+        return paths
+
+    def get_event_relation_paths(
+        self,
+        event_ids: list[str],
+        relation_types: list[str],
+        depth: int = 1,
+    ) -> list[dict[str, Any]]:
+        ids = [str(item or "").strip() for item in (event_ids or []) if str(item or "").strip()]
+        relation_filter = [str(item or "").strip() for item in (relation_types or []) if str(item or "").strip()]
+        if not ids:
+            return []
+        params: dict[str, Any] = {"event_ids": ids, "limit": max(20, len(ids) * 8)}
+        relation_clause = ""
+        if relation_filter:
+            relation_clause = "AND r.relation_type IN $relation_types"
+            params["relation_types"] = relation_filter
+        resp = self.conn.execute(
+            f"""
+            MATCH (src:Event)-[r:EVENT_RELATION]->(dst:Event)
+            WHERE (src.id IN $event_ids OR dst.id IN $event_ids)
+              AND src.status = 'active'
+              AND dst.status = 'active'
+              {relation_clause}
+            RETURN {self._event_select_clause('src')},
+                   {self._event_select_clause('dst')},
+                   r.relation_type, r.operation, r.description, r.confidence,
+                   r.evidence_span, r.value_before, r.value_after, r.created_at, r.updated_at
+            ORDER BY r.updated_at DESC
+            LIMIT $limit
+            """,
+            params,
+        )
+        event_col_count = len(self._event_columns())
+        rows: list[dict[str, Any]] = []
+        while resp.has_next():
+            row = list(resp.get_next())
+            src = self._row_to_event(row[:event_col_count])
+            dst = self._row_to_event(row[event_col_count: event_col_count * 2])
+            rel = row[event_col_count * 2:]
+            rows.append(
+                {
+                    "source_event": src,
+                    "target_event": dst,
+                    "relation_type": normalize_event_relation_type(rel[0]) or (rel[0] or ""),
+                    "operation": rel[1] or "",
+                    "description": rel[2] or "",
+                    "confidence": float(rel[3] or 0.0),
+                    "evidence_span": rel[4] or "",
+                    "value_before": rel[5] or "",
+                    "value_after": rel[6] or "",
+                    "created_at": int(rel[7] or 0),
+                    "updated_at": int(rel[8] or 0),
+                }
+            )
+        return rows
+
+    def _contexts_by_ids(self, context_ids: list[str]) -> list[Context]:
+        result = []
+        for context_id in context_ids:
+            context = self.get_context(context_id)
+            if context and context.status == "active":
+                result.append(context)
+        return result
+
+    def _events_by_ids(self, event_ids: list[str]) -> list[Event]:
+        result = []
+        for event_id in event_ids:
+            event = self.get_event(event_id)
+            if event and event.status == "active":
+                result.append(event)
+        return result
+
+    def _task_event_text(self, event: Event) -> str:
+        return " ".join(
+            part
+            for part in [
+                event.summary,
+                event.action,
+                event.causality,
+                safe_json_dumps(event.payload) if event.payload else "",
+            ]
+            if str(part or "").strip()
+        )
+
+    def _task_context_text(self, context: Context) -> str:
+        facts = context.facts if isinstance(context.facts, dict) else {}
+        facts_text = " ".join(f"{key} {value}" for key, value in facts.items())
+        return " ".join(
+            part
+            for part in [
+                context.subject,
+                context.condition,
+                facts_text,
+                context.applies_when,
+                context.summary,
+                context.description,
+            ]
+            if str(part or "").strip()
+        )
+
+    def _task_recall_matched_terms(self, text: str, terms: list[str]) -> list[str]:
+        out: list[str] = []
+        haystack = str(text or "").lower()
+        text_tokens = self._tokenize_text(haystack)
+        for term in terms:
+            raw = str(term or "").strip()
+            if not raw:
+                continue
+            lowered = raw.lower()
+            if lowered in haystack:
+                out.append(raw)
+                continue
+            if self._tokenize_text(raw) & text_tokens:
+                out.append(raw)
+        return list(dict.fromkeys(out))
+
+    def _task_recall_literal_hits(self, matched: list[str], literals: list[str]) -> int:
+        matched_set = {str(item).lower() for item in matched}
+        return sum(1 for item in literals if str(item).lower() in matched_set)
 
     # ==================== 统计 ====================
 

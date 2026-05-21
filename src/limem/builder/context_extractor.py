@@ -21,6 +21,7 @@ from ..core.context import (
     CanonicalContextKey,
     ContextDraft,
     normalize_context_subtype,
+    render_context_description,
 )
 from ..core.event import Event
 from ..llm import DashScopeClient
@@ -321,14 +322,29 @@ class ContextExtractionPipeline:
             if not isinstance(item, dict) or item.get("not_context") is True:
                 continue
             subtype = normalize_context_subtype(item.get("subtype", "situation"))
-            summary = str(item.get("summary", "") or "").strip()
+            condition = str(item.get("condition", item.get("summary", "")) or "").strip()
+            summary = str(item.get("summary", condition) or "").strip()
+            subject = str(item.get("subject", "") or "").strip()
+            facts = item.get("facts", {})
+            if not isinstance(facts, dict):
+                facts = {}
+            applies_when = str(item.get("applies_when", "") or "").strip()
             description = str(item.get("description", "") or "").strip()
             evidence_span = str(item.get("evidence_span", "") or "").strip()
             drafts.append(
                 ContextDraft(
                     subtype=subtype,
                     summary=summary,
-                    description=description,
+                    description=render_context_description(
+                        condition=condition,
+                        facts=facts,
+                        applies_when=applies_when,
+                        fallback=description,
+                    ),
+                    subject=subject,
+                    condition=condition or summary,
+                    facts=facts,
+                    applies_when=applies_when,
                     confidence=float(item.get("confidence", 0.6) or 0.6),
                     evidence_span=evidence_span,
                     source_refs=self._make_source_refs(
@@ -393,6 +409,10 @@ class ContextExtractionPipeline:
                     description=self._normalize_description(
                         draft.description or draft.evidence_span or draft.summary
                     ),
+                    subject=self._normalize_free_text(draft.subject),
+                    condition=self._normalize_free_text(draft.condition or draft.summary),
+                    facts=dict(draft.facts or {}),
+                    applies_when=self._normalize_description(draft.applies_when),
                     confidence=max(0.0, min(1.0, float(draft.confidence or 0.0))),
                     evidence_span=evidence_span,
                     source_refs=draft.source_refs or self._make_source_refs(
@@ -413,18 +433,27 @@ class ContextExtractionPipeline:
         summary = str(draft.summary or "").strip()
         if not summary:
             return False
-        if len(summary) > 128:
+        if max(
+            len(summary),
+            int(getattr(draft, "_raw_summary_length", 0) or 0),
+            int(getattr(draft, "_raw_condition_length", 0) or 0),
+        ) > 128:
             return False
         if any(ch in summary for ch in ('{', '}', '"')):
             return False
-        if len(str(draft.description or "").strip()) > 512:
+        if max(
+            len(str(draft.description or "").strip()),
+            int(getattr(draft, "_raw_description_length", 0) or 0),
+        ) > 512:
+            return False
+        if draft.facts and not isinstance(draft.facts, dict):
             return False
         return True
 
     def _looks_like_current_intent(self, draft: ContextDraft) -> bool:
         text = " ".join(
             str(part or "")
-            for part in (draft.summary, draft.evidence_span)
+            for part in (draft.summary, draft.condition, draft.applies_when)
         ).lower()
         intent_markers = (
             "想", "希望", "打算", "计划", "准备", "请求", "要求", "需要",
@@ -443,9 +472,15 @@ class ContextExtractionPipeline:
 
     def canonicalize_context(self, context_draft: ContextDraft) -> ContextDraft:
         subtype = normalize_context_subtype(context_draft.subtype)
-        summary = self._canonicalize_summary(context_draft.summary, context_draft.evidence_span)
+        condition = self._normalize_free_text(context_draft.condition or context_draft.summary)
+        summary = self._canonicalize_summary(context_draft.summary or condition, context_draft.evidence_span)
         description = self._normalize_description(
-            context_draft.description or context_draft.evidence_span or summary
+            render_context_description(
+                condition=condition,
+                facts=context_draft.facts,
+                applies_when=context_draft.applies_when,
+                fallback=context_draft.description or context_draft.evidence_span or summary,
+            )
         )
         canonical_key = CanonicalContextKey(
             context_type="context",
@@ -456,6 +491,10 @@ class ContextExtractionPipeline:
             subtype=subtype,
             summary=summary,
             description=description,
+            subject=context_draft.subject,
+            condition=condition,
+            facts=dict(context_draft.facts or {}),
+            applies_when=context_draft.applies_when,
             confidence=context_draft.confidence,
             evidence_span=context_draft.evidence_span or context_draft.summary,
             source_refs=context_draft.source_refs,

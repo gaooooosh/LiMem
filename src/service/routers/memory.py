@@ -19,6 +19,8 @@ from ..models import (
     IngestResponse,
     QueryRequest,
     QueryResponse,
+    RecallTaskRequest,
+    RecallTaskResponse,
 )
 from ..ops import evolve_and_rebuild as _evolve_and_rebuild
 from ..ops import rebuild_index as _rebuild_index
@@ -96,6 +98,23 @@ def ingest(
 def query(request: QueryRequest, handle: LtmHandle = Depends(get_ltm_context)) -> QueryResponse:
     results = handle.bm25.search(request.query, request.top_k)
     return QueryResponse(results=results, total=len(results))
+
+
+@router.post("/recall", response_model=RecallTaskResponse)
+def recall_for_task(
+    request: RecallTaskRequest,
+    handle: LtmHandle = Depends(get_ltm_context),
+) -> RecallTaskResponse:
+    result = handle.ltm.recall_for_task(
+        task=request.task,
+        limit=request.limit,
+        include_debug=request.include_debug,
+    )
+    return RecallTaskResponse(
+        prompt_text=str(result.get("prompt_text", "") or ""),
+        items=list(result.get("items", []) or []),
+        stats=dict(result.get("stats", {}) or {}),
+    )
 
 
 @router.post("/evolve", response_model=EvolveResponse)

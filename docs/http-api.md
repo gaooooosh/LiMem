@@ -348,6 +348,82 @@ Response:
 }
 ```
 
+### Task Recall
+
+Requires read access.
+
+Use this endpoint when an agent is about to work on a real task and needs a
+small prompt-ready memory block. The input is the current task, not a question
+about memory. The response is lightweight Markdown intended to be injected into
+an LLM prompt.
+
+This endpoint does not replace `/query`: `/query` remains a BM25 event search
+API, while `/recall` compiles useful rule/context/event memory for the current
+task.
+
+```http
+POST /db/{db_id}/recall
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "task": "在 LiMem 的 src/limem 中处理车内 38度 场景，并检查 ROOT_API_KEY 后部署",
+  "limit": 5,
+  "include_debug": false
+}
+```
+
+Response:
+
+```json
+{
+  "prompt_text": "## Relevant Memory\n- [Rule] 部署前检查 ROOT_API_KEY 和健康检查接口\n- [Context] 用户处于高温车内出行环境；气温38度，位置车内；适用于车内播放和舒适度相关任务\n- [Event] 上次 LiMem 部署因 ROOT_API_KEY 缺失失败；部署前需要检查 .env 中的 ROOT_API_KEY",
+  "items": [],
+  "stats": {
+    "literal_anchors": 3,
+    "lexical_anchors": 12,
+    "entity_anchors": 1,
+    "context_anchors": 1,
+    "event_anchors": 1,
+    "paths": 4,
+    "folded": 3,
+    "selected": 3
+  }
+}
+```
+
+Request fields:
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `task` | string | yes | The current work task or user problem given to the agent |
+| `limit` | integer | no | Maximum number of memory bullets; default `5`, maximum `20` |
+| `include_debug` | boolean | no | When `true`, `items` includes matched paths and fold reasons for debugging |
+
+Response fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `prompt_text` | string | Prompt-ready Markdown. Empty string means no strong task-relevant memory was found |
+| `items` | array | Debug details only when requested; normal agent consumers can ignore this |
+| `stats` | object | Anchor/path counts for observability |
+
+`prompt_text` uses one-line memory bullets:
+
+```markdown
+## Relevant Memory
+- [Rule] ...
+- [Context] ...
+- [Event] ...
+```
+
+`[Rule]` comes from registered entity patterns, `[Context]` describes background
+conditions and facts, and `[Event]` records past actions or outcomes. Context is
+not rendered as an event.
+
 ### Evolve
 
 Requires `w` scope.
@@ -405,6 +481,27 @@ Graph API routes are used by the debug graph UI and trusted operators.
 | `POST /db/{db_id}/api/graph/delete` | `w` | Soft or hard delete a node |
 
 Supported `kind` values are currently `event` and `context`.
+
+Context nodes now include both compatibility text fields and structured
+background fields:
+
+```json
+{
+  "summary": "高温车内环境",
+  "description": "背景条件：用户处于高温车内出行环境。实况：气温：38度；位置：车内",
+  "subject": "用户",
+  "condition": "用户处于高温车内出行环境",
+  "facts": {
+    "气温": "38度",
+    "位置": "车内"
+  },
+  "applies_when": "车内播放和舒适度相关任务"
+}
+```
+
+Existing clients can continue to read `summary` and `description`. New clients
+should prefer `condition`, `facts`, and `applies_when` when they need to
+understand the situation in which related events happened.
 
 ## UI Routes
 

@@ -17,17 +17,34 @@ def rebuild_index(handle: LtmHandle) -> int:
 
 
 def evolve_and_rebuild(handle: LtmHandle, trigger: str = "manual") -> dict[str, int]:
-    """Run consolidation + rebuild BM25 index, audited end-to-end."""
+    """Run event evolution + consolidation + rebuild BM25 index, audited end-to-end."""
     audit = handle.audit
     with audit.trace("evolve", {"trigger": trigger}) as trace_id:
         with handle.write_lock:
             before = audit.graph_snapshot(handle.ltm)
-            details = handle.ltm.run_consolidation()
+            events = list(active_events(handle))
+            evolution_report = handle.ltm.evolve_events(events)
+            consolidation_report = handle.ltm.run_consolidation()
+            details = {
+                **(evolution_report or {}),
+                "active_event_count": len(events),
+                **{
+                    f"consolidation_{key}": value
+                    for key, value in (consolidation_report or {}).items()
+                    if isinstance(value, int)
+                },
+            }
+            audit.write(
+                trace_id,
+                "algorithm_call",
+                "evolve_existing_events_completed",
+                details={"trigger": trigger, "event_count": len(events), "report": evolution_report},
+            )
             audit.write(
                 trace_id,
                 "algorithm_call",
                 "run_consolidation_completed",
-                details={"trigger": trigger, "report": details},
+                details={"trigger": trigger, "report": consolidation_report},
             )
             handle.bm25.rebuild(active_events(handle))
             audit.write(

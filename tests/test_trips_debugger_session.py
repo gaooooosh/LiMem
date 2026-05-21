@@ -197,7 +197,6 @@ class TestTripsDebuggerSession(unittest.TestCase):
                 "reason": "same_episode_batch_local_merge",
                 "confidence": 0.95,
             }
-            session._ltm.dynamic_engine._call_relation_llm = lambda payload: {"should_link": False}
             _stub_episode_embeddings(session._ltm.dynamic_engine)
 
             write_result = session.write_selected([0, 1])
@@ -314,7 +313,6 @@ class TestTripsDebuggerSession(unittest.TestCase):
                 "reason": "same_episode_manual_batch_local_merge",
                 "confidence": 0.95,
             }
-            session._ltm.dynamic_engine._call_relation_llm = lambda payload: {"should_link": False}
             _stub_episode_embeddings(session._ltm.dynamic_engine)
 
             session.write_selected([0, 1], auto_merge=False)

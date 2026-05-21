@@ -40,6 +40,16 @@ def app_factory(tmp_path, monkeypatch):
         def get_stats(self):
             return {"event_count": 0}
 
+        def recall_for_task(self, task, limit=5, include_debug=False):
+            result = {
+                "prompt_text": "## Relevant Memory\n- [Rule] fake recall",
+                "items": [],
+                "stats": {"task": task, "limit": limit},
+            }
+            if include_debug:
+                result["items"] = [{"kind": "Rule", "text": "fake recall"}]
+            return result
+
     class _FakeAudit:
         path = "/tmp/fake-audit.jsonl"
 

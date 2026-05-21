@@ -49,7 +49,6 @@ from ..config import (
     DECAY_STEP,
     ENABLE_AUTO_CONSOLIDATION,
     ENABLE_EVENT_RELATIONS,
-    ENABLE_DERIVE_OPERATION,
     EVENT_CONSOLIDATION_CANDIDATE_LIMIT,
     EVENT_CONSOLIDATION_EMBEDDING_CANDIDATE_THRESHOLD,
     EVENT_CONSOLIDATION_EMBEDDING_TOP_K,
@@ -59,7 +58,6 @@ from ..config import (
     EVENT_MERGE_TRACE_STRATEGY_VERSION,
     GENERATION_MODEL,
     LLM_CONCURRENCY,
-    MAX_DERIVATIONS_PER_BATCH,
     REINFORCEMENT_STEP,
     RECALL_ENTITY_LIMIT,
     RECALL_MAX_CANDIDATES,
@@ -89,7 +87,7 @@ from ..config import (
     normalize_dashscope_base_url,
 )
 from ..builder.context_extractor import ContextExtractionPipeline
-from ..core.context import Context, ContextDraft
+from ..core.context import Context, ContextDraft, render_context_description
 from ..core.entity import Entity
 from ..core.event import Event
 from ..llm import DashScopeClient
@@ -168,8 +166,6 @@ class DynamicEvolutionConfig:
     relation_classification_batch_size: int = RELATION_CLASSIFICATION_BATCH_SIZE
     relation_min_confidence: float = RELATION_MIN_CONFIDENCE
     relation_max_links_per_event: int = RELATION_MAX_LINKS_PER_EVENT
-    enable_derive_operation: bool = ENABLE_DERIVE_OPERATION
-    max_derivations_per_batch: int = MAX_DERIVATIONS_PER_BATCH
 
     def __post_init__(self) -> None:
         self.llm_base_url = normalize_dashscope_base_url(self.llm_base_url)
@@ -244,7 +240,6 @@ class DynamicEvolutionEngine:
         self._context_embedding_cache: dict[str, list[float]] = {}
         self._context_candidates_cache: dict[tuple[str, str], list[Context]] = {}
         self._context_summary_index_cache: dict[str, list[tuple[str, str]]] = {}
-        self._extract_relation_system_prompt = load_prompt("evolution/extract_relation_system.txt")
         self._rewrite_merged_event_system_prompt = load_prompt("evolution/rewrite_merged_event_system.txt")
         self._rewrite_merged_event_user_prompt = load_prompt("evolution/rewrite_merged_event_user.txt")
         self._reg_entity_match_system_prompt = load_prompt("entity/registration_match_system.txt")
@@ -842,10 +837,6 @@ class DynamicEvolutionEngine:
     ) -> EvolutionReport:
         if not events:
             return self._empty_evolution_report()
-        if self._should_use_legacy_relation_extraction():
-            return self._coerce_relation_report(
-                self._extract_event_event_relations_legacy(events=events, record=record)
-            )
         return self._run_relation_pipeline(events=events, record=record, progress_cb=progress_cb)
 
     def _run_relation_pipeline(
@@ -878,89 +869,6 @@ class DynamicEvolutionEngine:
             self.recall_pipeline.end_batch()
         return report
 
-    def _extract_event_event_relations_legacy(
-        self,
-        events: list[Event],
-        record: Optional[Any] = None,
-    ) -> int:
-        if len(events) < 2 or not self._llm_relation_available():
-            return 0
-
-        source_text = self._extract_relation_source_text(record=record, events=events)
-        if not source_text:
-            source_text = " ".join(event.summary for event in events if event.summary).strip()
-        if not source_text:
-            return 0
-
-        created = 0
-        relation_pairs: list[tuple[Event, Event]] = []
-        for idx, left in enumerate(events):
-            for right in events[idx + 1:]:
-                if not left or not right or left.id == right.id:
-                    continue
-                if left.status in {"merged", "archived"} or right.status in {"merged", "archived"}:
-                    continue
-                if not self._same_relation_scope(left, right):
-                    continue
-                relation_pairs.append((left, right))
-
-        if not relation_pairs:
-            return 0
-
-        workers = self._llm_workers(task_count=len(relation_pairs))
-        if workers <= 1:
-            decisions = [
-                (
-                    left,
-                    right,
-                    self._call_relation_llm(
-                        self._relation_prompt_payload(left=left, right=right, source_text=source_text)
-                    ),
-                )
-                for left, right in relation_pairs
-            ]
-        else:
-            decisions: list[tuple[Event, Event, Optional[dict[str, Any]]]] = []
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(
-                        self._call_relation_llm,
-                        self._relation_prompt_payload(left=left, right=right, source_text=source_text),
-                    ): (left, right)
-                    for left, right in relation_pairs
-                }
-                for future in as_completed(futures):
-                    left, right = futures[future]
-                    decisions.append((left, right, future.result()))
-
-        for left, right, decision in decisions:
-            if not isinstance(decision, dict) or not bool(decision.get("should_link", False)):
-                continue
-            relation = self._normalize_relation_decision(left=left, right=right, decision=decision)
-            if relation is None:
-                continue
-            created += int(
-                bool(
-                    self.store.upsert_event_relation(
-                        from_event_id=relation["from_event_id"],
-                        to_event_id=relation["to_event_id"],
-                        relation_type=relation["relation_type"],
-                        operation="link",
-                        description=relation["description"],
-                        confidence=relation["confidence"],
-                        evidence_span=relation["evidence_span"],
-                        value_before="",
-                        value_after="",
-                        recall_channel="legacy_pairwise",
-                        recall_score=relation["confidence"],
-                        source_episode_id=relation["source_episode_id"],
-                        source_session_id=relation["source_session_id"],
-                        timestamp=relation["timestamp"],
-                    )
-                )
-            )
-        return created
-
     def _extract_relation_source_text(self, record: Optional[Any], events: list[Event]) -> str:
         if isinstance(record, str):
             return record.strip()
@@ -976,162 +884,6 @@ class DynamicEvolutionEngine:
                 return text
         return ""
 
-    def _same_relation_scope(self, left: Event, right: Event) -> bool:
-        left_payload = left.payload if isinstance(left.payload, dict) else {}
-        right_payload = right.payload if isinstance(right.payload, dict) else {}
-        left_session = str(left_payload.get("session_id", "") or "").strip()
-        right_session = str(right_payload.get("session_id", "") or "").strip()
-        if left_session and right_session:
-            return left_session == right_session
-        left_episode = str(left_payload.get("episode_id", "") or "").strip()
-        right_episode = str(right_payload.get("episode_id", "") or "").strip()
-        if left_episode and right_episode:
-            return left_episode == right_episode
-        return True
-
-    def _relation_prompt_payload(
-        self,
-        left: Event,
-        right: Event,
-        source_text: str,
-    ) -> dict[str, Any]:
-        return {
-            "task": (
-                "给定同一段原文中的两个已抽取事件，判断是否需要创建事件-事件关系边，并给出中文关系说明。"
-            ),
-            "rules": [
-                "只有当原文明确支持两个事件之间的关系时，才创建关系边。",
-                "relation_type 只能使用：导致、延续。",
-                "不要抽取 agent 自己的普通回复关系；只有承诺、操作结果、用户确认、外部状态变化才可能成为事件。",
-                "如果无法基于原文落地关系，返回 should_link=false。",
-                "只返回严格 JSON；key 保持英文，value 使用中文（布尔值和数字除外）。",
-            ],
-            "source_text": source_text,
-            "left": self._event_prompt_payload(left),
-            "right": self._event_prompt_payload(right),
-            "output_schema": {
-                "should_link": True,
-                "relation_type": "导致",
-                "from_id": left.id,
-                "to_id": right.id,
-                "reason": "两个事件之间的详细关系说明",
-                "evidence_span": "原文中的可选证据片段",
-                "confidence": 0.0,
-            },
-        }
-
-    def _llm_relation_available(self) -> bool:
-        return self._llm_merge_available()
-
-    def _call_relation_llm(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
-        if not self._llm_relation_available():
-            return None
-        try:
-            resp = self.llm_client.call_generation(
-                model=self.config.llm_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self._extract_relation_system_prompt,
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(payload, ensure_ascii=False),
-                    },
-                ],
-            )
-            content = self.llm_client.message_content(resp)
-            data = robust_json_loads(content, None)
-            return data if isinstance(data, dict) else None
-        except Exception:
-            return None
-
-    def _normalize_relation_decision(
-        self,
-        left: Event,
-        right: Event,
-        decision: dict[str, Any],
-    ) -> Optional[dict[str, Any]]:
-        relation_type = str(decision.get("relation_type", "") or "").strip()
-        relation_type = self._normalize_legacy_relation_type(relation_type)
-        if not relation_type:
-            return None
-        allowed_ids = {left.id, right.id}
-        from_event_id = str(decision.get("from_id", "") or "").strip()
-        to_event_id = str(decision.get("to_id", "") or "").strip()
-        if from_event_id not in allowed_ids or to_event_id not in allowed_ids or from_event_id == to_event_id:
-            ordered = sorted(
-                [left, right],
-                key=lambda event: (event.timestamp or event.last_active or 0, event.id),
-            )
-            from_event_id, to_event_id = ordered[0].id, ordered[1].id
-        reason = str(decision.get("reason", "") or "").strip()
-        if not reason:
-            return None
-        confidence_raw = decision.get("confidence", 0.0)
-        try:
-            confidence = float(confidence_raw)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
-        evidence_span = str(decision.get("evidence_span", "") or "").strip()
-
-        source_episode_id = ""
-        source_session_id = ""
-        for event in (left, right):
-            payload = event.payload if isinstance(event.payload, dict) else {}
-            if not source_episode_id:
-                source_episode_id = str(payload.get("episode_id", "") or "").strip()
-            if not source_session_id:
-                source_session_id = str(payload.get("session_id", "") or "").strip()
-
-        timestamp = max(
-            int(left.last_active or left.timestamp or 0),
-            int(right.last_active or right.timestamp or 0),
-            int(time.time()),
-        )
-        return {
-            "from_event_id": from_event_id,
-            "to_event_id": to_event_id,
-            "relation_type": relation_type,
-            "description": reason,
-            "confidence": confidence,
-            "evidence_span": evidence_span,
-            "source_episode_id": source_episode_id,
-            "source_session_id": source_session_id,
-            "timestamp": timestamp,
-        }
-
-    def _normalize_legacy_relation_type(self, relation_type: str) -> str:
-        aliases = {
-            "因果": "导致",
-            "触发": "导致",
-            "前置条件": "导致",
-            "促成": "导致",
-            "后续": "延续",
-            "演进": "延续",
-            "时序相邻": "",
-        }
-        normalized = aliases.get(str(relation_type or "").strip(), str(relation_type or "").strip())
-        if normalized not in {"导致", "延续"}:
-            return ""
-        return normalized
-
-    def _llm_workers(self, task_count: int) -> int:
-        concurrency = max(1, int(self.config.llm_concurrency or 1))
-        return max(1, min(concurrency, task_count))
-
-    def _should_use_legacy_relation_extraction(self) -> bool:
-        return self._method_is_overridden("_call_relation_llm", type(self)._call_relation_llm)
-
-    def _method_is_overridden(self, name: str, default: Any) -> bool:
-        current = getattr(self, name, None)
-        if current is None or default is None:
-            return False
-        func = getattr(current, "__func__", None)
-        if func is not None:
-            return func is not default
-        return current is not default
 
     def _process_result_to_report(self, result: ProcessResult) -> EvolutionReport:
         report = self._empty_evolution_report()
@@ -1176,7 +928,13 @@ class DynamicEvolutionEngine:
         for item in raw_contexts:
             if not isinstance(item, dict):
                 continue
-            summary = str(item.get("summary", "") or "").strip()
+            condition = str(item.get("condition", item.get("summary", "")) or "").strip()
+            summary = str(item.get("summary", condition) or "").strip()
+            subject = str(item.get("subject", "") or "").strip()
+            facts = item.get("facts", {})
+            if not isinstance(facts, dict):
+                facts = {}
+            applies_when = str(item.get("applies_when", "") or "").strip()
             description = str(item.get("description", "") or "").strip()
             evidence_span = str(item.get("evidence_span", "") or "").strip()
             try:
@@ -1187,7 +945,16 @@ class DynamicEvolutionEngine:
                 ContextDraft(
                     subtype=str(item.get("subtype", "situation") or "situation"),
                     summary=summary,
-                    description=description,
+                    description=render_context_description(
+                        condition=condition,
+                        facts=facts,
+                        applies_when=applies_when,
+                        fallback=description,
+                    ),
+                    subject=subject,
+                    condition=condition or summary,
+                    facts=facts,
+                    applies_when=applies_when,
                     confidence=confidence,
                     evidence_span=evidence_span or summary,
                     source_refs=[
@@ -1197,6 +964,10 @@ class DynamicEvolutionEngine:
                             "signal": "event_payload_context",
                             "event_id": event.id,
                             "timestamp": event_timestamp,
+                            "subject": subject,
+                            "condition": condition or summary,
+                            "facts": facts,
+                            "applies_when": applies_when,
                         }
                     ],
                     valid_from=event_timestamp,
@@ -1554,6 +1325,23 @@ class DynamicEvolutionEngine:
             context_node.description = evidence.description
         elif evidence.description and len(evidence.description) > len(context_node.description):
             context_node.description = evidence.description
+        if evidence.subject and not context_node.subject:
+            context_node.subject = evidence.subject
+        if evidence.condition and (not context_node.condition or len(evidence.condition) > len(context_node.condition)):
+            context_node.condition = evidence.condition
+            context_node.summary = context_node.summary or evidence.condition
+        if evidence.applies_when and (
+            not context_node.applies_when or len(evidence.applies_when) > len(context_node.applies_when)
+        ):
+            context_node.applies_when = evidence.applies_when
+        if evidence.facts:
+            context_node.facts = self._merge_context_facts(context_node.facts, evidence.facts)
+        context_node.description = render_context_description(
+            condition=context_node.condition,
+            facts=context_node.facts,
+            applies_when=context_node.applies_when,
+            fallback=context_node.description,
+        )
         context_node.support_count += 1
         context_node.updated_at = now
         context_node.last_seen_at = now
@@ -2704,11 +2492,37 @@ class DynamicEvolutionEngine:
     def _context_description(self, node: Any) -> str:
         return str(getattr(node, "description", "") or "").strip()
 
-    def _context_embedding_text(self, context: Any) -> str:
-        parts = [self._context_summary(context)]
-        description = self._context_description(context)
+    def _context_subject(self, node: Any) -> str:
+        return str(getattr(node, "subject", "") or "").strip()
+
+    def _context_condition(self, node: Any) -> str:
+        return str(getattr(node, "condition", "") or getattr(node, "summary", "") or "").strip()
+
+    def _context_applies_when(self, node: Any) -> str:
+        return str(getattr(node, "applies_when", "") or "").strip()
+
+    def _context_facts(self, node: Any) -> dict[str, Any]:
+        facts = getattr(node, "facts", {}) or {}
+        return facts if isinstance(facts, dict) else {}
+
+    def _context_card_text(self, node: Any) -> str:
+        parts = [
+            f"主体：{self._context_subject(node)}" if self._context_subject(node) else "",
+            f"背景条件：{self._context_condition(node)}" if self._context_condition(node) else "",
+        ]
+        facts = self._context_facts(node)
+        if facts:
+            parts.append("实况：" + "；".join(f"{key}：{value}" for key, value in facts.items()))
+        applies_when = self._context_applies_when(node)
+        if applies_when:
+            parts.append(f"适用：{applies_when}")
+        description = self._context_description(node)
         if description:
             parts.append(description)
+        return " ".join(part for part in parts if part).strip()
+
+    def _context_embedding_text(self, context: Any) -> str:
+        parts = [self._context_summary(context), self._context_card_text(context)]
         return " ".join(part for part in parts if part).strip()
 
     def _context_text_overlap(self, left: str, right: str) -> float:
@@ -2734,6 +2548,7 @@ class DynamicEvolutionEngine:
         candidate_parts = [
             self._context_summary(candidate),
             self._context_description(candidate),
+            self._context_card_text(candidate),
         ]
         for ref in candidate.source_refs or []:
             if not isinstance(ref, dict):
@@ -2782,7 +2597,11 @@ class DynamicEvolutionEngine:
         if not event_entities:
             return 1.0
         candidate_text = " ".join(
-            part for part in [self._context_summary(candidate), self._context_description(candidate)] if part
+            part for part in [
+                self._context_summary(candidate),
+                self._context_description(candidate),
+                self._context_card_text(candidate),
+            ] if part
         )
         for ref in candidate.source_refs or []:
             if not isinstance(ref, dict):
@@ -2801,8 +2620,8 @@ class DynamicEvolutionEngine:
         return len(matched) / max(1, len(event_entities))
 
     def _has_negation_conflict(self, candidate: Context, draft: ContextDraft) -> bool:
-        left = f"{self._context_summary(candidate)} {self._context_description(candidate)}"
-        right = f"{self._context_summary(draft)} {self._context_description(draft)} {draft.evidence_span}"
+        left = f"{self._context_summary(candidate)} {self._context_card_text(candidate)}"
+        right = f"{self._context_summary(draft)} {self._context_card_text(draft)} {draft.evidence_span}"
         left_has_negation = self._contains_negation(left)
         right_has_negation = self._contains_negation(right)
         if left_has_negation == right_has_negation:
@@ -2873,6 +2692,20 @@ class DynamicEvolutionEngine:
                 continue
             seen.add(signature)
             merged.append(dict(ref))
+        return merged
+
+    def _merge_context_facts(
+        self,
+        existing: Optional[dict[str, Any]],
+        incoming: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        merged = dict(existing or {})
+        for key, value in dict(incoming or {}).items():
+            text_key = str(key or "").strip()
+            if not text_key or value in (None, "", [], {}):
+                continue
+            if text_key not in merged or merged.get(text_key) in (None, "", [], {}):
+                merged[text_key] = value
         return merged
 
     def _maybe_embed_context(self, text: str) -> Optional[list[float]]:
@@ -3003,6 +2836,19 @@ class DynamicEvolutionEngine:
             canonical.description = merged.description
         elif merged.description and len(merged.description) > len(canonical.description):
             canonical.description = merged.description
+        if merged.subject and not canonical.subject:
+            canonical.subject = merged.subject
+        if merged.condition and (not canonical.condition or len(merged.condition) > len(canonical.condition)):
+            canonical.condition = merged.condition
+        if merged.applies_when and (not canonical.applies_when or len(merged.applies_when) > len(canonical.applies_when)):
+            canonical.applies_when = merged.applies_when
+        canonical.facts = self._merge_context_facts(canonical.facts, merged.facts)
+        canonical.description = render_context_description(
+            condition=canonical.condition,
+            facts=canonical.facts,
+            applies_when=canonical.applies_when,
+            fallback=canonical.description,
+        )
         canonical.source_refs = self._merge_source_refs(canonical.source_refs, merged.source_refs)
         canonical.source_refs = self._merge_source_refs(
             canonical.source_refs,
@@ -3014,6 +2860,9 @@ class DynamicEvolutionEngine:
                     "canonical_summary_before": original_canonical_summary,
                     "merged_summary_before": original_merged_summary,
                     "canonical_summary_after": canonical.summary,
+                    "canonical_condition_after": canonical.condition,
+                    "canonical_facts_after": canonical.facts,
+                    "canonical_applies_when_after": canonical.applies_when,
                     "canonical_description_before": original_canonical_description,
                     "merged_description_before": original_merged_description,
                     "canonical_description_after": canonical.description,
@@ -3280,6 +3129,11 @@ class DynamicEvolutionEngine:
             "subtype": context.subtype,
             "summary": context.summary,
             "description": context.description,
+            "subject": context.subject,
+            "condition": context.condition,
+            "facts": context.facts,
+            "applies_when": context.applies_when,
+            "memory_card": self._context_card_text(context),
             "confidence": context.confidence,
             "support_count": context.support_count,
             "last_seen_at": context.last_seen_at,
@@ -3380,12 +3234,14 @@ class DynamicEvolutionEngine:
             MATCH (c:Context)
             {where}
             RETURN c.id, c.context_type, c.subtype, c.summary, c.description,
+                   c.subject, c.condition, c.facts, c.applies_when,
                    c.confidence, c.support_count, c.created_at, c.updated_at,
                    c.valid_from, c.valid_to, c.last_seen_at, c.status, c.embedding
             """
         )
         cols = [
             "id", "context_type", "subtype", "summary", "description",
+            "subject", "condition", "facts", "applies_when",
             "confidence", "support_count", "created_at", "updated_at",
             "valid_from", "valid_to", "last_seen_at", "status", "embedding",
         ]

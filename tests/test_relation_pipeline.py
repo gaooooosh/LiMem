@@ -46,8 +46,10 @@ class _RecallStore:
 
 
 class _RelationStore:
-    def __init__(self, events):
+    def __init__(self, events, contexts_by_event=None, entities_by_event=None):
         self.events = {event.id: event for event in events}
+        self.contexts_by_event = dict(contexts_by_event or {})
+        self.entities_by_event = dict(entities_by_event or {})
         self.saved_events = []
         self.archived_events = []
         self.relinked = []
@@ -80,12 +82,10 @@ class _RelationStore:
         return True
 
     def get_event_contexts(self, event_id):
-        del event_id
-        return []
+        return list(self.contexts_by_event.get(event_id, []))
 
     def get_event_entities(self, event_id):
-        del event_id
-        return []
+        return list(self.entities_by_event.get(event_id, []))
 
     def save_event_merge_trace(
         self,
@@ -128,6 +128,21 @@ class _NoopLLM:
         return "{}"
 
 
+class _JsonLLM(_NoopLLM):
+    def __init__(self, payload):
+        self.payload = payload
+
+    def call_generation(self, model, messages):
+        del model, messages
+        return self.payload
+
+    @staticmethod
+    def message_content(response):
+        import json
+
+        return json.dumps(response, ensure_ascii=False)
+
+
 def _make_config(**overrides):
     defaults = dict(
         recall_max_candidates=10,
@@ -155,8 +170,6 @@ def _make_processor_config(**overrides):
         relation_classification_batch_size=15,
         relation_min_confidence=0.75,
         relation_max_links_per_event=3,
-        enable_derive_operation=False,
-        max_derivations_per_batch=3,
         event_merge_trace_strategy_version="v1",
         event_merge_trace_log_path=tempfile.mktemp(),
     )
@@ -315,85 +328,7 @@ class TestRelationPipeline(unittest.TestCase):
         self.assertEqual(store.recent_calls, 2)
         self.assertEqual(store.semantic_calls, 2)
 
-    def test_relation_processor_legacy_compat_creates_link_edge(self):
-        new_event = Event(id="evt_new", summary="用户发起导航", timestamp=100, last_active=100)
-        candidate_event = Event(id="evt_old", summary="系统开始规划路线", timestamp=101, last_active=101)
-        store = _RelationStore([new_event, candidate_event])
-        processor = RelationProcessor(
-            store=store,
-            llm_client=_NoopLLM(),
-            config=_make_processor_config(),
-        )
-        processor._legacy_relation_enabled = lambda: True
-        processor._legacy_relation_payload = lambda left, right, source_text: {
-            "left": left.id,
-            "right": right.id,
-            "source_text": source_text,
-        }
-        processor._legacy_relation_call = lambda payload: {
-            "should_link": True,
-            "relation_type": "促成",
-            "from_id": payload["left"],
-            "to_id": payload["right"],
-            "reason": "用户请求触发系统规划路线",
-            "confidence": 0.9,
-        }
-        candidate_set = CandidateSet(
-            candidates=[
-                RecallCandidate(
-                    event=candidate_event,
-                    channel="semantic",
-                    channel_score=0.91,
-                    features={"aggregate_score": 0.91, "channels": {"semantic": 0.91}},
-                )
-            ],
-            channel_stats={"semantic": 1},
-        )
-
-        result = processor.process(new_event, candidate_set, "用户说导航去公司，系统开始规划路线。")
-
-        self.assertEqual(result.links, 1)
-        self.assertEqual(result.total_links, 1)
-        self.assertEqual(store.event_relations[0]["relation_type"], "导致")
-        self.assertEqual(store.event_relations[0]["operation"], "link")
-
-    def test_relation_processor_normalizes_legacy_link_subtypes(self):
-        new_event = Event(id="evt_new", summary="用户发起导航", timestamp=100, last_active=100)
-        candidate_event = Event(id="evt_old", summary="系统开始规划路线", timestamp=101, last_active=101)
-        store = _RelationStore([new_event, candidate_event])
-        processor = RelationProcessor(
-            store=store,
-            llm_client=_NoopLLM(),
-            config=_make_processor_config(),
-        )
-        processor._classify_batch = lambda e_new, candidates, source_text: [
-            OperationDecision(
-                candidate=candidates.candidates[0],
-                operation="link",
-                confidence=0.9,
-                reason="旧分类词应收敛为导致",
-                link_subtype="促成",
-                direction="new_to_candidate",
-            )
-        ]
-        candidate_set = CandidateSet(
-            candidates=[
-                RecallCandidate(
-                    event=candidate_event,
-                    channel="semantic",
-                    channel_score=0.91,
-                    features={"aggregate_score": 0.91, "channels": {"semantic": 0.91}},
-                )
-            ],
-            channel_stats={"semantic": 1},
-        )
-
-        result = processor.process(new_event, candidate_set, "用户说导航去公司，系统开始规划路线。")
-
-        self.assertEqual(result.links, 1)
-        self.assertEqual(store.event_relations[0]["relation_type"], "导致")
-
-    def test_relation_processor_update_creates_version_and_archives_old_event(self):
+    def test_relation_processor_state_change_writes_supersedes_edge_only(self):
         old_event = Event(
             id="evt_old",
             summary="用户账号余额为100元",
@@ -416,21 +351,6 @@ class TestRelationPipeline(unittest.TestCase):
             llm_client=_NoopLLM(),
             config=_make_processor_config(),
         )
-        processor._classify_batch = lambda e_new, candidates, source_text: [
-            OperationDecision(
-                candidate=candidates.candidates[0],
-                operation="update",
-                confidence=0.95,
-                reason="新事件更新了旧余额值",
-                value_before="100",
-                value_after="120",
-            )
-        ]
-        processor._fuse_event = lambda mode, old_event, new_event: {
-            "summary": "用户账号余额更新为120元",
-            "action": "更新余额",
-            "causality": "余额从100元变为120元",
-        }
         candidate_set = CandidateSet(
             candidates=[
                 RecallCandidate(
@@ -446,15 +366,118 @@ class TestRelationPipeline(unittest.TestCase):
         result = processor.process(new_event, candidate_set, "账户余额从100元更新到120元。")
 
         self.assertEqual(result.updates, 1)
-        self.assertEqual(result.total_links, 2)
-        self.assertEqual(store.events["evt_old"].status, "archived")
-        self.assertEqual(len(store.saved_events), 1)
-        version_event = store.saved_events[0]
-        self.assertEqual(version_event.payload["parent_event_id"], "evt_old")
-        self.assertIn("evt_new", version_event.payload["version_source"])
+        self.assertEqual(result.total_links, 1)
+        self.assertEqual(store.events["evt_old"].status, "active")
+        self.assertEqual(store.saved_events, [])
+        self.assertEqual(store.archived_events, [])
+        self.assertEqual(store.event_relations[0]["relation_type"], "意义更新")
+        self.assertEqual(store.event_relations[0]["operation"], "supersedes")
+        self.assertEqual(store.event_relations[0]["from_event_id"], "evt_old")
+        self.assertEqual(store.event_relations[0]["to_event_id"], "evt_new")
 
-    def test_link_budget_limits_link_operations(self):
-        """Link operations should be capped at relation_max_links_per_event."""
+        reverse_result = processor.process(
+            old_event,
+            CandidateSet(
+                candidates=[
+                    RecallCandidate(
+                        event=new_event,
+                        channel="temporal",
+                        channel_score=1.0,
+                        features={"aggregate_score": 1.0},
+                    )
+                ],
+                channel_stats={"temporal": 1},
+            ),
+            "反向全量演化扫描不应把新状态写回旧状态。",
+        )
+
+        self.assertEqual(reverse_result.total_links, 0)
+        self.assertEqual(len(store.event_relations), 1)
+
+    def test_relation_processor_skips_shared_context_and_entity_only_candidates(self):
+        new_event = Event(id="evt_new", summary="新事件", timestamp=100, last_active=100)
+        context_candidate = Event(id="evt_ctx", summary="共享背景候选", timestamp=99, last_active=99)
+        entity_candidate = Event(id="evt_entity", summary="实体重叠候选", timestamp=98, last_active=98)
+        store = _RelationStore(
+            [new_event, context_candidate, entity_candidate],
+            contexts_by_event={
+                "evt_new": ["ctx_task"],
+                "evt_ctx": ["ctx_task"],
+            },
+            entities_by_event={
+                "evt_new": ["导航"],
+                "evt_entity": ["导航"],
+            },
+        )
+        processor = RelationProcessor(
+            store=store,
+            llm_client=_NoopLLM(),
+            config=_make_processor_config(),
+        )
+        candidate_set = CandidateSet(
+            candidates=[
+                RecallCandidate(
+                    event=context_candidate,
+                    channel="semantic",
+                    channel_score=0.93,
+                    features={"aggregate_score": 0.93, "channels": {"semantic": 0.93}},
+                ),
+                RecallCandidate(
+                    event=entity_candidate,
+                    channel="entity",
+                    channel_score=1.0,
+                    features={"aggregate_score": 0.3, "channels": {"entity": 1.0}},
+                ),
+            ],
+            channel_stats={"semantic": 1, "entity": 1},
+        )
+
+        result = processor.process(new_event, candidate_set, "测试源文本")
+
+        self.assertEqual(result.total_links, 0)
+        self.assertEqual(result.skipped, 2)
+        self.assertEqual(store.event_relations, [])
+
+    def test_relation_processor_llm_co_recall_writes_shared_context_edge(self):
+        new_event = Event(id="evt_new", summary="用户确认执行部署", timestamp=100, last_active=100)
+        candidate_event = Event(id="evt_old", summary="系统完成构建产物", timestamp=99, last_active=99)
+        store = _RelationStore([new_event, candidate_event])
+        processor = RelationProcessor(
+            store=store,
+            llm_client=_JsonLLM({
+                "decisions": [
+                    {
+                        "index": 0,
+                        "operation": "co_recall",
+                        "confidence": 0.86,
+                        "reason": "构建结果和用户确认需要共同召回才能判断部署动作是否完整。",
+                        "direction": "candidate_to_new",
+                    }
+                ]
+            }),
+            config=_make_processor_config(),
+        )
+        candidate_set = CandidateSet(
+            candidates=[
+                RecallCandidate(
+                    event=candidate_event,
+                    channel="semantic",
+                    channel_score=0.91,
+                    features={"aggregate_score": 0.91, "channels": {"semantic": 0.91}},
+                )
+            ],
+            channel_stats={"semantic": 1},
+        )
+
+        result = processor.process(new_event, candidate_set, "构建完成后用户确认部署。")
+
+        self.assertEqual(result.links, 1)
+        self.assertEqual(result.total_links, 1)
+        self.assertEqual(store.event_relations[0]["relation_type"], "共同背景")
+        self.assertEqual(store.event_relations[0]["operation"], "co_recall")
+
+    def test_relation_budget_limits_co_recall_operations(self):
+        """Lifecycle relation writes should be capped per event."""
         new_event = Event(id="evt_new", summary="新事件", timestamp=100, last_active=100)
         candidates = []
         for i in range(5):
@@ -482,10 +505,9 @@ class TestRelationPipeline(unittest.TestCase):
         processor._classify_batch = lambda e_new, candidates, source_text: [
             OperationDecision(
                 candidate=rc,
-                operation="link",
+                operation="co_recall",
                 confidence=0.85,
-                reason="导致关系",
-                link_subtype="导致",
+                reason="共同背景关系",
                 direction="new_to_candidate",
             )
             for rc in candidates.candidates

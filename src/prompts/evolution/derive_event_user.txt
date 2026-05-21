@@ -1,3 +1,0 @@
-以下是你当前的 derive 输入：
-
-{payload_json}

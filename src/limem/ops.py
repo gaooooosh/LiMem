@@ -9,6 +9,7 @@ import uuid
 
 from .core.context import Context
 from .core.event import Event
+from .retrieval.task_recall import TaskRecallPipeline
 from .storage.graph_store import GraphStore
 
 
@@ -454,6 +455,19 @@ class MemoryGraphOps:
             result["edges"] = self._build_edge_bundle(limit=limit * 5, statuses=statuses)
         return result
 
+    def recall_for_task(
+        self,
+        task: str,
+        limit: int = 5,
+        include_debug: bool = False,
+    ) -> dict[str, Any]:
+        pipeline = TaskRecallPipeline(store=self.store)
+        return pipeline.recall_for_task(
+            task=task,
+            limit=limit,
+            include_debug=include_debug,
+        )
+
     def snapshot(
         self,
         limit: int = 20,
@@ -515,7 +529,7 @@ class MemoryGraphOps:
         if isinstance(item, Context):
             return "context"
         if isinstance(item, dict):
-            if "context_type" in item or "description" in item:
+            if any(field in item for field in ("context_type", "description", "condition", "facts", "applies_when")):
                 return "context"
             if "subtype" in item and "summary" in item and "participants" not in item and "action" not in item:
                 return "context"
@@ -572,6 +586,10 @@ class MemoryGraphOps:
                 subtype=str(item.get("subtype", "situation") or "situation"),
                 summary=str(item.get("summary", "") or ""),
                 description=str(item.get("description", "") or ""),
+                subject=str(item.get("subject", "") or ""),
+                condition=str(item.get("condition", item.get("summary", "")) or ""),
+                facts=dict(item.get("facts", {}) or {}) if isinstance(item.get("facts", {}), dict) else {},
+                applies_when=str(item.get("applies_when", "") or ""),
                 confidence=float(item.get("confidence", 0.6) or 0.6),
                 support_count=int(item.get("support_count", 1) or 1),
                 created_at=int(item.get("created_at", 0) or 0),
@@ -676,6 +694,10 @@ class MemoryGraphOps:
             "subtype": context.subtype,
             "summary": context.summary,
             "description": context.description,
+            "subject": context.subject,
+            "condition": context.condition,
+            "facts": context.facts,
+            "applies_when": context.applies_when,
             "confidence": context.confidence,
             "support_count": context.support_count,
             "created_at": context.created_at,

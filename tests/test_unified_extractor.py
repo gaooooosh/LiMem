@@ -168,11 +168,93 @@ class TestUnifiedExtractor(unittest.TestCase):
                 {
                     "subtype": "environment",
                     "summary": "办公场所环境",
+                    "condition": "办公场所环境",
+                    "subject": "",
+                    "facts": {},
+                    "applies_when": "",
                     "evidence_span": "位置=某办公楼",
                     "confidence": 0.82,
                 }
             ],
         )
+
+    def test_context_payload_preserves_condition_and_free_facts(self):
+        extractor = _make_extractor()
+
+        extractor._call_generation_json = lambda system_prompt, user_message, default: {
+            "events": [
+                {
+                    "summary": "用户在高温车内要求调低空调",
+                    "participants": ["用户"],
+                    "action": "要求调低空调",
+                    "contexts": [
+                        {
+                            "subtype": "environment",
+                            "subject": "用户",
+                            "condition": "用户处于高温车内出行环境",
+                            "facts": {
+                                "气温": "38度",
+                                "位置": "车内",
+                                "时间": "下午",
+                            },
+                            "applies_when": "用户进行车内舒适度相关交互",
+                            "evidence_span": "气温38度，用户在车内要求调低空调",
+                            "confidence": 0.9,
+                        }
+                    ],
+                }
+            ],
+            "orphan_contexts": [],
+        }
+
+        result = extractor.extract("气温38度，用户在车内要求调低空调。")
+
+        context = result.events_data[0]["contexts"][0]
+        self.assertEqual(context["summary"], "用户处于高温车内出行环境")
+        self.assertEqual(context["condition"], "用户处于高温车内出行环境")
+        self.assertEqual(context["facts"]["气温"], "38度")
+        self.assertEqual(context["applies_when"], "用户进行车内舒适度相关交互")
+
+    def test_information_state_change_is_preserved_as_event_payload(self):
+        extractor = _make_extractor()
+
+        extractor._call_generation_json = lambda system_prompt, user_message, default: {
+            "events": [
+                {
+                    "summary": "项目记忆库新增影响大功能更新交付标准的规则",
+                    "participants": ["项目记忆库", "LiServer 项目"],
+                    "action": "记录项目级规则",
+                    "causality": "该规则会影响后续大功能更新完成后的验证和部署行为",
+                    "scope": "project:LiServer",
+                    "source": "外部记忆写入工具",
+                    "memory_type": "rule",
+                    "rule_text": "每次完成一个大的功能更新后，都要部署上线并做端到端测试。",
+                    "payload": {
+                        "principal": "principal_project",
+                        "canonical": ["大的功能更新", "部署上线", "端到端测试"],
+                    },
+                    "evidence": [
+                        {
+                            "source": "episode",
+                            "snippet": "记录 rule 类型记忆：每次完成一个大的功能更新后，都要部署上线并做端到端测试。",
+                            "confidence": 0.95,
+                        }
+                    ],
+                }
+            ],
+            "orphan_contexts": [],
+        }
+
+        result = extractor.extract("外部系统记录了一条会影响项目后续执行的规则。")
+
+        self.assertEqual(len(result.events_data), 1)
+        event = result.events_data[0]
+        self.assertEqual(event["participants"], [{"role": "项目记忆库", "seat": ""}, {"role": "LiServer 项目", "seat": ""}])
+        self.assertEqual(event["action"], "记录项目级规则")
+        self.assertEqual(event["scope"], "project:LiServer")
+        self.assertEqual(event["memory_type"], "rule")
+        self.assertEqual(event["rule_text"], "每次完成一个大的功能更新后，都要部署上线并做端到端测试。")
+        self.assertEqual(event["payload"]["principal"], "principal_project")
 
     def test_orphan_contexts_are_preserved_alongside_valid_events(self):
         extractor = _make_extractor()

@@ -337,6 +337,20 @@ def normalize_event_payload(
     raw_contexts = event_payload.get("contexts")
     if isinstance(raw_contexts, list) and raw_contexts:
         result["contexts"] = raw_contexts
+
+    handled_keys = {
+        "actor", "Actor", "actors", "Actors", "participants", "participant",
+        "action", "Action", "what_happened", "WhatHappened", "event_action",
+        "time", "Time", "time_range", "timestamp", "happened_at",
+        "outcome", "Outcome", "result", "impact", "effect",
+        "summary", "Summary", "event_summary",
+        "causality", "cause", "reason",
+        "evidence", "contexts",
+    }
+    for key, value in event_payload.items():
+        if key in handled_keys or key in result or value in (None, "", [], {}):
+            continue
+        result[key] = value
     return result
 
 

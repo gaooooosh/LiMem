@@ -2,7 +2,7 @@
 """Context - Agent 从感知流中观察并归纳出的背景框架。
 
 Context 来自 Agent 对任意来源感知流的观察，不等同于事件动作或用户意图。
-它描述明确主体在某段时间内可复用的处境、约束或环境背景。
+它描述明确主体在某段时间内可复用的发生条件、环境实况和背景边界。
 """
 
 from __future__ import annotations
@@ -131,6 +131,52 @@ def _normalize_context_description(value: Any) -> str:
     return text[:512]
 
 
+def _normalize_context_facts(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, str):
+        value = safe_json_loads(value, {})
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key, val in value.items():
+        text_key = str(key or "").strip()
+        if not text_key:
+            continue
+        if val in (None, "", [], {}):
+            continue
+        result[text_key[:64]] = val
+    return result
+
+
+def _normalize_context_short_text(value: Any, limit: int = 128) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" ，,。；;：:")
+    return text[:limit]
+
+
+def render_context_description(
+    condition: str = "",
+    facts: Optional[dict[str, Any]] = None,
+    applies_when: str = "",
+    fallback: str = "",
+) -> str:
+    parts: list[str] = []
+    condition = _normalize_context_short_text(condition, 192)
+    applies_when = _normalize_context_short_text(applies_when, 192)
+    facts = _normalize_context_facts(facts)
+    if condition:
+        parts.append(f"背景条件：{condition}")
+    if facts:
+        facts_text = "；".join(f"{key}：{value}" for key, value in facts.items())
+        parts.append(f"实况：{facts_text}")
+    if applies_when:
+        parts.append(f"适用：{applies_when}")
+    fallback = _normalize_context_description(fallback)
+    if fallback and fallback not in " ".join(parts):
+        parts.append(fallback)
+    return _normalize_context_description("。".join(parts))
+
+
 @dataclass
 class ContextSpan:
     """Agent 从观测中圈出的、可能描述情境条件的候选片段。"""
@@ -177,6 +223,10 @@ class ContextDraft:
     subtype: str = "situation"
     summary: str = ""
     description: str = ""
+    subject: str = ""
+    condition: str = ""
+    facts: dict[str, Any] = field(default_factory=dict)
+    applies_when: str = ""
     confidence: float = 0.6
     evidence_span: str = ""
     context_type: str = "context"
@@ -184,12 +234,30 @@ class ContextDraft:
     valid_from: int = 0
     valid_to: Optional[int] = None
     canonical_key: Optional[CanonicalContextKey] = None
+    _raw_summary_length: int = field(init=False, repr=False, default=0)
+    _raw_condition_length: int = field(init=False, repr=False, default=0)
+    _raw_description_length: int = field(init=False, repr=False, default=0)
 
     def __post_init__(self) -> None:
+        raw_summary = str(self.summary or "")
+        raw_condition = str(self.condition or "")
+        raw_description = str(self.description or "")
+        self._raw_summary_length = len(raw_summary)
+        self._raw_condition_length = len(raw_condition)
+        self._raw_description_length = len(raw_description)
         self.context_type = normalize_context_type(self.context_type)
         self.subtype = normalize_context_subtype(self.subtype)
-        self.summary = str(self.summary or "").strip()
-        self.description = _normalize_context_description(self.description)
+        self.subject = _normalize_context_short_text(self.subject)
+        self.condition = _normalize_context_short_text(self.condition or self.summary)
+        self.facts = _normalize_context_facts(self.facts)
+        self.applies_when = _normalize_context_short_text(self.applies_when, 192)
+        self.summary = _normalize_context_short_text(self.summary or self.condition)
+        self.description = render_context_description(
+            condition=self.condition,
+            facts=self.facts,
+            applies_when=self.applies_when,
+            fallback=self.description,
+        )
         self.confidence = max(0.0, min(1.0, float(self.confidence or 0.0)))
         self.evidence_span = str(self.evidence_span or "").strip()
         self.source_refs = _normalize_source_refs(self.source_refs)
@@ -203,6 +271,10 @@ class ContextDraft:
             subtype=self.subtype,
             summary=self.summary,
             description=self.description,
+            subject=self.subject,
+            condition=self.condition,
+            facts=dict(self.facts),
+            applies_when=self.applies_when,
             confidence=self.confidence,
             support_count=1,
             created_at=timestamp,
@@ -218,13 +290,17 @@ class ContextDraft:
 
 @dataclass
 class Context:
-    """Agent 记忆图中的 Context 节点，存储可复用的情境条件。"""
+    """Agent 记忆图中的 Context 节点，存储可复用的情境条件卡片。"""
 
     id: str
     context_type: str = "context"
     subtype: str = "situation"
     summary: str = ""
     description: str = ""
+    subject: str = ""
+    condition: str = ""
+    facts: dict[str, Any] = field(default_factory=dict)
+    applies_when: str = ""
     confidence: float = 0.6
     support_count: int = 1
     created_at: int = 0
@@ -240,8 +316,17 @@ class Context:
     def __post_init__(self) -> None:
         self.context_type = normalize_context_type(self.context_type)
         self.subtype = normalize_context_subtype(self.subtype)
-        self.summary = str(self.summary or "").strip()
-        self.description = _normalize_context_description(self.description)
+        self.subject = _normalize_context_short_text(self.subject)
+        self.condition = _normalize_context_short_text(self.condition or self.summary)
+        self.facts = _normalize_context_facts(self.facts)
+        self.applies_when = _normalize_context_short_text(self.applies_when, 192)
+        self.summary = _normalize_context_short_text(self.summary or self.condition)
+        self.description = render_context_description(
+            condition=self.condition,
+            facts=self.facts,
+            applies_when=self.applies_when,
+            fallback=self.description,
+        )
         self.confidence = max(0.0, min(1.0, float(self.confidence or 0.0)))
         self.support_count = max(1, int(self.support_count or 1))
         self.created_at = int(self.created_at or 0)
@@ -263,6 +348,10 @@ class Context:
             subtype=data.get("subtype", "situation"),
             summary=data.get("summary", "") or "",
             description=data.get("description", "") or "",
+            subject=data.get("subject", "") or "",
+            condition=data.get("condition", "") or "",
+            facts=safe_json_loads(data.get("facts"), {}),
+            applies_when=data.get("applies_when", "") or "",
             confidence=float(data.get("confidence", 0.6) or 0.6),
             support_count=int(data.get("support_count", 1) or 1),
             created_at=int(data.get("created_at", 0) or 0),
@@ -283,6 +372,10 @@ class Context:
             "subtype": self.subtype,
             "summary": self.summary,
             "description": self.description,
+            "subject": self.subject,
+            "condition": self.condition,
+            "facts": json.dumps(self.facts, ensure_ascii=False),
+            "applies_when": self.applies_when,
             "confidence": float(self.confidence),
             "support_count": int(self.support_count),
             "created_at": int(self.created_at),

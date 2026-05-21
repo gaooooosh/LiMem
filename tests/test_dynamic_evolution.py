@@ -9,6 +9,14 @@ from limem import create_ltm, Episode
 from limem.core.context import Context, ContextDraft
 from limem.core.event import Event
 from limem.evolution import DynamicEvolutionConfig, DynamicEvolutionEngine
+from limem.evolution.recall_pipeline import CandidateSet, RecallCandidate
+from limem.evolution.relation_processor import OperationDecision
+
+
+class _NoopEmbeddingClient:
+    def get_embedding(self, text):
+        del text
+        return None
 
 
 class _EntityTrackingStore:
@@ -346,6 +354,7 @@ class TestDynamicEvolution(unittest.TestCase):
                     "enable_auto_consolidation": False,
                     "enable_event_relations": True,
                     "generate_answer": False,
+                    "embedding_client": _NoopEmbeddingClient(),
                 },
             )
 
@@ -383,15 +392,28 @@ class TestDynamicEvolution(unittest.TestCase):
 
             engine = ltm.dynamic_engine
             self.assertIsNotNone(engine)
-            engine._llm_relation_available = lambda: True
-            engine._call_relation_llm = lambda payload: {
-                "should_link": True,
-                "relation_type": "促成",
-                "from_id": "evt_rel_a",
-                "to_id": "evt_rel_b",
-                "reason": "用户发起导航请求，促成系统开始规划路线",
-                "confidence": 0.91,
-            }
+            rel_a = ltm.get_event("evt_rel_a")
+            rel_b = ltm.get_event("evt_rel_b")
+            engine.recall_pipeline.recall = lambda event: CandidateSet(
+                candidates=[
+                    RecallCandidate(
+                        event=rel_b,
+                        channel="semantic",
+                        channel_score=0.91,
+                        features={"aggregate_score": 0.91, "channels": {"semantic": 0.91}},
+                    )
+                ] if event.id == "evt_rel_a" else [],
+                channel_stats={"semantic": 1 if event.id == "evt_rel_a" else 0},
+            )
+            engine.relation_processor._classify_batch = lambda e_new, candidates, source_text: [
+                OperationDecision(
+                    candidate=candidates.candidates[0],
+                    operation="co_recall",
+                    confidence=0.91,
+                    reason="用户发起导航请求和系统规划路线需要共同召回，才能判断导航任务是否被完整处理。",
+                    direction="new_to_candidate",
+                )
+            ] if e_new.id == "evt_rel_a" and candidates.candidates else []
 
             engine.evolve_existing_events(
                 [
@@ -407,36 +429,11 @@ class TestDynamicEvolution(unittest.TestCase):
                 any(
                     edge["from_event_id"] == "evt_rel_a"
                     and edge["to_event_id"] == "evt_rel_b"
-                    and edge["relation_type"] == "导致"
-                    and edge["description"] == "用户发起导航请求，促成系统开始规划路线"
+                    and edge["relation_type"] == "共同背景"
+                    and edge["description"] == "用户发起导航请求和系统规划路线需要共同召回，才能判断导航任务是否被完整处理。"
                     for edge in snapshot["edges"]["event_event"]
                 )
             )
-
-    def test_relation_prompt_payload_is_fully_localized_to_chinese(self):
-        class _Store:
-            @staticmethod
-            def get_event_contexts(event_id):
-                del event_id
-                return []
-
-        engine = DynamicEvolutionEngine(
-            store=_Store(),
-            config=DynamicEvolutionConfig(),
-        )
-        left = Event(id="evt_left", summary="用户说要去公司", action="发起导航请求")
-        right = Event(id="evt_right", summary="系统开始规划路线", action="规划路线")
-
-        payload = engine._relation_prompt_payload(
-            left=left,
-            right=right,
-            source_text="用户说导航去公司，系统开始规划路线。",
-        )
-
-        self.assertIn("判断是否需要创建事件-事件关系边", payload["task"])
-        self.assertIn("relation_type 只能使用：导致、延续。", payload["rules"])
-        self.assertEqual(payload["output_schema"]["relation_type"], "导致")
-        self.assertEqual(payload["output_schema"]["reason"], "两个事件之间的详细关系说明")
 
     def test_auto_merge_events_uses_embedding_candidates_and_merges_fields(self):
         with tempfile.TemporaryDirectory() as td:

@@ -268,6 +268,18 @@ class LTMemoryImpl(LTMemory):
             include_inactive=include_inactive,
         )
 
+    def recall_for_task(
+        self,
+        task: str,
+        limit: int = 5,
+        include_debug: bool = False,
+    ) -> dict[str, Any]:
+        return self.ops.recall_for_task(
+            task=task,
+            limit=limit,
+            include_debug=include_debug,
+        )
+
     def snapshot(
         self,
         limit: int = 20,
