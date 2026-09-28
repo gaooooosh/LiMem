@@ -1,0 +1,12 @@
+[service]
+data_dir = "var"
+log_path = "var/logs/service.log"
+cleanup_interval_seconds = 3600
+
+[retrieval]
+seed_limit = 5
+neighbor_limit = 5
+rrf_k = 60
+bm25_weight = 3.0
+entity_match_weight = 0.1
+evidence_support_weight = 0.25

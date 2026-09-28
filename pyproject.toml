@@ -1,0 +1,17 @@
+[project]
+name = "limem"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "dashscope>=1.25,<2",
+    "fastapi>=0.116,<1",
+    "jieba>=0.42,<1",
+    "openai>=1.97,<2",
+    "pydantic>=2.11,<3",
+    "python-dotenv>=1.1,<2",
+    "uvicorn>=0.35,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

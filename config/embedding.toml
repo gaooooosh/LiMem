@@ -1,0 +1,5 @@
+[embedding]
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.7-text-embedding"
+dimension = 1024
+batch_size = 20
