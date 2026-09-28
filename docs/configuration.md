@@ -7,7 +7,8 @@
 | 名称 | 用途 | 默认值 |
 | --- | --- | --- |
 | `LIMEM_ADMIN_API_KEY` | 管理员凭据，自行生成的非空随机值 | 无，必填 |
-| `DEEPSEEK_API_KEY` | LLM 凭据，由 `llm.api_key_env` 指定变量名 | 无，必填 |
+| `DEEPSEEK_API_KEY` | 默认 DeepSeek 配置的凭据 | 使用 DeepSeek 模板时必填 |
+| `LLM_API_KEY` | 自部署 LLM 模板的凭据 | 使用自部署模板时必填；无鉴权时显式填写 `not-required` |
 | `DASHSCOPE_API_KEY` | embedding 凭据，由 `embedding.api_key_env` 指定变量名 | 无，必填 |
 | `LIMEM_BIND_HOST` | Compose 主机绑定地址 | `127.0.0.1` |
 | `LIMEM_PORT` | Compose 主机端口 | `8012` |
@@ -23,9 +24,17 @@
 | `llm.model` | `deepseek-v4-flash` | 非空模型名 |
 | `llm.temperature` | `0.0` | 0 到 2 |
 | `llm.max_tokens` | `16384` | 正整数，最大输出 token 数 |
-| `llm.extra_body.thinking.type` | `disabled` | 当前 schema 只接受此值 |
+| `llm.extra_body` | DeepSeek thinking 配置 | 可省略；省略时不发送任何供应商扩展字段 |
+| `llm.extra_body.thinking.type` | `disabled` | DeepSeek 专用，只接受此值 |
+| `llm.extra_body.chat_template_kwargs.enable_thinking` | 未设置 | 布尔值；仅用于支持此模板参数的 SGLang/vLLM 模型 |
 
-LLMClient 请求 JSON object，并用 Pydantic 严格解析；SDK 自动重试为 0。换供应商前需确认其支持上述字段与响应格式。本仓库不启动或下载模型。
+LLMClient 使用同一条 OpenAI-compatible Chat Completions 请求通路。`base_url` 填 API 根地址，自部署服务通常需要 `/v1`；不要填写 `/chat/completions`。`model` 必须匹配服务端模型名。
+
+`extra_body` 只接受两种互斥结构：DeepSeek 的 `thinking`，或模型模板的 `chat_template_kwargs`。后者只允许 `enable_thinking`。空扩展表、混用两种结构及未知字段均报错；不提供任意参数透传。Ollama 模板省略此项。
+
+所有服务固定请求 `response_format={"type":"json_object"}`，并用 Pydantic 严格解析结果；SDK 自动重试为 0。服务端及所选模型必须支持 JSON 输出，返回的 `message.content` 必须是符合业务 schema 的 JSON。LiMem 不去除思考标签、不修复响应、不自动切换服务或输出模式。
+
+本仓库不启动或下载模型。四种服务的模板、凭据和 Docker 网络说明见[LLM 服务接入](llm-providers.md)。
 
 ## config/embedding.toml
 

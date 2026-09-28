@@ -1,0 +1,8 @@
+# Copy to config/llm.toml, then set the address and the server's model name.
+# For Docker -> host access, replace 127.0.0.1 with host.docker.internal.
+[llm]
+api_key_env = "LLM_API_KEY"
+base_url = "http://127.0.0.1:11434/v1"
+model = "qwen3:8b"
+temperature = 0.0
+max_tokens = 16384

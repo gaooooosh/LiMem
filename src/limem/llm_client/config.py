@@ -42,6 +42,22 @@ class ExtraBodySettings(BaseModel):
     thinking: ThinkingSettings
 
 
+class ChatTemplateSettings(BaseModel):
+    """Thinking switch for a model template that supports enable_thinking."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    enable_thinking: bool
+
+
+class ChatTemplateExtraBodySettings(BaseModel):
+    """Explicit chat-template options supported by SGLang and vLLM."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    chat_template_kwargs: ChatTemplateSettings
+
+
 class LLMSettings(BaseModel):
     """Validated runtime settings consumed by LLMClient."""
 
@@ -52,7 +68,7 @@ class LLMSettings(BaseModel):
     model: _NonEmptyText
     temperature: float = Field(ge=0, le=2)
     max_tokens: int = Field(gt=0)
-    extra_body: ExtraBodySettings
+    extra_body: ExtraBodySettings | ChatTemplateExtraBodySettings | None = None
 
 
 class _FileLLMSettings(BaseModel):
@@ -63,7 +79,7 @@ class _FileLLMSettings(BaseModel):
     model: _NonEmptyText
     temperature: float = Field(ge=0, le=2)
     max_tokens: int = Field(gt=0)
-    extra_body: ExtraBodySettings
+    extra_body: ExtraBodySettings | ChatTemplateExtraBodySettings | None = None
 
 
 class _ConfigFile(BaseModel):

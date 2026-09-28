@@ -1,6 +1,8 @@
 services:
   limem:
     build: .
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${LIMEM_BIND_HOST:-127.0.0.1}:${LIMEM_PORT:-8012}:8000"
     volumes:

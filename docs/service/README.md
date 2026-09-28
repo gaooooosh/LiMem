@@ -52,6 +52,6 @@ curl -X POST http://127.0.0.1:8012/v1/limem \
 - [车辆 Session 格式](/guide/session-formats/vehicle-session-v1)
 - [错误处理](/guide/errors)
 
-管理员在根目录 `.env` 中配置 `LIMEM_ADMIN_API_KEY`。服务复用同一文件中的
-`DEEPSEEK_API_KEY` 和 `DASHSCOPE_API_KEY`。运行参数与内部检索参数读取
+管理员在根目录 `.env` 中配置 `LIMEM_ADMIN_API_KEY`。LLM 凭据按 `config/llm.toml`
+中的 `api_key_env` 从同一文件读取；embedding 默认读取 `DASHSCOPE_API_KEY`。运行参数与内部检索参数读取
 `config/service.toml`。

@@ -3,6 +3,7 @@
 ## 使用与部署
 
 - [部署](deployment.md)
+- [LLM 服务接入](llm-providers.md)
 - [完整配置](configuration.md)
 - [算法与服务边界](architecture.md)
 - [版本来源与验证边界](distribution.md)

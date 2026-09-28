@@ -2,12 +2,12 @@
 
 ## Docker Compose
 
-安装支持 `docker compose up --wait` 的 Docker Compose v2，准备可用的 DeepSeek 与 DashScope 凭据。Python 3.12 已包含在镜像中。
+安装支持 `docker compose up --wait` 的 Docker Compose v2，准备可用的 LLM 服务和 DashScope 凭据。LLM 默认使用 DeepSeek，也可按[接入文档](llm-providers.md)配置 Ollama、SGLang 或 vLLM。Python 3.12 已包含在镜像中。
 
 ```bash
 cp .env.example .env
 chmod 600 .env
-# 编辑 .env，填写三个必填 key
+# 编辑 .env，填写管理员、embedding 和所选 LLM 的 key
 mkdir -p var
 docker compose config --quiet
 docker compose up -d --build --wait
@@ -25,7 +25,7 @@ Python 3.12 和 uv 已安装时，在仓库根目录执行：
 
 ```bash
 cp .env.example .env
-# 编辑三个必填 key
+# 编辑管理员、embedding 和所选 LLM 的 key
 uv sync --frozen --no-dev
 HOST=127.0.0.1 PORT=8012 PYTHONPATH=src uv run --frozen --no-dev python -m limem.service.main
 ```

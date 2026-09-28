@@ -61,10 +61,12 @@ POST /v1/limem/{memory_bank_id}/auto-consolidations/{run_id}/cancel
 根目录 `.env` 必须包含：
 
 ```text
-DEEPSEEK_API_KEY
 DASHSCOPE_API_KEY
 LIMEM_ADMIN_API_KEY
 ```
+
+另需按 `config/llm.toml` 的 `api_key_env` 配置所选 LLM 凭据：默认是
+`DEEPSEEK_API_KEY`，自部署模板使用 `LLM_API_KEY`。
 
 `config/service.toml` 保存运行路径、清理周期和当前采用的检索参数。LLM 与
 embedding 参数分别继续读取 `config/llm.toml` 和 `config/embedding.toml`。

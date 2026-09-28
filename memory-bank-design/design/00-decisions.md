@@ -429,3 +429,12 @@ ID 升序处理。同一 Bank 同时只允许一个手动或自动巩固。运�
 Agent使用Qwen3-1.7B，每例最多6轮，单次输入6000、输出512 token。工具为propose、inspect、review、finish。核对阶段仅依据已读操作重新归纳；引用至少两次操作、包含新来源且无缺失信息时进入结束状态。参数由动态Schema约束，旧候选保留在轨迹中。
 
 13项离线验证提交5项，3项行为完整正确，2项部分正确；参数错误0次。核对仍可能丢失目标档位，查询仍可能反复为空。依据见当前基线实验（研发仓库历史记录：`../experiments/2026-09-23-behavior-agent-refinement.md`；本发行仓库不附带）与核心迁移约定（研发仓库历史记录：`../experiments/2026-09-23-behavior-agent-core-baseline.md`；本发行仓库不附带）。
+
+
+## LLM 服务接入配置
+
+2026-09-28 支持通过同一 OpenAI-compatible Chat Completions 接口接入 DeepSeek、Ollama、SGLang 和 vLLM。用户自行部署模型，LiMem 从 `config/llm.toml` 读取 API 根地址、模型名和参数，从 `.env` 中指定变量读取凭据。
+
+供应商扩展字段为可选的强类型配置：DeepSeek `thinking.type=disabled`，或支持该模板参数的本地模型 `chat_template_kwargs.enable_thinking`。省略时不发送扩展字段。未知字段和混合配置直接失败。
+
+此次改动只调整模型接入配置，不改变 Prompt、JSON 输出模式、解析器、抽取和检索算法。SDK 自动重试仍关闭。配置与传输合同验证不代表各模型的语义效果已经通过。

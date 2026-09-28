@@ -38,7 +38,11 @@ class LLMClient:
             temperature=self.settings.temperature,
             max_tokens=self.settings.max_tokens,
             response_format={"type": "json_object"},
-            extra_body=self.settings.extra_body.model_dump(),
+            extra_body=(
+                self.settings.extra_body.model_dump()
+                if self.settings.extra_body is not None
+                else None
+            ),
         )
         content = completion.choices[0].message.content
         if not content:
