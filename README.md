@@ -2,14 +2,16 @@
 
 LiMem 是一个长期记忆服务：将完整 Session 转成可追溯的记忆，并通过 HTTP API 提供写入、检索、实体 Profile 和重复行为巩固能力。
 
-当前支持车辆 Session 格式 `vehicle_session_v1`。使用 Docker Compose 即可部署。LLM 可接入 DeepSeek，或用户自行部署的 Ollama、SGLang、vLLM 服务；embedding 当前使用 DashScope。
+当前支持车辆 Session 格式 `vehicle_session_v1`。本分支的 Workflow1 使用 **v4：G + TCN + B + I**，由本地 Qwen3-1.7B 和 CPU BERT 执行；HTTP 写入与独立调用共用同一个工厂。巩固仍使用 `config/llm.toml`，保留 DeepSeek、Ollama、SGLang、vLLM 配置能力；embedding 仍使用 DashScope。
+
+完整处理顺序、模型资产和测试见 [Workflow1 v4](docs/workflow1/README.md)。本分支不包含模型权重和研发评测数据。
 
 ## 快速部署
 
 ### 1. 获取代码
 
 ```bash
-git clone https://github.com/gaooooosh/LiMem.git
+git clone --branch Workflow1 --single-branch https://github.com/gaooooosh/LiMem.git
 cd LiMem
 cp .env.example .env
 chmod 600 .env
@@ -17,7 +19,7 @@ chmod 600 .env
 
 ### 2. 填写配置
 
-默认使用 DeepSeek。编辑根目录 `.env`，填写以下三项：
+巩固默认使用 DeepSeek。编辑根目录 `.env`，填写以下三项：
 
 | 配置项 | 用途 |
 | --- | --- |
@@ -40,7 +42,11 @@ chmod 600 .env
 
 LiMem 在 Docker 内、模型在宿主机时，将地址中的 `127.0.0.1` 改为 `host.docker.internal`，并让模型服务监听容器可达的地址。模型名必须与服务端一致。完整步骤见[接入自部署 LLM](docs/llm-providers.md)，全部参数见[配置说明](docs/configuration.md)。
 
-### 3. 启动服务
+### 3. 准备 Workflow1 模型并启动服务
+
+先按 [Workflow1 部署说明](docs/workflow1/README.md)准备 `llm/bert-behavior-admission-v4/`，并启动支持严格 JSON Schema 的 Qwen 服务。Qwen 地址单独配置在 `config/qwen.toml`，服务模型名为 `qwen`。Docker 内访问宿主机时，将该地址改为 `http://host.docker.internal:8001/v1`，并让 Qwen 监听容器可达的地址。不要把 Qwen 和 CPU BERT 的 Python 环境合并。
+
+Compose 会只读挂载 BERT 目录；目录缺失时直接报错，不会下载或改用其他模型。
 
 ```bash
 mkdir -p var

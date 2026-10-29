@@ -1,5 +1,9 @@
 """Generate candidate claims, classify target Entities, and attach Evidence."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from limem.episode_builder import EpisodeInput
 from limem.llm_client import LLMClient
 
@@ -17,15 +21,28 @@ from .prompt import (
     build_target_entity_user_prompt,
 )
 
+if TYPE_CHECKING:
+    from .claim_generator import ClaimGenerator
+    from .typed_targets import TypedTargetClassifier
+    from .target_reconstruction import TargetReconstructor
+
 
 class MemoryItemExtractor:
     """Extract complete claims, then classify their relation targets."""
 
-    def __init__(self, llm_client: LLMClient | None = None) -> None:
+    def __init__(self, llm_client: LLMClient | None = None,
+                 *,
+                 claim_generator: ClaimGenerator | None = None,
+                 target_classifier: TypedTargetClassifier | None = None,
+                 target_reconstructor: TargetReconstructor | None = None) -> None:
         self._llm_client = llm_client if llm_client is not None else LLMClient()
+        self._claim_generator = claim_generator
+        self._target_classifier = target_classifier
+        self._target_reconstructor = target_reconstructor
 
     def extract(
         self, episode: EpisodeInput, *, claim_episode: EpisodeInput | None = None,
+        user_ref: str | None = None, raw_session: dict | None = None,
     ) -> L2Result:
         """Extract claims and complete deterministic fields."""
 
@@ -41,11 +58,13 @@ class MemoryItemExtractor:
         ):
             raise ValueError("claim Episode may only change event context")
 
-        claim_result = self._llm_client.generate_json(
-            CLAIM_SYSTEM_PROMPT,
-            build_claim_user_prompt(claim_input),
-            LLMClaimResult,
-        )
+        user_prompt = build_claim_user_prompt(claim_input)
+        if self._claim_generator is not None:
+            claim_result = self._claim_generator.generate(claim_input, user_ref=user_ref)
+        else:
+            claim_result = self._llm_client.generate_json(
+                CLAIM_SYSTEM_PROMPT, user_prompt, LLMClaimResult,
+            )
         events_by_id = {event.raw_event_id: event for event in episode.events}
         event_positions = {
             event.raw_event_id: index for index, event in enumerate(episode.events)
@@ -70,23 +89,26 @@ class MemoryItemExtractor:
                 raise ValueError("raw_event_ids must follow Episode order")
 
             contexts.append("\n".join(context_lines))
-            target_refs.extend(
-                (claim_index, relation.target)
-                for relation in claim.relations
-                if relation.target is not None
-            )
 
         _validate_required_action_coverage(episode, claim_result)
         if not claim_result.items:
             return L2Result(items=[])
 
+        if self._target_reconstructor is not None:
+            claim_result = self._target_reconstructor.reconstruct(claim_result, episode_id=episode.episode_id)
+        target_refs = [(claim_index, relation.target)
+                       for claim_index, claim in enumerate(claim_result.items)
+                       for relation in claim.relations if relation.target is not None]
+
         target_entities: list[list[str]] = [[] for _ in claim_result.items]
         if target_refs:
-            target_result = self._llm_client.generate_json(
-                TARGET_ENTITY_SYSTEM_PROMPT,
-                build_target_entity_user_prompt([target for _, target in target_refs]),
-                TargetEntityResult,
-            )
+            targets = [target for _, target in target_refs]
+            if self._target_classifier is None:
+                target_result = self._llm_client.generate_json(
+                    TARGET_ENTITY_SYSTEM_PROMPT, build_target_entity_user_prompt(targets), TargetEntityResult,
+                )
+            else:
+                target_result = self._target_classifier.classify(targets, episode_id=episode.episode_id)
             _validate_target_entity_indexes(target_result, len(target_refs))
             for target_index in target_result.entity_target_indexes:
                 claim_index, target = target_refs[target_index]

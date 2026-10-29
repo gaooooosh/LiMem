@@ -4,7 +4,7 @@
 
 `RawDataParser` 严格解析完整车辆 Session，保留来源顺序及原始记录。`EpisodeBuilder` 将一个 Session 组织成一个 Episode，并固定必须覆盖的 Required Action。
 
-车辆状态池只为抽取构造差分 Context 视图。事件、动作和 Required Action 不变。`MemoryItemExtractor` 调用 LLM 生成主张，使用完整 Episode 校验引用并构造 Evidence。实体解析完成后生成 embedding，在同一事务中保存原始 Session、MemoryItem、Evidence、词法索引和向量。
+车辆状态池只为抽取构造差分 Context 视图。事件、动作和 Required Action 不变。HTTP 写入通过 `create_workflow1_extractor` 执行 v4：G生成主张；T重构空目标；C/N筛选实体目标及提及；B在无Required Action时用CPU BERT决定保留或清空；I执行身份边界。程序使用完整Episode校验引用、拼接context并复核必保覆盖。实体解析完成后生成embedding，在同一事务中保存原始Session、MemoryItem、Evidence、词法索引和向量。详见[Workflow1](workflow1/README.md)。
 
 例如驾驶员在一次 Session 中两次调节座椅通风，来源动作分别保留；Episode 不是独立发生次数。一次动作附近的天气可进入 Evidence.context，不能自动成为 MemoryItem.condition。
 

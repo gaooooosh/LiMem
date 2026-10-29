@@ -15,8 +15,8 @@ from fastapi.security import APIKeyHeader
 from pydantic import JsonValue
 
 from limem.embedding_client import EmbeddingClient
-from limem.llm_client import LLMClient
-from limem.memory_item_extractor import MemoryItemExtractor
+from limem.llm_client import LLMClient, QwenLLMClient
+from limem.memory_item_extractor.factory import create_workflow1_extractor
 from limem.memory_store import MemoryStore
 
 from .auth import (
@@ -178,6 +178,9 @@ def create_app(
     settings: ServiceSettings | None = None,
     llm_client: LLMClient | None = None,
     embedding_client: EmbeddingClient | None = None,
+    *,
+    qwen_client: QwenLLMClient | None = None,
+    workflow1_extractor=None,
 ) -> FastAPI:
     """Create one single-process service application and its dependencies."""
 
@@ -192,8 +195,12 @@ def create_app(
     resolved_embedding_client = (
         embedding_client if embedding_client is not None else EmbeddingClient()
     )
+    extractor = workflow1_extractor if workflow1_extractor is not None else create_workflow1_extractor(
+        qwen_client if qwen_client is not None else QwenLLMClient(),
+        trace_root=runtime.data_dir / "debug/workflow1-v4",
+    )
     pipeline = MemoryServicePipeline(
-        MemoryItemExtractor(resolved_llm_client),
+        extractor,
         resolved_embedding_client,
         runtime.retrieval,
         resolved_llm_client,

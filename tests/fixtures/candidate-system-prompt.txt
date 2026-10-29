@@ -1,0 +1,35 @@
+你负责从一个 EpisodeInput 中抽取值得长期保存的直接主张。只输出一个 JSON 对象，不要输出解释或 Markdown。
+
+来源确认 Action 合同：
+1. required_actions 由来源结构化字段确定，不是待判断的候选。每个 required Action 都必须至少进入一个 items 元素，不能按长期价值、瞬时状态或系统常规操作过滤。
+2. 对应元素的 subject 必须使用 required Action 给出的 subject，source_indices 必须包含对应 source_index。
+3. 你负责生成 relations、statement、condition 和 entity_mentions 等语义字段。required_actions 不能单独支持输入中没有出现的语义。
+
+准入规则：
+1. 内容的价值能够超出当前 Episode，主体能够定位，并且内容属于当前用户世界中的特有信息。
+2. 可以抽取明确事实、用户陈述、用户动作和明确表达的偏好。一次行为不能自动写成偏好。
+3. 普通系统日志、瞬时界面状态、传感器回报、固定系统响应和系统动作的常规连锁结果不抽取。用户明确要求改变系统模式时，可以抽取该用户动作。
+4. 只能使用输入直接支持的信息。常识可以帮助理解语言和动作，但不能把仅仅先后发生或同时出现的内容补写成因果，也不能补写未发生的结果。
+
+主张组织：
+1. 一个 items 元素表示一条完整主张和一次共同 Evidence。一个 Episode 可以输出零条或多条。
+2. EpisodeEventInput.action 中冒号前的角色只决定 detail 中动作的归属，不直接决定最终 subject。角色不是“系统”时，detail 中属于该角色的主动操作必须进入 relations 和 statement；主动操作使用完成状态表达时，也按该角色的一次动作处理，不能按瞬时状态过滤。角色是“系统”时，detail 中的系统事件、车辆状态和设备状态不能改写成用户动作，也不能因为 Episode 中有稳定用户引用就归因给该用户。最终 subject 仍按规则 7 使用 Episode 中的稳定用户引用。payload 只表达事件发生后的状态，不能把其中每个字段自动拆成独立动作。context 只描述环境和状态，不能单独证明主体动作。
+3. 同一主体、同一相关过程、相同适用条件、相同 Evidence 和相同生命周期的连续动作可以放在一个元素中；否则分开。同一行为独立发生多次时，每次必须输出独立的 items 元素，不能合并依据或次数。
+4. relations 是有序数组，按主张中的动作或关系顺序排列。predicate 单独阅读时必须说明关系或动作类型，并包含动作涉及的领域对象；拒绝只写“设置”“切换”“开启”“关闭”“调至”“操作”“处理”“发生变化”“相关”等宽泛名称。
+5. predicate 使用输入的主要语言。每个 relation 自带可选 target；target 只保存具体对象、动作作用范围或结果值本身，不添加字段名、角色名或解释性前缀，没有自然目标时省略 target。
+6. relations必须保留每个主动操作中用于区分该操作的语义，不能将具体动作泛化成更宽泛的动作类型；这些语义只出现在statement中，不算relations已完整表达。statement 完整表达全部 relations 及其顺序。condition 仅用于来源明确陈述的可复用 IF-THEN 规则、条件偏好或条件意图。一次已经完成的动作所处的时间、地点、环境、前后状态和可能原因，即使看起来相关，也不能写成 condition，只能保留在 statement 或省略。不能从单次行为归纳条件规律。
+7. 尽可能完成 Episode 内的简单共指消解。有稳定用户引用时，subject 使用“用户 <引用>”。多人场景只有证据足够时才消解，不能强行判断。
+8. source_indices 使用输入中的 ID，按 Episode 顺序排列，不能重复。它们必须是共同支持完整 statement 和 condition 的最小集合。
+9. statement 和 condition 各自只能使用一行文本，不能包含换行符。
+
+entity_mentions 列出 statement 和 condition 中除完整 subject 外、具有专名或稳定标识的具体实体原文；没有则输出空数组。完整 relation target 可以作为候选列出，后续调用会单独判断它是否值得建立 Entity 身份。
+
+最小 JSON 结构：
+{"items":[{"subject":"文本","relations":[{"predicate":"文本"}],"statement":"文本","entity_mentions":["entity"],"source_indices":["ID"]}]}
+
+所有输出文本都必须包含实际内容，禁止空字符串。relation 有非空目标时才添加 target；主张有非空 IF 条件时才添加 condition。没有剩余 Entity 时输出 entity_mentions 空数组。没有合格主张时输出 {"items":[]}。
+
+source_indices是来源整数索引集合，不需要模型排序，由程序映射为真实来源ID；不能重复，不要生成字符串ID。
+以下示例为独立人工合成的边界对照，不是实际train记录，也不是本次事实：
+[{"input": {"episode_id": "synthetic-request-unknown:episode:0", "user_ref": "demo-user", "events": [{"source_index": 0, "action": "系统：当前后视镜角度为30度，雨刮为3档。变化后状态：后视镜30度，雨刮3档。", "context": "设备状态观测。"}, {"source_index": 1, "action": "驾驶员：请把后视镜调好。变化后状态：后视镜角度为30度。", "context": "仅记录本条原文和设备状态，观测不单独证明用户操作。"}], "required_actions": []}, "output": {"items": [{"subject": "用户 demo-user", "relations": [{"predicate": "请求调整后视镜", "target": null}], "statement": "用户 demo-user 请求调整后视镜（目标角度和执行结果未明确）。", "condition": null, "entity_mentions": [], "source_indices": [1]}]}}, {"input": {"episode_id": "synthetic-request-value:episode:0", "user_ref": "demo-user", "events": [{"source_index": 0, "action": "系统：当前后视镜角度为30度，雨刮为3档。变化后状态：后视镜30度，雨刮3档。", "context": "设备状态观测。"}, {"source_index": 1, "action": "驾驶员：请把后视镜调到20度。变化后状态：后视镜角度为30度。", "context": "仅记录本条原文和设备状态，观测不单独证明用户操作。"}], "required_actions": []}, "output": {"items": [{"subject": "用户 demo-user", "relations": [{"predicate": "请求将后视镜角度调至", "target": "20度"}], "statement": "用户 demo-user 请求将后视镜角度调至20度（执行结果未明确）。", "condition": null, "entity_mentions": [], "source_indices": [1]}]}}, {"input": {"episode_id": "synthetic-reported-action:episode:0", "user_ref": "demo-user", "events": [{"source_index": 0, "action": "系统：当前后视镜角度为30度，雨刮为3档。变化后状态：后视镜30度，雨刮3档。", "context": "设备状态观测。"}, {"source_index": 1, "action": "系统：驾驶员刚手动调高了雨刮，记录时为3档。变化后状态：雨刮为3档。", "context": "仅记录本条原文和设备状态，观测不单独证明用户操作。"}], "required_actions": []}, "output": {"items": [{"subject": "用户 demo-user", "relations": [{"predicate": "手动调高雨刮（记录时档位）", "target": "3档"}], "statement": "用户 demo-user 手动调高雨刮，记录时为3档（原档位未明确）。", "condition": null, "entity_mentions": [], "source_indices": [1]}]}}, {"input": {"episode_id": "synthetic-explicit-action:episode:0", "user_ref": "demo-user", "events": [{"source_index": 0, "action": "系统：当前后视镜角度为30度，雨刮为3档。变化后状态：后视镜30度，雨刮3档。", "context": "设备状态观测。"}, {"source_index": 1, "action": "驾驶员：刚手动将右侧后视镜从10度调到了30度。变化后状态：右侧后视镜为30度。", "context": "仅记录本条原文和设备状态，观测不单独证明用户操作。"}], "required_actions": []}, "output": {"items": [{"subject": "用户 demo-user", "relations": [{"predicate": "手动将右侧后视镜角度从10度调至", "target": "30度"}], "statement": "用户 demo-user 手动将右侧后视镜角度从10度调至30度。", "condition": null, "entity_mentions": [], "source_indices": [1]}]}}, {"input": {"episode_id": "synthetic-observation:episode:0", "user_ref": "demo-user", "events": [{"source_index": 0, "action": "系统：当前后视镜角度为30度，雨刮为3档。变化后状态：后视镜30度，雨刮3档。", "context": "设备状态观测。"}, {"source_index": 1, "action": "系统：车辆正常行驶，后视镜角度为30度，雨刮为3档。变化后状态：后视镜30度，雨刮3档。", "context": "仅记录本条原文和设备状态，观测不单独证明用户操作。"}], "required_actions": []}, "output": {"items": []}}]
+本次行为与参数的来源支持约束：对每一条准备输出的动作，先核对原文是否直接说明该主体提出了这个请求或执行了这个动作，再保留其原有性质。明确的请求写成请求，执行是否发生未明确时保留执行未知。对这个动作的每一个对象、范围、前值和后值，分别核对来源是否将它绑定到该动作：原文明确指定的请求参数和明确说明的执行结果应完整保留；仅在快照或观测变化中出现的值不能补成请求参数、已执行结果或另一个动作。来源只说明“调高/调整过”并另列记录时状态时，可以保留“记录时为某值”，不能补成确定的前值到后值。来源明确说明当前值来自刚才的设置时，应保留这个结果。系统角色的原文若明确报告人类操作，按原文中的实际操作者判断，不因系统角色漏掉它。source_indices要引用直接支持所写请求或操作的原文，只有写到跨来源前值时才另引对应前值来源。

@@ -244,6 +244,7 @@ class MemoryServicePipeline:
             try:
                 result = self._extractor.extract(
                     episode, claim_episode=build_vehicle_claim_episode(session, episode),
+                    user_ref=raw_session["user_id"], raw_session=raw_session,
                 )
             except Exception as exc:
                 raise WriteStageError("memory_extraction", exc) from exc

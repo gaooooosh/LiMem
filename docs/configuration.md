@@ -2,6 +2,12 @@
 
 服务严格读取仓库根目录 `.env`、`config/service.toml`、`config/llm.toml` 和 `config/embedding.toml`。缺文件、缺 key、未知 TOML 字段或类型错误直接失败。三个加载器通过 `dotenv_values` 读取文件；只向进程注入同名环境变量不能替代 `.env` 文件。修改配置后重启服务。
 
+## Workflow1 的 config/qwen.toml
+
+v4另读取`config/qwen.toml`及本地BERT资产。默认Qwen地址`http://127.0.0.1:8001/v1`、模型名`qwen`、temperature=0、seed=0、max_tokens=4096、timeout_seconds=120。请求关闭思考模式并使用严格JSON Schema；T环节沿用256输出上限。Docker访问宿主机时修改base_url为`http://host.docker.internal:8001/v1`。BERT目录为`llm/bert-behavior-admission-v4`，离线CPU加载，阈值0.5，不自动下载。详细资产要求见[Workflow1](workflow1/README.md)。
+
+`config/llm.toml`继续用于巩固等已有LLM调用，不替代Workflow1的Qwen配置。
+
 ## .env
 
 | 名称 | 用途 | 默认值 |
@@ -32,7 +38,7 @@ LLMClient 使用同一条 OpenAI-compatible Chat Completions 请求通路。`bas
 
 `extra_body` 只接受两种互斥结构：DeepSeek 的 `thinking`，或模型模板的 `chat_template_kwargs`。后者只允许 `enable_thinking`。空扩展表、混用两种结构及未知字段均报错；不提供任意参数透传。Ollama 模板省略此项。
 
-所有服务固定请求 `response_format={"type":"json_object"}`，并用 Pydantic 严格解析结果；SDK 自动重试为 0。服务端及所选模型必须支持 JSON 输出，返回的 `message.content` 必须是符合业务 schema 的 JSON。LiMem 不去除思考标签、不修复响应、不自动切换服务或输出模式。
+上述LLMClient调用固定请求 `response_format={"type":"json_object"}`，并用 Pydantic 严格解析结果；SDK 自动重试为 0。服务端及所选模型必须支持 JSON 输出，返回的 `message.content` 必须是符合业务 schema 的 JSON。LiMem 不去除思考标签、不修复响应、不自动切换服务或输出模式。
 
 本仓库不启动或下载模型。四种服务的模板、凭据和 Docker 网络说明见[LLM 服务接入](llm-providers.md)。
 

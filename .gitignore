@@ -7,3 +7,9 @@ __pycache__/
 var/
 dist/
 *.egg-info/
+
+# Deployment assets and local checks never enter Git.
+/llm/
+.pytest_cache/
+pytest-of-*/
+jieba.cache
