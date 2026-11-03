@@ -4,7 +4,7 @@
 
 ## Workflow1 的 config/qwen.toml
 
-v4另读取`config/qwen.toml`及本地BERT资产。默认Qwen地址`http://127.0.0.1:8001/v1`、模型名`qwen`、temperature=0、seed=0、max_tokens=4096、timeout_seconds=120。请求关闭思考模式并使用严格JSON Schema；T环节沿用256输出上限。Docker访问宿主机时修改base_url为`http://host.docker.internal:8001/v1`。BERT目录为`llm/bert-behavior-admission-v4`，离线CPU加载，阈值0.5，不自动下载。详细资产要求见[Workflow1](workflow1/README.md)。
+Workflow1 v5 读取 `config/qwen.toml` 及本地 BERT 资产。默认 Qwen 地址为 `http://127.0.0.1:8001/v1`，模型名为 `qwen`，temperature=0、seed=0、max_tokens=4096、timeout_seconds=120。请求关闭思考模式并使用严格 JSON Schema，T 环节沿用 256 输出上限。Docker 访问宿主机时修改 base_url 为 `http://host.docker.internal:8001/v1`。BERT 目录为 `llm/bert-behavior-admission-v4`，离线 CPU 加载，阈值 0.5。详细资产要求见 [Workflow1](workflow1/README.md)。
 
 `config/llm.toml`继续用于巩固等已有LLM调用，不替代Workflow1的Qwen配置。
 

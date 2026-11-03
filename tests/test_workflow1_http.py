@@ -1,4 +1,4 @@
-"""Synthetic cases for the real authenticated HTTP -> v4 -> store path."""
+"""Synthetic cases for the real authenticated HTTP -> v5 -> store path."""
 import json
 from types import SimpleNamespace
 
@@ -43,7 +43,7 @@ class ConsolidationClient:
 
 
 @pytest.mark.parametrize("required,admit,created", [(True, True, 1), (False, True, 1), (False, False, 0)])
-def test_http_write_uses_v4_and_preserves_branch_contract(tmp_path, monkeypatch, required, admit, created):
+def test_http_write_uses_v5_and_preserves_branch_contract(tmp_path, monkeypatch, required, admit, created):
     class Admission:
         def predict(self, record):
             assert not required
@@ -91,7 +91,7 @@ def test_http_write_uses_v4_and_preserves_branch_contract(tmp_path, monkeypatch,
             assert len(calls) == 3
             assert all(c['model'] == 'qwen' and c['temperature'] == 0 and c['seed'] == 0 for c in calls)
             assert all(c['chat_template_kwargs']['enable_thinking'] is False for c in calls)
-            trace, = (settings(tmp_path).data_dir / "debug/workflow1-v4").iterdir()
+            trace, = (settings(tmp_path).data_dir / "debug/workflow1-v5").iterdir()
             assert (trace / "l2result.json").is_file()
             assert (trace / "admission-decision.json").exists() is (not required)
     finally:

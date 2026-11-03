@@ -1,6 +1,6 @@
-# Workflow1 v4
+# Workflow1 v5 人物指代修订
 
-本分支只迁入已采纳的Workflow1框架。默认模型为Qwen3-1.7B，准入模型为独立的BERT v4。没有采用微调adapter、Qwen3.5-2B或Qwen3-4B实验结果。
+默认模型为 Qwen3-1.7B，准入模型为独立的 BERT v4。
 
 ## 输入、输出与处理
 
@@ -11,7 +11,7 @@ flowchart TD
     S[完整Session] --> P[RawDataParser]
     P --> E[EpisodeBuilder + 状态池主张视图]
     E --> G{G：是否存在Required Action}
-    G -->|有| GS[程序固定主体和主来源；Qwen填写语义]
+    G -->|有| GS[程序表达有明确来源的设置动作；Qwen补充其余主张]
     G -->|无| GF[Qwen自由生成主张和来源索引]
     GS --> V[来源、顺序、重复及必保覆盖校验]
     GF --> V
@@ -26,10 +26,13 @@ flowchart TD
     Z --> I
     I --> F[再次校验必保覆盖]
     F --> L[L2Result]
-    L --> W[已有embedding及MemoryStore写入]
+    L --> R[依据当前来源和历史关系解析人物]
+    R --> W[MemoryStore写入及embedding]
 ```
 
 G输出开放主张，不输出持久化Entity ID。程序校验来源并拼接Evidence.context；MemoryStore继续完成实体绑定。单次已完成行为的环境不自动变成condition。B只保留或清空整份候选，不修复参数；I不代替模型事实判断。
+
+人物解析使用本次请求来源上的联系人筛选、拨号姓名或联系人预览。已确认的历史 Person 使用同一 Entity 和姓名。两个称呼经本次预览确认属于同一个新对象时，合并为一个本次 Episode 的实名 Person。共用昵称缺少区分信息时保留原称呼，在 Entity 名称标明身份未确认。已通过来源识别号确认的操作者在主张开头使用姓名。像“副驾温区”这样的动作对象保持原文。历史关系推理沿用 v5 的联系人解析。
 
 调用、JSON、来源或必保覆盖失败时结束并保留错误；没有自动重试、输出修补或模型回退。合法输出仍可能存在行为性质、参数归属或语义错误，结构校验不代表内容完全正确。
 
@@ -41,7 +44,7 @@ from limem.llm_client import QwenLLMClient
 from limem.memory_item_extractor.factory import create_workflow1_extractor
 
 extractor = create_workflow1_extractor(
-    QwenLLMClient(), trace_root=Path("var/debug/workflow1-v4")
+    QwenLLMClient(), trace_root=Path("var/debug/workflow1-v5")
 )
 result = extractor.extract(
     episode, claim_episode=claim_episode,
@@ -49,7 +52,7 @@ result = extractor.extract(
 )
 ```
 
-HTTP写入也使用上述工厂。`config/llm.toml`及DeepSeek/Ollama/SGLang/vLLM模板继续用于巩固等既有功能，不切换Workflow1算法。鉴权、检索、数据库schema和巩固实现没有随本次迁移改变。
+上述代码得到抽取结果。完整人物解析和写入通过 HTTP Session 写入入口执行。该入口从当前记忆库读取历史，再调用人物解析和 MemoryStore。`config/llm.toml` 及 DeepSeek、Ollama、SGLang、vLLM 模板继续用于巩固等既有功能。
 
 ## 模型资产
 
@@ -88,4 +91,4 @@ uv run pytest -q
 
 提交内测试使用独立合成小case：严格JSON与非思考参数、提示一致性、T仅修改空目标、原始来源与context保留，以及鉴权HTTP写入到G/TCN/B/I/MemoryStore。HTTP测试通过MockTransport固定模型响应，分别覆盖必保分支、自由分支保留及B清空；它们不宣称验证模型语义能力。
 
-研发侧另用完整142条及保留的原始响应检查迁移等价。本次没有重新调用GPU模型；回放不能证明新鲜生成质量、端到端延迟或能耗。数据和调用日志留在研发目录，不随本分支分发；迁移核对结果见[MERGE-VALIDATION.md](MERGE-VALIDATION.md)。
+研发侧用 hard 36 条和原 142 条保存的抽取结果核对本次迁移。此回放检查写入结果一致性。新鲜生成质量和独立数据上的泛化能力仍待验证。此前的 v4 迁移记录见 [MERGE-VALIDATION.md](MERGE-VALIDATION.md)。

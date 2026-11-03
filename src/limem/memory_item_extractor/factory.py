@@ -1,4 +1,4 @@
-"""Compose the same v4 Workflow1 for the HTTP service and evaluation."""
+"""Compose the retained v4 extraction core; v5 resolves its targets before writing."""
 from pathlib import Path
 from .workflow import Workflow1Extractor
 

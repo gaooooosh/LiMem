@@ -1,9 +1,9 @@
-"""The accepted v4 Workflow1: G, target reconstruction/filtering, BERT and identity boundary."""
+"""Workflow1: source-confirmed operations, G, TCN, BERT and entity boundaries."""
 import json
 from pathlib import Path
 from uuid import uuid4
 from .behavior_admission import BehaviorAdmission
-from .claim_generator import ClaimGenerator
+from .source_claims import SourceClaimGenerator
 from .entity_identity import apply_policy
 from .extractor import MemoryItemExtractor,_validate_required_action_coverage
 from .models import L2Result,LLMClaimResult
@@ -47,7 +47,7 @@ class Workflow1Extractor:
             'claim_episode':(claim_episode if claim_episode is not None else episode).model_dump(mode='json')})
         try:
             core=MemoryItemExtractor(self.client,
-                claim_generator=ClaimGenerator(self.client,directory/'draft'),
+                claim_generator=SourceClaimGenerator(self.client,directory/'draft',raw_session=raw_session),
                 target_classifier=TypedTargetClassifier(self.client,directory/'target-classification'),
                 target_reconstructor=TargetReconstructor(self.client,directory/'target-reconstruction'))
             result=core.extract(episode,claim_episode=claim_episode,user_ref=user_ref)
@@ -60,7 +60,7 @@ class Workflow1Extractor:
             result,decisions=apply_policy(result,raw_session)
             save(directory/'identity-decisions.json',decisions)
             _validate_required_action_coverage(episode,LLMClaimResult.model_validate(
-                {'items':[i.model_dump(exclude={'context'}) for i in result.items]}))
+                {'items':[i.model_dump(exclude={'context','target_bindings'}) for i in result.items]}))
             save(directory/'l2result.json',result.model_dump(mode='json'))
             return result
         except Exception as error:

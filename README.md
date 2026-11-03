@@ -2,9 +2,9 @@
 
 LiMem 是一个长期记忆服务：将完整 Session 转成可追溯的记忆，并通过 HTTP API 提供写入、检索、实体 Profile 和重复行为巩固能力。
 
-当前支持车辆 Session 格式 `vehicle_session_v1`。本分支的 Workflow1 使用 **v4：G + TCN + B + I**，由本地 Qwen3-1.7B 和 CPU BERT 执行；HTTP 写入与独立调用共用同一个工厂。巩固仍使用 `config/llm.toml`，保留 DeepSeek、Ollama、SGLang、vLLM 配置能力；embedding 仍使用 DashScope。
+当前支持车辆 Session 格式 `vehicle_session_v1`。本分支的 Workflow1 使用 **v5 人物指代修订**，由本地 Qwen3-1.7B 和 CPU BERT 执行。HTTP 写入在抽取后结合当前来源和历史库解析人物，再写入记忆。巩固仍使用 `config/llm.toml`，保留 DeepSeek、Ollama、SGLang、vLLM 配置能力。Embedding 仍使用 DashScope。
 
-完整处理顺序、模型资产和测试见 [Workflow1 v4](docs/workflow1/README.md)。本分支不包含模型权重和研发评测数据。
+完整处理顺序、模型资产和测试见 [Workflow1 v5](docs/workflow1/README.md)。
 
 ## 快速部署
 

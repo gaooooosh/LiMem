@@ -16,6 +16,7 @@ from pydantic import JsonValue
 
 from limem.embedding_client import EmbeddingClient
 from limem.llm_client import LLMClient, QwenLLMClient
+from limem.memory_item_extractor.contact_references import ContactReferenceResolver
 from limem.memory_item_extractor.factory import create_workflow1_extractor
 from limem.memory_store import MemoryStore
 
@@ -195,15 +196,22 @@ def create_app(
     resolved_embedding_client = (
         embedding_client if embedding_client is not None else EmbeddingClient()
     )
+    local_client = qwen_client
+    if workflow1_extractor is None and local_client is None:
+        local_client = QwenLLMClient()
     extractor = workflow1_extractor if workflow1_extractor is not None else create_workflow1_extractor(
-        qwen_client if qwen_client is not None else QwenLLMClient(),
-        trace_root=runtime.data_dir / "debug/workflow1-v4",
+        local_client,
+        trace_root=runtime.data_dir / "debug/workflow1-v5",
     )
     pipeline = MemoryServicePipeline(
         extractor,
         resolved_embedding_client,
         runtime.retrieval,
         resolved_llm_client,
+        reference_resolver=(
+            ContactReferenceResolver(local_client, runtime.data_dir / "debug/workflow1-v5-references")
+            if workflow1_extractor is None else None
+        ),
     )
     consolidations = ConsolidationCoordinator(manager, pipeline, logger)
 

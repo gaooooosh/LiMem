@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import ConfigDict, Field, create_model
 
 from .claim_generator import IndexedItem, IndexedResult, materialize, source_view
-from .models import Relation, _ClaimText, _NonEmptyText
+from .models import Relation, _ClaimText, _NonEmptyText, bind_required_subject
 
 
 def slot_name(index, action):
@@ -60,6 +60,8 @@ def generate_slotted(client, episode, user_ref, original_prompt, directory):
     result, _ = client.complete_json(
         slotted_prompt(original_prompt), json.dumps(view, ensure_ascii=False), slot_schema(view), trace_dir=directory)
     output = []
+    source_actions = []
+    actions_by_id = {a.raw_event_id: a for a in episode.required_actions}
     for action in view["required_actions"]:
         index = action["source_index"]
         for item in getattr(result.required_claims, slot_name(index, action)):
@@ -67,5 +69,9 @@ def generate_slotted(client, episode, user_ref, original_prompt, directory):
                 raise ValueError("Repeated support source")
             output.append({"subject": action["subject"], **item.model_dump(exclude={"support_indices"}),
                            "source_indices": [index, *item.support_indices]})
+            source_actions.append(actions_by_id[episode.events[index].raw_event_id])
     output.extend(item.model_dump() for item in result.additional_items)
-    return materialize(episode, IndexedResult.model_validate({"items": output}))
+    result = materialize(episode, IndexedResult.model_validate({"items": output}))
+    result.items[:len(source_actions)] = [bind_required_subject(item, action)
+        for item, action in zip(result.items, source_actions)]
+    return result

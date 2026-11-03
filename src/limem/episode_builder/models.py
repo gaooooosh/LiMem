@@ -44,6 +44,14 @@ class RequiredActionInput(BaseModel):
     subject: _NonEmptyText
     actor: _NonEmptyText
     action_code: _NonEmptyText
+    actor_ref: _NonEmptyText | None = None
+
+    @model_serializer(mode='wrap')
+    def omit_empty_actor_reference(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.actor_ref is None:
+            data.pop('actor_ref')
+        return data
 
 
 class EpisodeInput(BaseModel):

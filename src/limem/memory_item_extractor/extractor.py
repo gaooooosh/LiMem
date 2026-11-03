@@ -14,6 +14,7 @@ from .models import (
     LLMClaimResult,
     TargetEntityResult,
 )
+from .evidence import build_evidence_context
 from .prompt import (
     CLAIM_SYSTEM_PROMPT,
     TARGET_ENTITY_SYSTEM_PROMPT,
@@ -73,22 +74,18 @@ class MemoryItemExtractor:
         target_refs: list[tuple[int, str]] = []
 
         for claim_index, claim in enumerate(claim_result.items):
-            context_lines = []
             positions = []
             for raw_event_id in claim.raw_event_ids:
                 if raw_event_id not in events_by_id:
                     raise ValueError(f"unknown raw_event_id: {raw_event_id}")
                 positions.append(event_positions[raw_event_id])
-                context_lines.append(
-                    f"[{raw_event_id}] {events_by_id[raw_event_id].context}"
-                )
 
             if len(positions) != len(set(positions)):
                 raise ValueError("raw_event_ids must not repeat")
             if positions != sorted(positions):
                 raise ValueError("raw_event_ids must follow Episode order")
 
-            contexts.append("\n".join(context_lines))
+            contexts.append(build_evidence_context(episode.events, claim.raw_event_ids))
 
         _validate_required_action_coverage(episode, claim_result)
         if not claim_result.items:

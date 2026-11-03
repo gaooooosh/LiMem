@@ -909,15 +909,57 @@ class MemoryStore:
                 episode_id=episode.episode_id,
                 session_events=session_events,
             )
+            if item.subject_binding and item.statement.startswith(item.subject + " "):
+                entity = self.get_entity(subject_entity_id)
+                if entity.id == entity.canonical_entity_id and "Person" in entity.types:
+                    item = item.model_copy(update={
+                        "statement": entity.name + item.statement[len(item.subject):],
+                    })
             target_texts = {
                 relation.target
                 for relation in item.relations
                 if relation.target is not None
             }
             target_entity_ids: dict[str, str] = {}
+            confirmed_person_names: dict[int, str] = {}
             entity_refs: list[EntityRef] = []
+            bound_indexes = set()
+            for reference in item.target_bindings:
+                index = reference.relation_index
+                if index >= len(item.relations) or item.relations[index].target is None:
+                    raise ValueError("target binding must identify a nonempty relation target")
+                entity = self.get_entity(reference.entity_id)
+                if entity.canonical_entity_id != entity.id:
+                    raise ValueError("target binding must identify an existing canonical Entity")
+                if not set(reference.raw_event_ids) <= set(item.raw_event_ids):
+                    raise ValueError("target binding sources must be included in Evidence")
+                for memory_id in reference.history_memory_ids:
+                    if self.get_memory_item(memory_id).status != "active":
+                        raise ValueError("target binding history must be active")
+                bound_indexes.add(index)
+                if "Person" in entity.types:
+                    confirmed_person_names[index] = entity.name
+            fully_bound_targets = {
+                text for text in target_texts
+                if all(index in bound_indexes for index, relation in enumerate(item.relations)
+                       if relation.target == text)
+            }
             for mention in item.entity_mentions:
+                if mention in fully_bound_targets:
+                    continue
                 entity_id = self._resolve_placeholder(episode.episode_id, mention)
+                if mention in item.local_person_aliases:
+                    aliases = item.local_person_aliases[mention]
+                    if aliases is None:
+                        self._connection.execute(
+                            "UPDATE entity SET name=? WHERE id=? AND types_json='[]'",
+                            (f"{episode.episode_id}中的{mention}（身份未确认）", entity_id),
+                        )
+                    else:
+                        self._connection.execute(
+                            "UPDATE entity SET name=?, aliases_json=?, types_json=? WHERE id=?",
+                            (mention, _json(aliases), '["Person"]', entity_id),
+                        )
                 if mention in target_texts:
                     target_entity_ids[mention] = entity_id
                 else:
@@ -927,6 +969,7 @@ class MemoryStore:
                 subject_entity_id=subject_entity_id,
                 entity_refs=entity_refs,
                 target_entity_ids=target_entity_ids,
+                confirmed_person_names=confirmed_person_names,
             )
             evidence_id = self._write_evidence(
                 episode_id=episode.episode_id,
@@ -1104,6 +1147,29 @@ class MemoryStore:
         episode_id: str,
         session_events: dict[str, RawEvent],
     ) -> str:
+        if item.subject_binding is not None:
+            binding = item.subject_binding
+            if binding.raw_event_id not in item.raw_event_ids:
+                raise ValueError('subject binding source must belong to Evidence')
+            event = session_events[binding.raw_event_id]
+            if (event.actor != item.subject or event.actor_ref != binding.source_ref
+                    or event.actor in {'驾驶员', '助手', '系统'} or event.action is None):
+                raise ValueError('subject binding does not match the primary source actor')
+            matches = set()
+            if binding.source_ref is not None:
+                for entity in self.list_entities():
+                    if (binding.source_ref not in [entity.name, entity.external_ref, *entity.aliases]
+                            or entity.canonical_entity_id is None):
+                        continue
+                    canonical = self.get_entity(entity.canonical_entity_id)
+                    if canonical.canonical_entity_id == canonical.id and 'Person' in canonical.types:
+                        matches.add(canonical.id)
+            if len(matches) == 1:
+                target = next(iter(matches))
+                if self.get_entity(target).external_ref != event.user_ref:
+                    return target
+            reference = binding.source_ref or binding.raw_event_id
+            return self._resolve_placeholder(episode_id, f'{item.subject}（来源身份{reference}）')
         prefix = "用户 "
         if not item.subject.startswith(prefix):
             return self._resolve_placeholder(episode_id, item.subject)
@@ -1246,14 +1312,17 @@ class MemoryStore:
         subject_entity_id: str,
         entity_refs: list[EntityRef],
         target_entity_ids: dict[str, str],
+        confirmed_person_names: dict[int, str],
     ) -> str:
+        resolved_ids = {reference.relation_index: reference.entity_id
+                        for reference in item.target_bindings}
         relations = [
             {
                 "predicate": relation.predicate,
-                "target": relation.target,
-                "target_entity_id": target_entity_ids.get(relation.target),
+                "target": confirmed_person_names.get(index, relation.target),
+                "target_entity_id": resolved_ids.get(index, target_entity_ids.get(relation.target)),
             }
-            for relation in item.relations
+            for index, relation in enumerate(item.relations)
         ]
         content = {
             "subject_entity_id": subject_entity_id,
@@ -1296,11 +1365,11 @@ class MemoryStore:
                 (
                     memory_item_id,
                     position,
-                    relation.predicate,
-                    relation.target,
-                    target_entity_ids.get(relation.target),
+                    relation["predicate"],
+                    relation["target"],
+                    relation["target_entity_id"],
                 )
-                for position, relation in enumerate(item.relations)
+                for position, relation in enumerate(relations)
             ],
         )
         self._connection.executemany(

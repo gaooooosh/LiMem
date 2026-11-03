@@ -95,7 +95,8 @@ def test_new_target_reaches_classifier_and_context_is_unchanged(monkeypatch, tmp
             target_reconstructor=TargetReconstructor(local, tmp_path)).extract(episode(), user_ref="usr-A")
         assert result.items[0].relations[0].target == "10"
         assert result.items[0].raw_event_ids == ["rec-A"]
-        assert result.items[0].context == "[rec-A] " + episode().events[0].context
+        event = episode().events[0]
+        assert result.items[0].context == f"[rec-A] {event.context}\nAction: {event.action}"
         assert len(calls) == 1
     finally:
         local._client.close()

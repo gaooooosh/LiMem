@@ -43,7 +43,7 @@ def source_view(episode: EpisodeInput, user_ref: str) -> dict:
                    for index, event in enumerate(data["events"])],
         "required_actions": [
             {"source_index": ids[action["raw_event_id"]],
-             **{key: value for key, value in action.items() if key != "raw_event_id"}}
+             **{key: value for key, value in action.items() if key not in {"raw_event_id", "actor_ref"}}}
             for action in data["required_actions"]
         ],
     }

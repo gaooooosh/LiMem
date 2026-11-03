@@ -14,6 +14,10 @@ from limem.consolidator import (
 )
 from limem.episode_builder import EpisodeBuilder
 from limem.memory_item_extractor import MemoryItemExtractor
+from limem.memory_item_extractor.contact_references import (
+    ContactReferenceInput, ContactReferenceResolver, ReferenceHistory,
+)
+from limem.memory_item_extractor.person_references import resolve_person_references
 from limem.memory_store import (
     EmbeddingValidationError,
     MemoryStore,
@@ -191,6 +195,8 @@ class MemoryServicePipeline:
         embedding_client: _EmbeddingClient,
         retrieval_settings: RetrievalSettings,
         llm_client: _JSONClient,
+        *,
+        reference_resolver: ContactReferenceResolver | None = None,
     ) -> None:
         self._parser = VehicleRawDataParser()
         self._episode_builder = EpisodeBuilder()
@@ -198,6 +204,7 @@ class MemoryServicePipeline:
         self._embedding_client = embedding_client
         self._retrieval_settings = retrieval_settings
         self._llm_client = llm_client
+        self._reference_resolver = reference_resolver
 
     def validate_session(self, raw_session: JsonValue | None) -> SessionInput:
         """Strictly parse one Session without calling later pipeline stages."""
@@ -246,6 +253,13 @@ class MemoryServicePipeline:
                     episode, claim_episode=build_vehicle_claim_episode(session, episode),
                     user_ref=raw_session["user_id"], raw_session=raw_session,
                 )
+                if self._reference_resolver is not None:
+                    entities = store.list_entities()
+                    result = self._reference_resolver.resolve(ContactReferenceInput(
+                        raw_session=raw_session, episode=episode, result=result,
+                        history=ReferenceHistory(entities, store.list_memory_items()),
+                    ))
+                    result = resolve_person_references(result, session, entities, raw_session["user_id"])
             except Exception as exc:
                 raise WriteStageError("memory_extraction", exc) from exc
 
