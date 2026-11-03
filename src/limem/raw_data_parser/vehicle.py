@@ -174,6 +174,21 @@ def _translate(value: str, labels: dict[str, str], field: str) -> str:
         raise ValueError(f"unsupported {field}: {value!r}") from error
 
 
+def _actor_reference(actor: str, leaves: dict) -> str | None:
+    if actor == 'passenger':
+        occupied = ['seat.row1.right'] if leaves.get('seat.row1.right.occupied') is True else []
+    elif actor == 'rear':
+        occupied = [path.removesuffix('.occupied') for path, value in leaves.items()
+                    if path.startswith(('seat.row2.', 'seat.row3.'))
+                    and path.endswith('.occupied') and value is True]
+    else:
+        return None
+    if len(occupied) != 1:
+        return None
+    reference = leaves.get(occupied[0] + '.person_id')
+    return reference if isinstance(reference, str) and reference.strip() else None
+
+
 def _parse_timestamp(value: str) -> datetime:
     occurred_at = datetime.fromisoformat(value)
     if occurred_at.tzinfo is None:
@@ -407,6 +422,7 @@ class VehicleRawDataParser(RawDataParser):
             record_type=_translate(record.type, _RECORD_TYPE_LABELS, "record type"),
             event=event,
             actor=actor,
+            actor_ref=_actor_reference(trigger.actor, device_leaves) if trigger is not None else None,
             action=action,
             detail=detail,
             payload=payload,

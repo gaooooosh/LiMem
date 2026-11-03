@@ -1,0 +1,9 @@
+# Install in a separate Linux / WSL Python 3.12 environment.
+# This pins the deployment API; CUDA/GPU execution still requires local validation.
+vllm==0.10.2
+transformers==4.55.2
+openai==1.109.1
+fastapi==0.116.1
+starlette==0.47.3
+pydantic==2.11.7
+uvicorn==0.35.0

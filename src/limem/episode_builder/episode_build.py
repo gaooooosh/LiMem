@@ -66,9 +66,10 @@ class EpisodeBuilder:
             )
         return RequiredActionInput(
             raw_event_id=raw_event.raw_event_id,
-            subject=f"用户 {raw_event.user_ref}",
+            subject=(f"用户 {raw_event.user_ref}" if raw_event.actor in {'驾驶员', '助手'} else raw_event.actor),
             actor=raw_event.actor,
             action_code=raw_event.action,
+            actor_ref=raw_event.actor_ref,
         )
 
     @staticmethod

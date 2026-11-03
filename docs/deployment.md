@@ -2,7 +2,7 @@
 
 ## Docker Compose
 
-安装支持 `docker compose up --wait` 的 Docker Compose v2，准备可用的 LLM 服务和 DashScope 凭据。LLM 默认使用 DeepSeek，也可按[接入文档](llm-providers.md)配置 Ollama、SGLang 或 vLLM。Python 3.12 已包含在镜像中。
+安装支持 `docker compose up --wait` 的 Docker Compose v2，准备可用的巩固LLM服务和DashScope凭据。巩固默认使用DeepSeek，也可按[接入文档](llm-providers.md)配置其他服务。Workflow1另需严格JSON Schema的Qwen服务，以及`llm/bert-behavior-admission-v4/`完整权重，见[Workflow1部署](workflow1/README.md)。Python 3.12已包含在镜像中。
 
 ```bash
 cp .env.example .env

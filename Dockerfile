@@ -10,7 +10,7 @@ ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 RUN pip install --no-cache-dir uv==0.10.4
 
 COPY pyproject.toml uv.lock ./
-RUN uv export --frozen --no-dev --no-emit-project \
+RUN uv export --frozen --no-dev --no-emit-project --emit-index-url \
       --format requirements-txt --output-file /tmp/requirements.txt \
     && pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt

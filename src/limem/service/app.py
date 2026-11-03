@@ -15,8 +15,9 @@ from fastapi.security import APIKeyHeader
 from pydantic import JsonValue
 
 from limem.embedding_client import EmbeddingClient
-from limem.llm_client import LLMClient
-from limem.memory_item_extractor import MemoryItemExtractor
+from limem.llm_client import LLMClient, QwenLLMClient
+from limem.memory_item_extractor.contact_references import ContactReferenceResolver
+from limem.memory_item_extractor.factory import create_workflow1_extractor
 from limem.memory_store import MemoryStore
 
 from .auth import (
@@ -178,6 +179,9 @@ def create_app(
     settings: ServiceSettings | None = None,
     llm_client: LLMClient | None = None,
     embedding_client: EmbeddingClient | None = None,
+    *,
+    qwen_client: QwenLLMClient | None = None,
+    workflow1_extractor=None,
 ) -> FastAPI:
     """Create one single-process service application and its dependencies."""
 
@@ -192,11 +196,22 @@ def create_app(
     resolved_embedding_client = (
         embedding_client if embedding_client is not None else EmbeddingClient()
     )
+    local_client = qwen_client
+    if workflow1_extractor is None and local_client is None:
+        local_client = QwenLLMClient()
+    extractor = workflow1_extractor if workflow1_extractor is not None else create_workflow1_extractor(
+        local_client,
+        trace_root=runtime.data_dir / "debug/workflow1-v5",
+    )
     pipeline = MemoryServicePipeline(
-        MemoryItemExtractor(resolved_llm_client),
+        extractor,
         resolved_embedding_client,
         runtime.retrieval,
         resolved_llm_client,
+        reference_resolver=(
+            ContactReferenceResolver(local_client, runtime.data_dir / "debug/workflow1-v5-references")
+            if workflow1_extractor is None else None
+        ),
     )
     consolidations = ConsolidationCoordinator(manager, pipeline, logger)
 

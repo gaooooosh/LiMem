@@ -41,6 +41,7 @@ class RawEvent(BaseModel):
     record_type: _NonEmptyText
     event: _NonEmptyText
     actor: _NonEmptyText | None = None
+    actor_ref: _NonEmptyText | None = None
     action: _NonEmptyText | None = None
     detail: _NonEmptyText | None = None
     payload: _NonEmptyPayload | None = None
